@@ -73,11 +73,10 @@ class ProviderFactory:
         policy: EffectiveConfiguration | None = None,
     ) -> Provider:
         effective_policy = policy or load_effective_configuration(cwd)
-        # Factory-level enforcement protects callers that use ProviderFactory directly.
-        # The runtime also checks after capability resolution, where capability-specific
-        # rules can be evaluated.
-        if mode == ExecutionMode.WORKSPACE_WRITE and not effective_policy.workspace_write:
-            raise ProviderFactoryError("workspace-write is disabled by the effective policy")
+        try:
+            effective_policy.assert_base_profile_allowed(profile, mode)
+        except RuntimeError as exc:
+            raise ProviderFactoryError(str(exc)) from exc
 
         effective_args = profile.extra_args
         if mode == ExecutionMode.WORKSPACE_WRITE:
