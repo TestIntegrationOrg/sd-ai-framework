@@ -9,6 +9,8 @@ custom workflows, manual step execution, Codex, Claude, Copilot, Gemini, custom/
 providers, provider overrides, workspace-write, approvals, GitHub/Jira integrations,
 quality gates, and policy enforcement.
 
+For exact policy merge rules, see [Enterprise Policy Reference](ENTERPRISE-POLICY.md). For the exact provider execution boundary and built-in protected paths, see [Execution Security Reference](EXECUTION-SECURITY.md).
+
 ## Individual mode
 
 Individual mode is the default when `operating_mode` is omitted.
@@ -42,8 +44,7 @@ local model, or a custom provider can be selected as long as the profile itself 
 configured and enabled.
 
 Core SD-AI source-of-truth paths remain protected from external workspace-writing
-agents in both modes: `.sdai/**`, `.agents/**`, provider-native generated agent files,
-and `specs/**`. Framework-owned lifecycle commands may still update those artifacts.
+agents in both modes. Framework-owned lifecycle commands may still update those artifacts. The complete built-in protected set is documented in [Execution Security Reference](EXECUTION-SECURITY.md).
 
 ## Enterprise mode
 
@@ -64,8 +65,9 @@ SDAI_ORG_POLICY_PATH=/company-managed/sdai/organization-policy.yaml
 ```
 
 If `SDAI_ORG_POLICY_PATH` is present, organization policy is applied even when a
-repository says `operating_mode: individual`. This prevents a repo-local change from
-weakening company controls.
+repository says `operating_mode: individual`. Repository configuration cannot rename or redirect the organization-policy environment variable.
+
+For this to be an organizational trust boundary, the company must also manage the environment setting and policy file through its developer platform, CI environment, endpoint management, corporate launcher, or equivalent trusted control. SD-AI does not itself authenticate the operating-system user who supplied an environment variable.
 
 Example organization policy:
 
@@ -139,17 +141,16 @@ user policy
 effective configuration
 ```
 
-Allow lists are intersected. Mandatory skills and protected paths are accumulated.
-Boolean restrictions such as disabling workspace writes cannot be re-enabled by a
-lower layer. Therefore repository/user policy may become stricter but cannot expand
-beyond an organization allowlist.
+Provider/profile/model/capability allow lists are intersected. Mandatory skills and protected paths accumulate. `workspace_write: false` cannot be re-enabled by a lower layer; `require_prior_approval_for_workspace_write: true` cannot be weakened by a lower layer; and `allow_force_approval_bypass: false` prevents a lower layer from re-enabling approval bypass.
+
+See [Enterprise Policy Reference](ENTERPRISE-POLICY.md) for the normative merge table and policy schema.
 
 ## Provider environment isolation
 
 External CLI agents do not inherit the whole developer/CI environment. SD-AI passes a
-minimal OS environment, provider authentication variables, and profile variables from
-`environment_allowlist`. When policy defines `execution.environment_allowlist`, those
-additional/provider variables are filtered through it.
+minimal operating-system environment plus only provider/profile variables allowed by effective policy.
+
+In individual mode, provider authentication variables may be passed unless local policy narrows them. In enterprise mode, provider/profile variables are fail-closed: if effective policy does not define `execution.environment_allowlist`, SD-AI passes none of those provider-specific variables. Provider CLIs may still use their native credential stores.
 
 Custom Python provider plugins execute in-process and therefore remain trusted code;
 enterprises should allow only approved plugins.
@@ -158,8 +159,14 @@ enterprises should allow only approved plugins.
 
 A `workspace-write` agent may change application files, tests, and other unprotected
 repository content. SD-AI snapshots protected paths before execution. If an agent
-changes a protected source-of-truth path, SD-AI restores those files and fails the
-agent step.
+changes a protected source-of-truth/control path, SD-AI restores the protected state and fails the agent step.
 
 This is defense-in-depth around provider-native sandboxes and is intentionally applied
-in both individual and enterprise modes.
+in both individual and enterprise modes. See [Execution Security Reference](EXECUTION-SECURITY.md) for the exact protected path list, restoration algorithm, symlink behavior, prompt containment, and provider-argument controls.
+
+## Related documentation
+
+- [Enterprise Policy Reference](ENTERPRISE-POLICY.md)
+- [Execution Security Reference](EXECUTION-SECURITY.md)
+- [Governance Model](GOVERNANCE.md)
+- [Security Policy](../SECURITY.md)

@@ -46,7 +46,7 @@ Configuration determines **who controls the allowed choices**:
 
 In individual mode, the engineer may use any configured provider/profile. In enterprise mode, the employee may choose among providers/models approved by organization policy. Repository/user policy may narrow organization permissions but cannot expand them.
 
-See [Configuration modes](docs/CONFIGURATION-MODES.md).
+See [Configuration modes](docs/CONFIGURATION-MODES.md), [Enterprise policy](docs/ENTERPRISE-POLICY.md), and [Execution security](docs/EXECUTION-SECURITY.md).
 
 ## Lifecycle
 
@@ -251,10 +251,10 @@ v0.5.1 hardens the execution boundary in both modes:
 - invocation construction runs prompt-secret checks before dry-run can print content
 - provider CLI processes receive a minimal environment rather than all developer/CI secrets
 - built-in provider `extra_args` cannot override SD-AI sandbox/tool/approval controls
-- workspace-write agents cannot persist changes to `.sdai/**`, `.agents/**`, provider-native managed agents, or `specs/**`
+- workspace-write agents cannot persist changes to framework/source-of-truth protected paths
 - organization/repository/user policy can add more protected paths
 
-Framework lifecycle commands may update source-of-truth artifacts; external workspace-writing agents may not.
+Framework lifecycle commands may update source-of-truth artifacts; external workspace-writing agents may not. See [Execution Security Reference](docs/EXECUTION-SECURITY.md) for the exact built-in protected paths, restoration behavior, environment rules, and limitations.
 
 ## Run any step manually
 
@@ -284,6 +284,8 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 ## Documentation
 
 - [Configuration modes](docs/CONFIGURATION-MODES.md)
+- [Enterprise policy reference](docs/ENTERPRISE-POLICY.md)
+- [Execution security reference](docs/EXECUTION-SECURITY.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agent platform](docs/AGENT-PLATFORM.md)
 - [Agent files and skills](docs/AGENT-FILES.md)
