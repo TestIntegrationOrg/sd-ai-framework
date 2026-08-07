@@ -2,9 +2,51 @@
 
 **One open-source framework for Spec-Driven Development (SDD) + AI-Driven Development Life Cycle (AI-DLC).**
 
-SD-AI treats approved specifications and architecture artifacts as the source of truth. Semantic agent roles, provider profiles, reusable skills, declarative workflows, approval gates, quality gates, and enterprise integrations operate around that source of truth.
+SD-AI treats approved specification and architecture artifacts as source of truth. Semantic agent roles, provider profiles, reusable skills, declarative workflows, approvals, quality gates, and integrations operate around that source of truth.
 
-> Project status: **0.5.0 / canonical agent files + shared skills**.
+> Project status: **0.5.1 / configuration-driven individual + enterprise execution hardening**.
+
+## One framework, same capabilities
+
+SD-AI does not have a reduced "individual edition" and a separate "enterprise edition".
+The same runtime and CLI support:
+
+- Codex, Claude, GitHub Copilot, Gemini, local/custom commands, and provider plugins
+- canonical `.sdai/agents/*.agent.md` semantic agents
+- shared `.agents/skills/*/SKILL.md` skills
+- version-controlled prompts
+- custom/declarative workflows
+- manual execution of any named workflow step
+- advisory and workspace-write execution
+- approvals, retries, conditions, parallel advisory agents, and pause/resume
+- GitHub/Jira integrations
+- test, Trivy, and Sonar quality gates
+- provider/model overrides
+
+Configuration determines **who controls the allowed choices**:
+
+```text
+                     SD-AI runtime
+                          │
+                   Effective policy
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+        Individual                 Enterprise
+             │                         │
+      Engineer policy          Organization policy
+      + repo/user config       + repo/user config
+             │                         │
+             └────────────┬────────────┘
+                          │
+                   Same workflows
+                   Same agents/skills
+                   Same provider router
+```
+
+In individual mode, the engineer may use any configured provider/profile. In enterprise mode, the employee may choose among providers/models approved by organization policy. Repository/user policy may narrow organization permissions but cannot expand them.
+
+See [Configuration modes](docs/CONFIGURATION-MODES.md).
 
 ## Lifecycle
 
@@ -17,7 +59,7 @@ Business / Jira / GitHub Issue
             ↓
   Architecture + ADRs
             ↓
- Semantic Agent Roles
+   Semantic Agent Roles
             ↓
  ┌──────────┼───────────┐
  ▼          ▼           ▼
@@ -42,12 +84,12 @@ Claude    Codex       Copilot      Gemini / Custom
 1. **Spec first** — implementation and tests trace to approved requirements.
 2. **Architecture as code** — architecture, ADRs, Mermaid/C4 and contracts live in Git.
 3. **Semantic role != provider** — `architect` is a role; Claude/Codex/Copilot/Gemini are execution choices.
-4. **Skills and prompts are code** — reusable agent behavior is version controlled and reviewable.
-5. **Provider neutral** — workflows can change providers without duplicating semantic agent instructions.
-6. **Least privilege** — advisory mode is read-only; workspace writes are explicit.
-7. **Human governance** — risky workflows can pause for role-backed approvals.
-8. **Manual control remains available** — every named workflow step can be run independently.
-9. **Validation closes the loop** — quality gates and spec/architecture checks run before delivery.
+4. **Same capabilities, configuration-driven control** — individuals and enterprises use one engine; policy changes who may widen permissions.
+5. **Skills and prompts are code** — reusable agent behavior is version controlled and reviewable.
+6. **Least privilege** — advisory is the default; workspace writes are explicit and protected source-of-truth paths are framework-owned.
+7. **Human governance** — workflows can pause for approvals and enterprise policy can prohibit force-bypass.
+8. **Manual control remains available** — every named workflow step can be run independently when effective policy permits it.
+9. **Validation closes the loop** — quality and specification checks run before delivery.
 
 ## Quick start
 
@@ -57,7 +99,6 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 
 sdai init
-
 sdai feature FEATURE-123 \
   --title "Add governed signing workflow" \
   --description "Implement the feature with architecture and security review" \
@@ -67,69 +108,22 @@ sdai step list FEATURE-123 --workflow enterprise
 sdai run FEATURE-123 --workflow enterprise
 ```
 
-Upgrade an existing SD-AI project without overwriting team customizations:
+Upgrade without overwriting team customizations:
 
 ```bash
 sdai upgrade
 ```
 
-## v0.5 canonical agent files
+## Individual configuration
 
-SD-AI now has a canonical semantic-agent layer:
-
-```text
-.sdai/
-├── agents/
-│   ├── requirements-analyst.agent.md
-│   ├── architect.agent.md
-│   ├── planner.agent.md
-│   ├── developer.agent.md
-│   ├── code-reviewer.agent.md
-│   ├── tester.agent.md
-│   ├── security-reviewer.agent.md
-│   └── documentation-writer.agent.md
-└── agent-routing.yaml
-```
-
-Example:
-
-```markdown
----
-name: architect
-description: Generate architecture options, trade-offs, and ADR proposals.
-capabilities: [architecture, review]
-skills: [architecture-design, architecture-review, spec-traceability]
-profile: claude
-execution_mode: advisory
-providers: {}
----
-# Architect
-
-Derive architecture drivers from approved requirements and NFRs.
-Generate viable alternatives, compare trade-offs, and propose ADRs.
-```
-
-The semantic agent describes the **role and behavior**. Provider profiles in `.sdai/agents.yaml` still describe **how the work executes**.
-
-### Semantic-agent routing
-
-`.sdai/agent-routing.yaml`:
+Individual is the default; `operating_mode` may be omitted or set explicitly:
 
 ```yaml
-routes:
-  requirements: requirements-analyst
-  architecture: architect
-  planning: planner
-  coding: developer
-  review: code-reviewer
-  testing: tester
-  security: security-reviewer
-  documentation: documentation-writer
+# .sdai/config.yaml
+operating_mode: individual
 ```
 
-Provider routing remains separate in `.sdai/routing.yaml`.
-
-This lets you keep one Architect definition and run it through different providers:
+Provider choice remains developer-controlled:
 
 ```bash
 sdai agents run architecture FEATURE-123 --agent architect --profile claude --dry-run
@@ -137,9 +131,85 @@ sdai agents run architecture FEATURE-123 --agent architect --profile codex --dry
 sdai agents run architecture FEATURE-123 --agent architect --profile copilot --dry-run
 ```
 
-## Shared skills
+Repository policy is optional and may still enforce approvals, required skills, protected paths, or provider allowlists for an individual project.
 
-Canonical skills live under the shared `.agents/skills` tree:
+## Enterprise configuration
+
+Enterprise uses the same commands. A company supplies an organization policy file outside the repository:
+
+```text
+SDAI_OPERATING_MODE=enterprise
+SDAI_ORG_POLICY_PATH=/company-managed/sdai/organization-policy.yaml
+```
+
+or `.sdai/config.yaml` may set:
+
+```yaml
+operating_mode: enterprise
+```
+
+with `SDAI_ORG_POLICY_PATH` still required.
+
+Example organization policy:
+
+```yaml
+version: 1
+providers:
+  allowed_profiles: [claude-enterprise, codex-enterprise, copilot-enterprise]
+  allowed_providers: [claude, codex, copilot]
+  allowed_models:
+    claude: [approved-architecture-model]
+    codex: [approved-coding-model]
+
+capabilities:
+  architecture:
+    allowed_profiles: [claude-enterprise, codex-enterprise]
+  coding:
+    allowed_profiles: [codex-enterprise, copilot-enterprise]
+
+execution:
+  workspace_write: true
+  require_prior_approval_for_workspace_write: true
+  allow_force_approval_bypass: false
+  protected_paths:
+    - .github/workflows/**
+
+skills:
+  required:
+    coding: [secure-coding]
+```
+
+The employee still chooses any allowed option:
+
+```bash
+sdai step run FEATURE-123 architecture-review \
+  --workflow enterprise --agent architect --profile claude-enterprise
+
+sdai step run FEATURE-123 architecture-review \
+  --workflow enterprise --agent architect --profile codex-enterprise
+```
+
+If `SDAI_ORG_POLICY_PATH` is present, organization policy is applied even if a repository says `operating_mode: individual`; repo-local configuration cannot weaken the company boundary.
+
+## Agent files and skills
+
+Canonical semantic agents:
+
+```text
+.sdai/
+├── agent-routing.yaml
+└── agents/
+    ├── requirements-analyst.agent.md
+    ├── architect.agent.md
+    ├── planner.agent.md
+    ├── developer.agent.md
+    ├── code-reviewer.agent.md
+    ├── tester.agent.md
+    ├── security-reviewer.agent.md
+    └── documentation-writer.agent.md
+```
+
+Canonical shared skills:
 
 ```text
 .agents/skills/
@@ -153,40 +223,9 @@ Canonical skills live under the shared `.agents/skills` tree:
 └── documentation-quality/
 ```
 
-Each skill uses portable `SKILL.md` frontmatter:
-
-```markdown
----
-name: architecture-design
-description: Design architecture from explicit drivers and trade-offs.
----
-# Architecture Design
-
-- Derive architecture drivers before selecting technology.
-- Generate multiple viable options for material decisions.
-- Record material choices as ADR proposals.
-```
-
-SD-AI capability metadata is kept in an adjacent `sdai.yaml`:
-
-```yaml
-version: 1
-capabilities: [architecture]
-```
-
-Canonical `.agents/skills` takes precedence over the legacy `.sdai/skills` representation when names collide, so older projects continue to work while migrating.
-
-Inspect skills:
-
-```bash
-sdai skills list
-sdai skills show architecture-design
-sdai skills validate
-```
+Organization/repository/user policy may add mandatory skills to a capability. Mandatory skills are added to semantic-agent/profile skills; lower policy layers cannot remove them.
 
 ## Provider-native synchronization
-
-One canonical agent definition can be exported to native provider formats:
 
 ```bash
 sdai agents sync --provider all
@@ -201,186 +240,50 @@ Claude      .claude/agents/<name>.md
 Gemini      .gemini/agents/<name>.md
 ```
 
-Claude project skills are mirrored into `.claude/skills/` during Claude synchronization. The shared `.agents/skills` source remains canonical.
+Generated files are managed derivatives of canonical SD-AI agent files. Unmanaged native files are not overwritten unless `--force` is explicit.
 
-Generate only one provider:
+## Secure external execution
 
-```bash
-sdai agents sync --provider codex
-sdai agents sync --provider copilot
-sdai agents sync --provider claude
-sdai agents sync --provider gemini
-```
+v0.5.1 hardens the execution boundary in both modes:
 
-Generated files contain an SD-AI marker. SD-AI refuses to overwrite an unmarked hand-authored native agent unless you explicitly use:
+- prompt names are contained inside `.sdai/prompts`
+- feature artifacts resolve symlinks and stay inside `specs/<feature>`
+- invocation construction runs prompt-secret checks before dry-run can print content
+- provider CLI processes receive a minimal environment rather than all developer/CI secrets
+- built-in provider `extra_args` cannot override SD-AI sandbox/tool/approval controls
+- workspace-write agents cannot persist changes to `.sdai/**`, `.agents/**`, provider-native managed agents, or `specs/**`
+- organization/repository/user policy can add more protected paths
 
-```bash
-sdai agents sync --provider copilot --force
-```
-
-## Agent CLI
-
-Provider profiles:
-
-```bash
-sdai agents list
-sdai agents doctor
-```
-
-Semantic agent definitions:
-
-```bash
-sdai agents definitions
-sdai agents show architect
-```
-
-Run or inspect:
-
-```bash
-sdai agents run architecture FEATURE-123 --dry-run
-sdai agents run architecture FEATURE-123 --agent architect --dry-run
-sdai agents run architecture FEATURE-123 --agent architect --profile codex --dry-run
-```
-
-External execution defaults to **advisory** mode. Repository write behavior must still be selected explicitly:
-
-```bash
-sdai agents run coding FEATURE-123 \
-  --agent developer \
-  --profile codex \
-  --mode workspace-write
-```
-
-Provider-specific sandbox and permission controls still apply.
-
-## Workflow integration
-
-Agent steps can name semantic agent independently from provider profile:
-
-```yaml
-- id: architecture-review
-  type: agent
-  agent: architect
-  capability: architecture
-  mode: advisory
-```
-
-Pin a provider only where policy requires it:
-
-```yaml
-- id: implementation
-  type: agent
-  agent: developer
-  capability: coding
-  profile: codex
-  mode: workspace-write
-```
-
-Built-in `agentic` and `enterprise` workflows use v0.5 semantic agent roles.
-
-### Advanced orchestration
-
-Workflow YAML also supports:
-
-- deterministic lifecycle steps
-- human approval gates
-- quality gates
-- validation steps
-- safe `if` conditions without Python `eval`
-- retry/backoff
-- `on_failure: stop|continue`
-- bounded parallel advisory agents
-- persisted pause/resume state
-
-Example:
-
-```yaml
-version: 5
-name: enterprise
-validation_mode: critical
-steps:
-  - id: specification
-    type: deterministic
-    action: specify
-
-  - id: design-reviews
-    type: parallel
-    steps:
-      - id: architecture-review
-        type: agent
-        agent: architect
-        capability: architecture
-        mode: advisory
-      - id: security-review
-        type: agent
-        agent: security-reviewer
-        capability: security
-        mode: advisory
-
-  - id: architecture-approval
-    type: approval
-    gate: enterprise-architecture
-
-  - id: implementation
-    type: agent
-    agent: developer
-    capability: coding
-    mode: workspace-write
-
-  - id: tests
-    type: quality-gate
-    gate: tests
-
-  - id: validate
-    type: validate
-```
+Framework lifecycle commands may update source-of-truth artifacts; external workspace-writing agents may not.
 
 ## Run any step manually
-
-Manual execution remains a core rule:
 
 ```bash
 sdai step list FEATURE-123 --workflow enterprise
 
 sdai step run FEATURE-123 architecture-review \
-  --workflow enterprise \
-  --dry-run
+  --workflow enterprise --dry-run
 
 sdai step run FEATURE-123 architecture-review \
-  --workflow enterprise \
-  --agent architect \
-  --profile codex \
-  --dry-run
+  --workflow enterprise --agent architect --profile codex --dry-run
 ```
 
-A completed step is protected from accidental rerun. Use `--force` intentionally. Forced upstream reruns invalidate downstream completion markers so stale derived work cannot remain marked complete.
+Manual execution remains available in both modes. Enterprise policy may require an approval before a workspace-write step or prohibit `--force` from bypassing that mandatory gate.
 
-A manual workspace-writing AI step before an unsatisfied prior approval also requires `--force`, making the governance bypass explicit and auditable.
-
-## Enterprise governance and integrations
-
-v0.4 capabilities remain available:
-
-- role-backed human approvals and approver allowlists
-- policy-as-code under `.sdai/governance.yaml`
-- test / Trivy / Sonar quality gates
-- GitHub issue intake and pull-request creation
-- Jira HTTPS intake with environment-only credentials
-- path traversal protection
-- prompt-injection boundary for external artifacts
-- quality-gate output redaction
-
-Useful commands:
+## Quality gates and integrations
 
 ```bash
-sdai policy check --workflow enterprise
 sdai gates list
 sdai gates run tests --feature-id FEATURE-123
 sdai integrations doctor
+sdai policy check --workflow enterprise
 ```
+
+Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. Test, Trivy, and Sonar gates remain declarative and optional/mandatory according to configuration and policy.
 
 ## Documentation
 
+- [Configuration modes](docs/CONFIGURATION-MODES.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agent platform](docs/AGENT-PLATFORM.md)
 - [Agent files and skills](docs/AGENT-FILES.md)
@@ -389,6 +292,7 @@ sdai integrations doctor
 - [Provider adapters](docs/PROVIDERS.md)
 - [Skills](docs/SKILLS.md)
 - [Prompts](docs/PROMPTS.md)
+- [Security policy](SECURITY.md)
 
 ## Roadmap
 
@@ -404,6 +308,10 @@ sdai integrations doctor
 - [x] Canonical `.agent.md` semantic role files
 - [x] Shared `.agents/skills` skill source
 - [x] Provider-native agent synchronization
+- [x] Configuration-driven individual + enterprise provider/model policy
+- [x] Protected source-of-truth workspace writes
+- [x] External provider environment isolation
+- [ ] Identity-backed enterprise approvals
 - [ ] OpenAPI / AsyncAPI / JSON Schema contract validation
 - [ ] Requirement → ADR → task → code → test traceability graph
 - [ ] Architecture drift detection

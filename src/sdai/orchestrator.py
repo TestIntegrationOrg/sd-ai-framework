@@ -14,6 +14,7 @@ from sdai.artifacts import write_text
 from sdai.conditions import evaluate_condition
 from sdai.governance import check_workflow_governance, governance_enforced, load_governance
 from sdai.models import FeatureContext, LifecycleMode
+from sdai.policy import load_effective_configuration
 from sdai.quality_gates import QualityGateResult, QualityGateRunner
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflows import (
@@ -63,6 +64,7 @@ class Orchestrator:
         self.project_root = project_root.resolve()
         self.agent_runtime = agent_runtime or AgentRuntime(self.project_root)
         self.quality_gate_runner = quality_gate_runner or QualityGateRunner(self.project_root)
+        self.policy = load_effective_configuration(self.project_root)
         self.sleeper = sleeper
 
     def context(self, feature_id: str) -> FeatureContext:
@@ -131,6 +133,33 @@ class Orchestrator:
             if item.kind == StepKind.APPROVAL:
                 gates.append(item.gate or item.id)
         return gates
+
+    def _enforce_workspace_write_policy(
+        self,
+        context: FeatureContext,
+        definition: WorkflowDefinition,
+        step_id: str,
+        *,
+        force: bool,
+    ) -> None:
+        if not self.policy.require_prior_approval_for_workspace_write:
+            return
+        gates = self._prior_approval_gates(definition, step_id)
+        if not gates:
+            raise RuntimeError(
+                f"Workspace-write step '{step_id}' is blocked: effective policy requires a prior "
+                "approval gate, but the workflow defines none before this step."
+            )
+        pending = [gate for gate in gates if not is_approved(context, gate)]
+        if not pending:
+            return
+        if force and self.policy.allow_force_approval_bypass:
+            return
+        suffix = " Organization policy does not allow --force bypass." if force else ""
+        raise RuntimeError(
+            f"Workspace-write step '{step_id}' has unsatisfied prior approval(s): "
+            f"{', '.join(pending)}.{suffix}"
+        )
 
     def _retry_call(self, policy: RetryPolicy, operation: Callable[[], T]) -> tuple[T, int]:
         delay = policy.delay_seconds
@@ -280,6 +309,10 @@ class Orchestrator:
             profile = profile_override or step.profile
             semantic_agent = agent_override or step.agent_name
             mode = mode_override or step.mode
+            if not dry_run and mode == ExecutionMode.WORKSPACE_WRITE:
+                self._enforce_workspace_write_policy(
+                    context, definition, step.id, force=force
+                )
             if dry_run:
                 invocation = self._build_agent_invocation(
                     feature_id,
@@ -435,7 +468,6 @@ class Orchestrator:
             step.kind == StepKind.AGENT
             and effective_mode == ExecutionMode.WORKSPACE_WRITE
             and not dry_run
-            and not force
             and not state.is_complete(step.id)
         ):
             pending = [
@@ -443,12 +475,15 @@ class Orchestrator:
                 for gate in self._prior_approval_gates(definition, step.id)
                 if not is_approved(context, gate)
             ]
-            if pending:
+            if pending and not force:
                 gates = ", ".join(pending)
                 raise RuntimeError(
                     f"Manual workspace-write step '{step.id}' has unsatisfied prior approval(s): {gates}. "
-                    "Grant the approval or use --force to explicitly bypass the gate."
+                    "Grant the approval or use --force to explicitly bypass the gate when policy permits it."
                 )
+            self._enforce_workspace_write_policy(
+                context, definition, step.id, force=force
+            )
 
         return self._execute_workflow_step(
             feature_id,

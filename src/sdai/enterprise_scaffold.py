@@ -6,6 +6,7 @@ import yaml
 
 from sdai.artifacts import write_text
 from sdai.governance import scaffold_approval_policies, scaffold_governance
+from sdai.policy import scaffold_repository_policy
 from sdai.quality_gates import scaffold_quality_gates
 
 
@@ -54,7 +55,11 @@ def _approval_policy() -> str:
 
 
 def install_v04_scaffold(root: Path) -> list[Path]:
-    """Add v0.4 enterprise configuration without overwriting team customizations."""
+    """Add enterprise-capable configuration without overwriting team customizations.
+
+    The same files are useful in individual mode; organization policy is optional until
+    config.yaml selects enterprise mode or SDAI_ORG_POLICY_PATH is supplied.
+    """
     if not (root / ".sdai" / "config.yaml").exists():
         raise FileNotFoundError("Not an SD-AI project. Run `sdai init` first.")
 
@@ -63,6 +68,7 @@ def install_v04_scaffold(root: Path) -> list[Path]:
         root / ".sdai" / "approval-policies.yaml": _approval_policy(),
         root / ".sdai" / "quality-gates.yaml": scaffold_quality_gates(),
         root / ".sdai" / "integrations.yaml": _integration_config(),
+        root / ".sdai" / "policy.yaml": scaffold_repository_policy(),
     }
     created: list[Path] = []
     for path, content in defaults.items():

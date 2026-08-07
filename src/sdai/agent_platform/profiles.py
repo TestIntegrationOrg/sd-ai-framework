@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from sdai.agent_platform.models import AgentProfile, Capability
 from sdai.config import load_yaml
+from sdai.path_safety import ensure_within_project
 
 
 class ProfileError(RuntimeError):
     pass
+
+
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _capabilities(values: object) -> tuple[Capability, ...]:
@@ -19,8 +24,26 @@ def _capabilities(values: object) -> tuple[Capability, ...]:
         raise ProfileError(str(exc)) from exc
 
 
+def _environment_allowlist(values: object, profile: str) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ProfileError(f"profile '{profile}' environment_allowlist must be a string list")
+    result: list[str] = []
+    for value in values:
+        name = value.strip()
+        if not _ENV_NAME.fullmatch(name):
+            raise ProfileError(f"profile '{profile}' has invalid environment variable name '{value}'")
+        if name not in result:
+            result.append(name)
+    return tuple(result)
+
+
 def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
-    path = project_root / ".sdai" / "agents.yaml"
+    project_root = project_root.resolve()
+    path = ensure_within_project(
+        project_root, project_root / ".sdai" / "agents.yaml", label="agent profiles path"
+    )
     data = load_yaml(path)
     raw_profiles = data.get("profiles") or {}
     if not isinstance(raw_profiles, dict):
@@ -30,8 +53,9 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
     for name, raw in raw_profiles.items():
         if not isinstance(raw, dict):
             raise ProfileError(f"profile '{name}' must be a mapping")
-        profiles[str(name)] = AgentProfile(
-            name=str(name),
+        profile_name = str(name)
+        profiles[profile_name] = AgentProfile(
+            name=profile_name,
             provider=str(raw.get("provider") or name),
             capabilities=_capabilities(raw.get("capabilities") or []),
             prompt=str(raw.get("prompt") or "general.md"),
@@ -42,12 +66,18 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
             extra_args=tuple(str(v) for v in (raw.get("extra_args") or [])),
             command=tuple(str(v) for v in (raw.get("command") or [])),
             workspace_write_args=tuple(str(v) for v in (raw.get("workspace_write_args") or [])),
+            environment_allowlist=_environment_allowlist(
+                raw.get("environment_allowlist"), profile_name
+            ),
         )
     return profiles
 
 
 def load_routes(project_root: Path) -> dict[Capability, str]:
-    path = project_root / ".sdai" / "routing.yaml"
+    project_root = project_root.resolve()
+    path = ensure_within_project(
+        project_root, project_root / ".sdai" / "routing.yaml", label="agent routing path"
+    )
     data = load_yaml(path)
     raw = data.get("routes") or {}
     if not isinstance(raw, dict):

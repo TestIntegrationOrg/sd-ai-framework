@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from sdai.path_safety import ensure_within_project
+
 
 _TOKEN = re.compile(r"{{\s*([a-zA-Z0-9_.-]+)\s*}}")
 
@@ -27,15 +29,34 @@ def render_template(template: str, values: dict[str, str], *, strict: bool = Tru
     return rendered
 
 
+def _prompt_path(project_root: Path, name: str) -> Path:
+    project_root = project_root.resolve()
+    candidate = Path(name)
+    if candidate.is_absolute() or ".." in candidate.parts or candidate.suffix != ".md":
+        raise PromptError("prompt name must be a relative .md path inside .sdai/prompts")
+    root = ensure_within_project(
+        project_root, project_root / ".sdai" / "prompts", label="prompt directory"
+    )
+    return ensure_within_project(root, root / candidate, label="prompt path")
+
+
 def load_prompt(project_root: Path, name: str) -> str:
-    path = project_root / ".sdai" / "prompts" / name
-    if not path.exists():
+    path = _prompt_path(project_root, name)
+    if not path.exists() or not path.is_file():
         raise PromptError(f"Prompt not found: {path}")
     return path.read_text(encoding="utf-8")
 
 
 def list_prompts(project_root: Path) -> list[str]:
-    root = project_root / ".sdai" / "prompts"
+    project_root = project_root.resolve()
+    root = ensure_within_project(
+        project_root, project_root / ".sdai" / "prompts", label="prompt directory"
+    )
     if not root.exists():
         return []
-    return sorted(path.name for path in root.glob("*.md") if path.is_file())
+    result: list[str] = []
+    for path in root.glob("*.md"):
+        safe = ensure_within_project(root, path, label="prompt path")
+        if safe.is_file():
+            result.append(safe.name)
+    return sorted(result)
