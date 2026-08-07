@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -87,12 +87,33 @@ class WorkflowDefinition:
     validation_mode: LifecycleMode
     steps: tuple[WorkflowStep, ...]
 
+    def iter_steps(self) -> Iterator[tuple[WorkflowStep, str | None]]:
+        """Yield every addressable step, including parallel children.
+
+        Parallel groups are currently one level deep and contain only agent children,
+        so a child can be addressed manually by its unique id.
+        """
+        for item in self.steps:
+            yield item, None
+            for child in item.children:
+                yield child, item.id
+
     def step(self, step_id: str) -> WorkflowStep:
         step_id = _safe_name(step_id, "step id")
-        for item in self.steps:
+        for item, _ in self.iter_steps():
             if item.id == step_id:
                 return item
         raise WorkflowConfigError(f"Unknown step '{step_id}' in workflow '{self.name}'")
+
+    def parent_id(self, step_id: str) -> str | None:
+        step_id = _safe_name(step_id, "step id")
+        for item, parent in self.iter_steps():
+            if item.id == step_id:
+                return parent
+        raise WorkflowConfigError(f"Unknown step '{step_id}' in workflow '{self.name}'")
+
+    def top_level_id(self, step_id: str) -> str:
+        return self.parent_id(step_id) or _safe_name(step_id, "step id")
 
 
 @dataclass
@@ -264,15 +285,18 @@ def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
             f"Workflow '{name}' must define validation_mode as light, standard, or critical"
         ) from exc
     steps = tuple(_parse_step(raw, index) for index, raw in enumerate(raw_steps))
-    ids = [step.id for step in steps]
-    if len(ids) != len(set(ids)):
-        raise WorkflowConfigError(f"Workflow '{name}' contains duplicate step ids")
     definition_name = _safe_name(str(data.get("name") or name), "workflow definition name")
-    return WorkflowDefinition(
+    definition = WorkflowDefinition(
         name=definition_name,
         validation_mode=validation_mode,
         steps=steps,
     )
+    all_ids = [step.id for step, _ in definition.iter_steps()]
+    if len(all_ids) != len(set(all_ids)):
+        raise WorkflowConfigError(
+            f"Workflow '{name}' contains duplicate step ids across top-level and parallel child steps"
+        )
+    return definition
 
 
 def _state_path(context: FeatureContext, workflow: str) -> Path:
