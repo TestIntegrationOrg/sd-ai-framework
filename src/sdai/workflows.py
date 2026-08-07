@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -23,6 +24,28 @@ class StepKind(StrEnum):
     AGENT = "agent"
     APPROVAL = "approval"
     VALIDATE = "validate"
+
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _safe_name(value: str, label: str) -> str:
+    value = value.strip()
+    if not _SAFE_NAME.fullmatch(value):
+        raise WorkflowConfigError(
+            f"{label} must use only letters, numbers, dot, underscore, or hyphen"
+        )
+    return value
+
+
+def _safe_relative_path(value: str, label: str) -> str:
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise WorkflowConfigError(f"{label} must stay inside the feature workspace")
+    normalized = candidate.as_posix().lstrip("./")
+    if not normalized:
+        raise WorkflowConfigError(f"{label} cannot be empty")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -45,6 +68,7 @@ class WorkflowDefinition:
     steps: tuple[WorkflowStep, ...]
 
     def step(self, step_id: str) -> WorkflowStep:
+        step_id = _safe_name(step_id, "step id")
         for item in self.steps:
             if item.id == step_id:
                 return item
@@ -80,24 +104,26 @@ class ApprovalRecord:
 def _parse_step(raw: object, index: int) -> WorkflowStep:
     # Backward compatibility with v0.1/v0.2 workflows that used a list of strings.
     if isinstance(raw, str):
-        if raw == "validate":
+        step_id = _safe_name(raw, f"workflow step #{index + 1}")
+        if step_id == "validate":
             return WorkflowStep(id="validate", kind=StepKind.VALIDATE)
-        return WorkflowStep(id=raw, kind=StepKind.DETERMINISTIC, action=raw)
+        return WorkflowStep(id=step_id, kind=StepKind.DETERMINISTIC, action=step_id)
 
     if not isinstance(raw, dict):
         raise WorkflowConfigError(f"Workflow step #{index + 1} must be a string or mapping")
 
-    step_id = str(raw.get("id") or "").strip()
+    raw_step_id = str(raw.get("id") or "").strip()
     kind_value = str(raw.get("type") or raw.get("kind") or "").strip()
-    if not step_id:
+    if not raw_step_id:
         raise WorkflowConfigError(f"Workflow step #{index + 1} is missing id")
+    step_id = _safe_name(raw_step_id, f"workflow step #{index + 1} id")
     try:
         kind = StepKind(kind_value)
     except ValueError as exc:
         raise WorkflowConfigError(f"Step '{step_id}' has unsupported type '{kind_value}'") from exc
 
     if kind == StepKind.DETERMINISTIC:
-        action = str(raw.get("action") or step_id).strip()
+        action = _safe_name(str(raw.get("action") or step_id), f"action for step '{step_id}'")
         return WorkflowStep(id=step_id, kind=kind, action=action, description=raw.get("description"))
 
     if kind == StepKind.AGENT:
@@ -114,24 +140,29 @@ def _parse_step(raw: object, index: int) -> WorkflowStep:
             mode = ExecutionMode(str(raw.get("mode") or ExecutionMode.ADVISORY.value))
         except ValueError as exc:
             raise WorkflowConfigError(f"Agent step '{step_id}' has invalid execution mode") from exc
+        save_as = _safe_relative_path(
+            str(raw["save_as"]) if raw.get("save_as") else f"ai/{step_id}.md",
+            f"save_as for step '{step_id}'",
+        )
         return WorkflowStep(
             id=step_id,
             kind=kind,
             capability=capability,
             profile=str(raw["profile"]) if raw.get("profile") else None,
             mode=mode,
-            save_as=str(raw["save_as"]) if raw.get("save_as") else f"ai/{step_id}.md",
+            save_as=save_as,
             description=str(raw["description"]) if raw.get("description") else None,
         )
 
     if kind == StepKind.APPROVAL:
-        gate = str(raw.get("gate") or step_id).strip()
+        gate = _safe_name(str(raw.get("gate") or step_id), f"approval gate for step '{step_id}'")
         return WorkflowStep(id=step_id, kind=kind, gate=gate, description=raw.get("description"))
 
     return WorkflowStep(id=step_id, kind=StepKind.VALIDATE, description=raw.get("description"))
 
 
 def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
+    name = _safe_name(name, "workflow name")
     path = project_root / ".sdai" / "workflows" / f"{name}.yaml"
     data = load_yaml(path)
     raw_steps = data.get("steps") or []
@@ -147,18 +178,21 @@ def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
     ids = [step.id for step in steps]
     if len(ids) != len(set(ids)):
         raise WorkflowConfigError(f"Workflow '{name}' contains duplicate step ids")
+    definition_name = _safe_name(str(data.get("name") or name), "workflow definition name")
     return WorkflowDefinition(
-        name=str(data.get("name") or name),
+        name=definition_name,
         validation_mode=validation_mode,
         steps=steps,
     )
 
 
 def _state_path(context: FeatureContext, workflow: str) -> Path:
+    workflow = _safe_name(workflow, "workflow name")
     return context.artifact(f".sdai/workflows/{workflow}.yaml")
 
 
 def load_workflow_state(context: FeatureContext, workflow: str) -> WorkflowState:
+    workflow = _safe_name(workflow, "workflow name")
     path = _state_path(context, workflow)
     if not path.exists():
         return WorkflowState(feature_id=context.feature_id, workflow=workflow)
@@ -185,10 +219,12 @@ def save_workflow_state(context: FeatureContext, state: WorkflowState) -> Path:
 
 
 def approval_path(context: FeatureContext, gate: str) -> Path:
+    gate = _safe_name(gate, "approval gate")
     return context.artifact(f"approvals/{gate}.yaml")
 
 
 def grant_approval(context: FeatureContext, gate: str, *, approved_by: str, note: str = "") -> ApprovalRecord:
+    gate = _safe_name(gate, "approval gate")
     if not approved_by.strip():
         raise ValueError("approved_by is required")
     record = ApprovalRecord(
