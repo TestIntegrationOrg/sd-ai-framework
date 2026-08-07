@@ -36,7 +36,7 @@ Optional `profile` pins a provider profile for that step; otherwise capability r
   mode: workspace-write
 ```
 
-Agent outputs are persisted under the feature workspace. Markdown outputs under `ai/` are added to the bounded context supplied to downstream agents.
+Agent outputs are persisted under the feature workspace. Markdown outputs under `ai/` are added to the bounded context supplied to downstream agents. `save_as` is restricted to a relative path inside the feature workspace.
 
 ### `approval`
 
@@ -54,7 +54,7 @@ Grant the approval with:
 sdai approve FEATURE-123 architecture --by "architect@example.com" --note "Reviewed design and risks"
 ```
 
-The next workflow run resumes and skips completed steps.
+The next workflow run resumes and skips completed steps. Approval steps are re-evaluated against the approval artifact on later runs; removing/revoking that artifact makes the workflow pause again.
 
 ### `validate`
 
@@ -79,7 +79,15 @@ sdai step run FEATURE-123 architecture-review --workflow agentic --dry-run
 sdai step run FEATURE-123 architecture-review --workflow agentic
 ```
 
-Manual execution intentionally does **not** require predecessor steps to be marked complete. This supports targeted investigations, architecture experiments, recovery, review, and partial reruns.
+Deterministic and advisory/read-only agent steps can run without predecessor steps being marked complete. This supports targeted investigations, architecture experiments, recovery, review, and partial reruns.
+
+For a manual `workspace-write` agent step, an earlier unsatisfied approval gate requires an explicit `--force` bypass:
+
+```bash
+sdai step run FEATURE-123 implementation --workflow agentic --force
+```
+
+This preserves the ability to run any step at any time while making a write-capable governance bypass explicit.
 
 A completed step is not rerun accidentally:
 
@@ -90,6 +98,8 @@ sdai step run FEATURE-123 architecture-review --workflow agentic
 sdai step run FEATURE-123 architecture-review --workflow agentic --force
 # intentionally reruns it
 ```
+
+When `--force` reruns an already-completed step, SD-AI removes completion markers for that step and all downstream workflow steps. This prevents stale architecture, plans, reviews, tests, or validation results from remaining marked complete after an upstream artifact changes.
 
 For an agent step, manual execution can also override provider routing or execution mode:
 
@@ -172,5 +182,7 @@ Teams can create any `.sdai/workflows/<name>.yaml` file and run it directly:
 ```bash
 sdai run FEATURE-123 --workflow my-enterprise-flow
 ```
+
+Workflow names, step IDs, and approval gate identifiers are validated before they are used in generated paths.
 
 This lets an organization encode separate workflows for API changes, security-sensitive features, data migrations, infrastructure changes, or architecture-critical initiatives without modifying the framework core.
