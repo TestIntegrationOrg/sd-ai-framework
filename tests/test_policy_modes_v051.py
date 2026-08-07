@@ -146,3 +146,71 @@ def test_org_policy_cannot_be_supplied_from_inside_repository(tmp_path: Path):
         load_effective_configuration(
             tmp_path, environ={"SDAI_ORG_POLICY_PATH": str(inside.resolve())}
         )
+
+
+def test_repo_cannot_redirect_organization_policy_environment(tmp_path: Path):
+    _config(tmp_path)
+    config_path = tmp_path / ".sdai" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["policy"]["organization_env"] = "IGNORE_COMPANY_POLICY"
+    write_text(config_path, yaml.safe_dump(config, sort_keys=False))
+    org_path = tmp_path.parent / f"{tmp_path.name}-canonical-org.yaml"
+    write_text(org_path, """version: 1
+providers:
+  allowed_providers: [claude]
+""")
+    effective = load_effective_configuration(
+        tmp_path, environ={"SDAI_ORG_POLICY_PATH": str(org_path.resolve())}
+    )
+    assert effective.operating_mode == OperatingMode.ENTERPRISE
+    with pytest.raises(PolicyError):
+        effective.assert_profile_allowed(
+            _profile("codex", "codex"), Capability.ARCHITECTURE, ExecutionMode.ADVISORY
+        )
+
+
+def test_profile_model_rule_cannot_bypass_provider_model_rule(tmp_path: Path):
+    _config(tmp_path)
+    write_text(
+        tmp_path / ".sdai" / "policy.yaml",
+        """version: 1
+providers:
+  allowed_models:
+    claude-enterprise: [evil-model]
+""",
+    )
+    org_path = tmp_path.parent / f"{tmp_path.name}-models-org.yaml"
+    write_text(
+        org_path,
+        """version: 1
+providers:
+  allowed_models:
+    claude: [approved-model]
+""",
+    )
+    effective = load_effective_configuration(
+        tmp_path, environ={"SDAI_ORG_POLICY_PATH": str(org_path.resolve())}
+    )
+    with pytest.raises(PolicyError, match="not permitted"):
+        effective.assert_profile_allowed(
+            _profile("claude-enterprise", "claude", model="evil-model"),
+            Capability.ARCHITECTURE,
+            ExecutionMode.ADVISORY,
+        )
+
+
+def test_enterprise_environment_allowlist_fails_closed_when_omitted(tmp_path: Path):
+    _config(tmp_path)
+    org_path = tmp_path.parent / f"{tmp_path.name}-env-org.yaml"
+    write_text(org_path, "version: 1\n")
+    effective = load_effective_configuration(
+        tmp_path, environ={"SDAI_ORG_POLICY_PATH": str(org_path.resolve())}
+    )
+    assert effective.environment_allowlist == frozenset()
+
+
+def test_policy_rejects_unknown_keys(tmp_path: Path):
+    _config(tmp_path)
+    write_text(tmp_path / ".sdai" / "policy.yaml", "version: 1\nexecuton: {}\n")
+    with pytest.raises(PolicyError, match="unsupported key"):
+        load_effective_configuration(tmp_path, environ={})
