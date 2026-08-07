@@ -56,6 +56,25 @@ class Orchestrator:
             raise ValueError(f"Unknown workflow step: {step}")
         return AGENTS[step].run(context)
 
+    @staticmethod
+    def _invalidate_from(state, definition: WorkflowDefinition, step_id: str) -> None:
+        ids = [item.id for item in definition.steps]
+        index = ids.index(step_id)
+        invalid = set(ids[index:])
+        state.completed_steps = [value for value in state.completed_steps if value not in invalid]
+        state.last_status = "running"
+        state.paused_at = None
+
+    @staticmethod
+    def _prior_approval_gates(definition: WorkflowDefinition, step_id: str) -> list[str]:
+        gates: list[str] = []
+        for item in definition.steps:
+            if item.id == step_id:
+                break
+            if item.kind == StepKind.APPROVAL:
+                gates.append(item.gate or item.id)
+        return gates
+
     def _execute_workflow_step(
         self,
         feature_id: str,
@@ -70,7 +89,15 @@ class Orchestrator:
         context = self.context(feature_id)
         state = load_workflow_state(context, definition.name)
 
-        if state.is_complete(step.id) and not force:
+        if force and state.is_complete(step.id):
+            # A deliberate rerun invalidates this step and all downstream completion
+            # markers so later workflow execution cannot rely on stale derived artifacts.
+            self._invalidate_from(state, definition, step.id)
+            save_workflow_state(context, state)
+
+        # Approval steps are always re-evaluated against the durable approval artifact.
+        # Deleting/revoking that artifact therefore makes a later run pause again.
+        if state.is_complete(step.id) and not force and step.kind != StepKind.APPROVAL:
             return StepExecution(
                 step_id=step.id,
                 kind=step.kind,
@@ -124,6 +151,9 @@ class Orchestrator:
             if not is_approved(context, gate):
                 state.last_status = "paused"
                 state.paused_at = step.id
+                # If an approval used to be complete but the artifact was revoked,
+                # remove its completion marker before persisting the paused state.
+                state.completed_steps = [value for value in state.completed_steps if value != step.id]
                 save_workflow_state(context, state)
                 return StepExecution(
                     step.id,
@@ -158,12 +188,36 @@ class Orchestrator:
     ) -> StepExecution:
         """Run one named workflow step independently of predecessor state.
 
-        This is intentionally allowed at any time for investigation, repair, review, or
-        targeted reruns. A completed step is protected from accidental rerun unless
-        ``force`` is explicitly selected.
+        Read-only/advisory and deterministic steps can be run out of order directly.
+        A write-capable external-agent step can also be run at any time, but if an
+        earlier approval gate is unsatisfied the caller must use ``force`` to make
+        that governance bypass explicit.
         """
         definition = load_workflow(self.project_root, workflow)
         step = definition.step(step_id)
+        context = self.context(feature_id)
+        state = load_workflow_state(context, definition.name)
+        effective_mode = mode_override or step.mode
+
+        if (
+            step.kind == StepKind.AGENT
+            and effective_mode == ExecutionMode.WORKSPACE_WRITE
+            and not dry_run
+            and not force
+            and not state.is_complete(step.id)
+        ):
+            pending = [
+                gate
+                for gate in self._prior_approval_gates(definition, step.id)
+                if not is_approved(context, gate)
+            ]
+            if pending:
+                gates = ", ".join(pending)
+                raise RuntimeError(
+                    f"Manual workspace-write step '{step.id}' has unsatisfied prior approval(s): {gates}. "
+                    "Grant the approval or use --force to explicitly bypass the gate."
+                )
+
         return self._execute_workflow_step(
             feature_id,
             definition,
