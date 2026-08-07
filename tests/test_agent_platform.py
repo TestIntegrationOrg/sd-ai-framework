@@ -68,7 +68,7 @@ def test_profile_override_allows_different_vendor_for_same_capability(tmp_path: 
     assert invocation.profile.provider == "codex"
 
 
-def test_named_provider_factory_builds_expected_cli_shape(tmp_path: Path):
+def test_named_provider_factory_enforces_advisory_boundaries(tmp_path: Path):
     init_project(tmp_path)
     profiles = load_profiles(tmp_path)
 
@@ -79,12 +79,41 @@ def test_named_provider_factory_builds_expected_cli_shape(tmp_path: Path):
     copilot = ProviderFactory.create(profiles["copilot"], mode=ExecutionMode.ADVISORY, cwd=tmp_path)
     assert copilot.command[0] == "copilot"
     assert "--no-ask-user" in copilot.command
+    assert "--plan" in copilot.command
+    assert "--available-tools=view,grep,glob" in copilot.command
+    assert "--deny-tool=write" in copilot.command
+    assert "--deny-tool=shell" in copilot.command
     assert not any(arg.startswith("--allow-tool=write") for arg in copilot.command)
 
-    copilot_write = ProviderFactory.create(
+    claude = ProviderFactory.create(profiles["claude"], mode=ExecutionMode.ADVISORY, cwd=tmp_path)
+    assert "--permission-mode" in claude.command
+    assert claude.command[claude.command.index("--permission-mode") + 1] == "plan"
+    assert "--no-session-persistence" in claude.command
+
+    gemini = ProviderFactory.create(profiles["gemini"], mode=ExecutionMode.ADVISORY, cwd=tmp_path)
+    assert "--approval-mode" in gemini.command
+    assert gemini.command[gemini.command.index("--approval-mode") + 1] == "plan"
+
+
+def test_named_provider_factory_requires_explicit_workspace_write_mode(tmp_path: Path):
+    init_project(tmp_path)
+    profiles = load_profiles(tmp_path)
+
+    copilot = ProviderFactory.create(
         profiles["copilot"], mode=ExecutionMode.WORKSPACE_WRITE, cwd=tmp_path
     )
-    assert "--allow-tool=write" in copilot_write.command
+    assert "--allow-tool=write" in copilot.command
+    assert "--plan" not in copilot.command
+
+    claude = ProviderFactory.create(
+        profiles["claude"], mode=ExecutionMode.WORKSPACE_WRITE, cwd=tmp_path
+    )
+    assert claude.command[claude.command.index("--permission-mode") + 1] == "acceptEdits"
+
+    gemini = ProviderFactory.create(
+        profiles["gemini"], mode=ExecutionMode.WORKSPACE_WRITE, cwd=tmp_path
+    )
+    assert gemini.command[gemini.command.index("--approval-mode") + 1] == "auto_edit"
 
 
 def test_cli_provider_can_execute_stdin_agent(tmp_path: Path):
