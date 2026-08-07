@@ -65,6 +65,11 @@ def _resolve_semantic_definition(
     capability: Capability,
     requested: str | None,
 ) -> AgentDefinition | None:
+    # Backward compatibility: v0.1-v0.4 projects can install newer workflow
+    # templates without yet having the v0.5 semantic-agent scaffold. If the
+    # semantic-agent directory does not exist at all, use the legacy provider/
+    # capability route. Once the directory exists, explicit agent names are
+    # validated strictly so typos do not silently fall back.
     if requested and not (project_root / ".sdai" / "agents").exists():
         return None
     return resolve_agent_definition(project_root, capability, requested)
@@ -142,7 +147,9 @@ class AgentRuntime:
             "profile": profile.name,
             "provider": profile.provider,
             "operating_mode": policy.operating_mode.value,
-            "policy_sources": ", ".join(policy.sources) or "built-in individual defaults",
+            "policy_sources": ", ".join(
+                dict.fromkeys(source.split(":", 1)[0] for source in policy.sources)
+            ) or "built-in individual defaults",
             "execution_mode": mode.value,
             "execution_policy": execution_policy,
             "agent_name": definition.name if definition else "none (profile/capability routing only)",
@@ -230,21 +237,34 @@ class AgentRuntime:
             if not profile.enabled:
                 results.append((profile.name, profile.provider, False, "profile disabled"))
                 continue
-            supported_capability = next(iter(profile.capabilities), None)
-            if supported_capability is None:
+            if not profile.capabilities:
                 results.append((profile.name, profile.provider, False, "no capabilities configured"))
                 continue
-            try:
-                policy.assert_profile_allowed(
-                    profile, supported_capability, ExecutionMode.ADVISORY
+            allowed = False
+            last_policy_error: Exception | None = None
+            for supported_capability in profile.capabilities:
+                try:
+                    policy.assert_profile_allowed(
+                        profile, supported_capability, ExecutionMode.ADVISORY
+                    )
+                except PolicyError as exc:
+                    last_policy_error = exc
+                    continue
+                allowed = True
+                break
+            if not allowed:
+                results.append(
+                    (profile.name, profile.provider, False, f"policy: {last_policy_error}")
                 )
+                continue
+            try:
                 provider = ProviderFactory.create(
                     profile,
                     mode=ExecutionMode.ADVISORY,
                     cwd=self.project_root,
                     policy=policy,
                 )
-            except (PolicyError, RuntimeError) as exc:
+            except RuntimeError as exc:
                 results.append((profile.name, profile.provider, False, f"policy: {exc}"))
                 continue
             available, detail = provider.availability()
