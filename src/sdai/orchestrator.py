@@ -12,11 +12,7 @@ from sdai.agents import ArchitectAgent, DeveloperAgent, PlannerAgent, Requiremen
 from sdai.agents.base import AgentResult
 from sdai.artifacts import write_text
 from sdai.conditions import evaluate_condition
-from sdai.governance import (
-    check_workflow_governance,
-    governance_enforced,
-    load_governance,
-)
+from sdai.governance import check_workflow_governance, governance_enforced, load_governance
 from sdai.models import FeatureContext, LifecycleMode
 from sdai.quality_gates import QualityGateResult, QualityGateRunner
 from sdai.validation import ValidationFinding, has_blockers, validate
@@ -80,6 +76,37 @@ class Orchestrator:
             raise ValueError(f"Unknown workflow step: {step}")
         return AGENTS[step].run(context)
 
+    def _semantic_enabled(self) -> bool:
+        return (self.project_root / ".sdai" / "agents").exists()
+
+    def _build_agent_invocation(
+        self,
+        feature_id: str,
+        capability,
+        *,
+        profile_name: str | None,
+        agent_name: str | None,
+        mode: ExecutionMode,
+    ):
+        kwargs = {"profile_name": profile_name, "mode": mode}
+        if agent_name and self._semantic_enabled():
+            kwargs["agent_name"] = agent_name
+        return self.agent_runtime.build_invocation(feature_id, capability, **kwargs)
+
+    def _execute_agent(
+        self,
+        feature_id: str,
+        capability,
+        *,
+        profile_name: str | None,
+        agent_name: str | None,
+        mode: ExecutionMode,
+    ):
+        kwargs = {"profile_name": profile_name, "mode": mode}
+        if agent_name and self._semantic_enabled():
+            kwargs["agent_name"] = agent_name
+        return self.agent_runtime.execute(feature_id, capability, **kwargs)
+
     @staticmethod
     def _invalidate_from(state, definition: WorkflowDefinition, step_id: str) -> None:
         top_level_id = definition.top_level_id(step_id)
@@ -129,7 +156,7 @@ class Orchestrator:
         mode: ExecutionMode,
     ) -> Path:
         artifact = context.artifact(step.save_as or f"ai/{step.id}.md")
-        semantic = result.agent_name or step.agent_name or "-"
+        semantic = getattr(result, "agent_name", None) or step.agent_name or "-"
         write_text(
             artifact,
             f"# AI Step — {step.id}\n\n"
@@ -154,7 +181,7 @@ class Orchestrator:
             return StepExecution(child.id, child.kind, "condition-skipped", message=condition.detail, attempts=0)
         if child.capability is None:
             return StepExecution(child.id, child.kind, "failed", message="parallel agent has no capability")
-        invocation = self.agent_runtime.build_invocation(
+        invocation = self._build_agent_invocation(
             feature_id,
             child.capability,
             profile_name=child.profile,
@@ -178,7 +205,7 @@ class Orchestrator:
         try:
             result, attempts = self._retry_call(
                 child.retry,
-                lambda: self.agent_runtime.execute(
+                lambda: self._execute_agent(
                     feature_id,
                     child.capability,
                     profile_name=child.profile,
@@ -196,13 +223,7 @@ class Orchestrator:
                 attempts,
             )
         except Exception as exc:
-            return StepExecution(
-                child.id,
-                child.kind,
-                "failed",
-                message=str(exc),
-                attempts=child.retry.max_attempts,
-            )
+            return StepExecution(child.id, child.kind, "failed", message=str(exc), attempts=child.retry.max_attempts)
 
     def _execute_workflow_step(
         self,
@@ -228,9 +249,7 @@ class Orchestrator:
             if not condition.matched:
                 state.mark_complete(step.id)
                 save_workflow_state(context, state)
-                return StepExecution(
-                    step.id, step.kind, "condition-skipped", message=condition.detail, attempts=0
-                )
+                return StepExecution(step.id, step.kind, "condition-skipped", message=condition.detail, attempts=0)
 
         if state.is_complete(step.id) and not force and step.kind != StepKind.APPROVAL:
             return StepExecution(
@@ -250,9 +269,7 @@ class Orchestrator:
                 state.last_status = "failed"
                 state.paused_at = step.id
                 save_workflow_state(context, state)
-                return StepExecution(
-                    step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts
-                )
+                return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts)
             state.mark_complete(step.id)
             save_workflow_state(context, state)
             return StepExecution(step.id, step.kind, "completed", result, attempts=attempts)
@@ -264,7 +281,7 @@ class Orchestrator:
             semantic_agent = agent_override or step.agent_name
             mode = mode_override or step.mode
             if dry_run:
-                invocation = self.agent_runtime.build_invocation(
+                invocation = self._build_agent_invocation(
                     feature_id,
                     step.capability,
                     profile_name=profile,
@@ -275,7 +292,7 @@ class Orchestrator:
             try:
                 result, attempts = self._retry_call(
                     step.retry,
-                    lambda: self.agent_runtime.execute(
+                    lambda: self._execute_agent(
                         feature_id,
                         step.capability,
                         profile_name=profile,
@@ -287,9 +304,7 @@ class Orchestrator:
                 state.last_status = "failed"
                 state.paused_at = step.id
                 save_workflow_state(context, state)
-                return StepExecution(
-                    step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts
-                )
+                return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts)
             artifact = self._persist_agent_output(context, step, result, mode)
             state.mark_complete(step.id)
             save_workflow_state(context, state)
@@ -309,18 +324,10 @@ class Orchestrator:
                 state.paused_at = step.id
                 state.completed_steps = [value for value in state.completed_steps if value != step.id]
                 save_workflow_state(context, state)
-                return StepExecution(
-                    step.id,
-                    step.kind,
-                    "paused",
-                    message=f"approval '{gate}' is required",
-                    attempts=0,
-                )
+                return StepExecution(step.id, step.kind, "paused", message=f"approval '{gate}' is required", attempts=0)
             state.mark_complete(step.id)
             save_workflow_state(context, state)
-            return StepExecution(
-                step.id, step.kind, "completed", message=f"approval '{gate}' satisfied"
-            )
+            return StepExecution(step.id, step.kind, "completed", message=f"approval '{gate}' satisfied")
 
         if step.kind == StepKind.QUALITY_GATE:
             gate_name = step.quality_gate or step.id
@@ -333,16 +340,12 @@ class Orchestrator:
                         state.last_status = "failed"
                         state.paused_at = step.id
                         save_workflow_state(context, state)
-                        return StepExecution(
-                            step.id, step.kind, "failed", message=str(exc), attempts=attempt
-                        )
+                        return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=attempt)
                 else:
                     if result.passed:
                         state.mark_complete(step.id)
                         save_workflow_state(context, state)
-                        return StepExecution(
-                            step.id, step.kind, "completed", result, attempts=attempt
-                        )
+                        return StepExecution(step.id, step.kind, "completed", result, attempts=attempt)
                     if attempt >= step.retry.max_attempts:
                         state.last_status = "failed"
                         state.paused_at = step.id
@@ -362,10 +365,7 @@ class Orchestrator:
 
         if step.kind == StepKind.PARALLEL:
             if dry_run:
-                executions = [
-                    self._dry_run_parallel_child(feature_id, definition, child)
-                    for child in step.children
-                ]
+                executions = [self._dry_run_parallel_child(feature_id, definition, child) for child in step.children]
                 return StepExecution(step.id, step.kind, "dry-run", executions, attempts=0)
 
             governance = load_governance(self.project_root)
@@ -382,9 +382,7 @@ class Orchestrator:
                     try:
                         executions_by_id[child.id] = future.result()
                     except Exception as exc:
-                        executions_by_id[child.id] = StepExecution(
-                            child.id, child.kind, "failed", message=str(exc)
-                        )
+                        executions_by_id[child.id] = StepExecution(child.id, child.kind, "failed", message=str(exc))
             executions = [executions_by_id[child.id] for child in step.children]
             for child_execution in executions:
                 if child_execution.status in {"completed", "condition-skipped"}:
