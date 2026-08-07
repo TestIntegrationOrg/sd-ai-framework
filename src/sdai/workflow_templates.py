@@ -52,6 +52,7 @@ steps:
     type: agent
     agent: developer
     capability: coding
+    profile: codex
     mode: workspace-write
     save_as: ai/implementation.md
 
@@ -59,6 +60,7 @@ steps:
     type: agent
     agent: code-reviewer
     capability: review
+    profile: copilot
     mode: advisory
     save_as: ai/code-review.md
 
@@ -66,6 +68,7 @@ steps:
     type: agent
     agent: tester
     capability: testing
+    profile: copilot
     mode: workspace-write
     save_as: ai/testing.md
 
@@ -86,6 +89,7 @@ steps:
     type: agent
     agent: requirements-analyst
     capability: requirements
+    profile: claude
     mode: advisory
     retry:
       max_attempts: 2
@@ -104,6 +108,7 @@ steps:
         type: agent
         agent: architect
         capability: architecture
+        profile: claude
         mode: advisory
         retry: 2
         save_as: ai/enterprise-architecture-review.md
@@ -111,6 +116,7 @@ steps:
         type: agent
         agent: security-reviewer
         capability: security
+        profile: copilot
         mode: advisory
         retry: 2
         save_as: ai/enterprise-security-review.md
@@ -131,6 +137,7 @@ steps:
     type: agent
     agent: developer
     capability: coding
+    profile: codex
     mode: workspace-write
     retry:
       max_attempts: 2
@@ -144,12 +151,14 @@ steps:
         type: agent
         agent: code-reviewer
         capability: review
+        profile: copilot
         mode: advisory
         save_as: ai/code-review.md
       - id: test-review
         type: agent
         agent: tester
         capability: testing
+        profile: claude
         mode: advisory
         save_as: ai/test-review.md
 
