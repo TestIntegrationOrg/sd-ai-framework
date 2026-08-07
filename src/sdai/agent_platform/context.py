@@ -18,16 +18,32 @@ _CONTEXT_ARTIFACTS = (
 )
 
 
+def _read_bounded(path: Path, max_chars_per_file: int) -> str:
+    text = path.read_text(encoding="utf-8")
+    if len(text) > max_chars_per_file:
+        text = text[:max_chars_per_file] + "\n\n[truncated by SD-AI]"
+    return text
+
+
 def collect_feature_context(context: FeatureContext, *, max_chars_per_file: int = 30_000) -> str:
     sections: list[str] = []
+    seen: set[Path] = set()
     for relative in _CONTEXT_ARTIFACTS:
         path = context.artifact(relative)
         if not path.exists() or not path.is_file():
             continue
-        text = path.read_text(encoding="utf-8")
-        if len(text) > max_chars_per_file:
-            text = text[:max_chars_per_file] + "\n\n[truncated by SD-AI]"
-        sections.append(f"## Artifact: {relative}\n{text}")
+        sections.append(f"## Artifact: {relative}\n{_read_bounded(path, max_chars_per_file)}")
+        seen.add(path.resolve())
+
+    # v0.3 persists external-agent outputs so later lifecycle agents can consume
+    # architecture reviews, security reviews, code reviews, and test findings.
+    ai_root = context.artifact("ai")
+    if ai_root.exists():
+        for path in sorted(ai_root.rglob("*.md")):
+            if path.resolve() in seen:
+                continue
+            relative = path.relative_to(context.feature_dir).as_posix()
+            sections.append(f"## Artifact: {relative}\n{_read_bounded(path, max_chars_per_file)}")
     return "\n\n".join(sections)
 
 
