@@ -18,6 +18,22 @@ class AgentDefinitionError(RuntimeError):
 
 _AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _SECRET_KEY_PARTS = ("token", "secret", "password", "credential", "api_key", "apikey", "private_key")
+_PRIVILEGE_KEY_PARTS = (
+    "permission",
+    "sandbox",
+    "tool",
+    "mcp",
+    "network",
+    "shell",
+    "command",
+    "approval",
+    "workspace_write",
+    "workspacewrite",
+    "full_auto",
+    "fullauto",
+    "yolo",
+    "hook",
+)
 
 
 @dataclass(frozen=True)
@@ -77,19 +93,19 @@ def _skills(raw: object, name: str) -> tuple[str, ...]:
     return tuple(value.strip() for value in raw)
 
 
-def _contains_secret_key(value: object, *, prefix: str = "") -> str | None:
+def _contains_key_part(value: object, parts: tuple[str, ...], *, prefix: str = "") -> str | None:
     if isinstance(value, dict):
         for key, child in value.items():
             key_text = str(key).lower().replace("-", "_")
             dotted = f"{prefix}.{key}" if prefix else str(key)
-            if any(part in key_text for part in _SECRET_KEY_PARTS):
+            if any(part in key_text for part in parts):
                 return dotted
-            nested = _contains_secret_key(child, prefix=dotted)
+            nested = _contains_key_part(child, parts, prefix=dotted)
             if nested:
                 return nested
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            nested = _contains_secret_key(child, prefix=f"{prefix}[{index}]")
+            nested = _contains_key_part(child, parts, prefix=f"{prefix}[{index}]")
             if nested:
                 return nested
     return None
@@ -127,11 +143,17 @@ def load_agent_definition(project_root: Path, name: str) -> AgentDefinition:
             config = {}
         if not isinstance(config, dict):
             raise AgentDefinitionError(f"Agent '{name}' provider '{provider}' must be a mapping")
-        secret_key = _contains_secret_key(config)
+        secret_key = _contains_key_part(config, _SECRET_KEY_PARTS)
         if secret_key:
             raise AgentDefinitionError(
                 f"Agent '{name}' provider config contains credential-like key '{secret_key}'. "
                 "Keep provider credentials outside agent definition files."
+            )
+        privilege_key = _contains_key_part(config, _PRIVILEGE_KEY_PARTS)
+        if privilege_key:
+            raise AgentDefinitionError(
+                f"Agent '{name}' provider config contains privilege-affecting key '{privilege_key}'. "
+                "Native permissions are derived from execution_mode and cannot be broadened by provider overrides."
             )
         providers[str(provider)] = dict(config)
     return AgentDefinition(
