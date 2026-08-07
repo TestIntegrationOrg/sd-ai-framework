@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -16,6 +18,12 @@ class QualityGateError(RuntimeError):
     pass
 
 
+_SECRET_ENV_NAME = re.compile(
+    r"(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET)",
+    re.IGNORECASE,
+)
+
+
 @dataclass(frozen=True)
 class QualityGateDefinition:
     name: str
@@ -23,6 +31,7 @@ class QualityGateDefinition:
     enabled: bool = True
     timeout_seconds: int = 900
     success_exit_codes: tuple[int, ...] = (0,)
+    max_output_chars: int = 200_000
 
 
 @dataclass(frozen=True)
@@ -54,12 +63,18 @@ def load_quality_gates(project_root: Path) -> dict[str, QualityGateDefinition]:
         success = raw.get("success_exit_codes", [0])
         if not isinstance(success, list) or not success:
             raise QualityGateError(f"Quality gate '{name}' success_exit_codes must be a non-empty list")
+        max_output = int(raw.get("max_output_chars", 200_000))
+        if max_output < 1_000 or max_output > 2_000_000:
+            raise QualityGateError(
+                f"Quality gate '{name}' max_output_chars must be between 1000 and 2000000"
+            )
         result[str(name)] = QualityGateDefinition(
             name=str(name),
             command=tuple(command),
             enabled=bool(raw.get("enabled", True)),
             timeout_seconds=int(raw.get("timeout_seconds", 900)),
             success_exit_codes=tuple(int(v) for v in success),
+            max_output_chars=max_output,
         )
     return result
 
@@ -99,16 +114,21 @@ class QualityGateRunner:
             if output and not output.endswith("\n"):
                 output += "\n"
             output += completed.stderr
+        output = _redact_text(output)
+        if len(output) > gate.max_output_chars:
+            output = output[: gate.max_output_chars] + "\n[truncated by SD-AI]\n"
+
         passed = completed.returncode in gate.success_exit_codes
         artifact: Path | None = None
         if context is not None:
             artifact = context.artifact(f"quality-gates/{name}.md")
+            display_command = _redact_text(_display_command(gate.command))
             write_text(
                 artifact,
                 f"# Quality Gate — {name}\n\n"
                 f"- Passed: {str(passed).lower()}\n"
                 f"- Exit code: {completed.returncode}\n"
-                f"- Command: `{_display_command(gate.command)}`\n\n"
+                f"- Command: `{display_command}`\n\n"
                 f"## Output\n\n```text\n{output.rstrip()}\n```\n",
             )
         return QualityGateResult(
@@ -119,6 +139,15 @@ class QualityGateRunner:
             output=output,
             artifact=artifact,
         )
+
+
+def _redact_text(text: str) -> str:
+    redacted = text
+    for name, value in os.environ.items():
+        if not value or len(value) < 4 or not _SECRET_ENV_NAME.search(name):
+            continue
+        redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
 
 
 def _display_command(command: tuple[str, ...]) -> str:
@@ -135,18 +164,21 @@ def scaffold_quality_gates() -> str:
                 "command": ["pytest", "-q"],
                 "timeout_seconds": 900,
                 "success_exit_codes": [0],
+                "max_output_chars": 200000,
             },
             "trivy": {
                 "enabled": False,
                 "command": ["trivy", "fs", "--exit-code", "1", "--severity", "HIGH,CRITICAL", "."],
                 "timeout_seconds": 1200,
                 "success_exit_codes": [0],
+                "max_output_chars": 200000,
             },
             "sonar": {
                 "enabled": False,
                 "command": ["sonar-scanner", "-Dsonar.qualitygate.wait=true"],
                 "timeout_seconds": 1800,
                 "success_exit_codes": [0],
+                "max_output_chars": 200000,
             },
         },
     }
