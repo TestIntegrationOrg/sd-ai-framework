@@ -34,6 +34,7 @@ class AgentProfile:
     extra_args: tuple[str, ...] = ()
     command: tuple[str, ...] = ()
     workspace_write_args: tuple[str, ...] = ()
+    environment_allowlist: tuple[str, ...] = ()
 
     def supports(self, capability: Capability) -> bool:
         return capability in self.capabilities
