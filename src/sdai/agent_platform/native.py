@@ -11,6 +11,7 @@ from sdai.agent_platform.definitions import AgentDefinition, list_agent_definiti
 from sdai.agent_platform.models import ExecutionMode
 from sdai.agent_platform.skills import list_skills
 from sdai.artifacts import write_text
+from sdai.path_safety import ensure_within_project
 
 
 class NativeSyncError(RuntimeError):
@@ -120,14 +121,16 @@ def render_gemini(definition: AgentDefinition) -> str:
 
 def _target(project_root: Path, provider: str, name: str) -> Path:
     if provider == "codex":
-        return project_root / ".codex" / "agents" / f"{name}.toml"
-    if provider == "copilot":
-        return project_root / ".github" / "agents" / f"{name}.agent.md"
-    if provider == "claude":
-        return project_root / ".claude" / "agents" / f"{name}.md"
-    if provider == "gemini":
-        return project_root / ".gemini" / "agents" / f"{name}.md"
-    raise NativeSyncError(f"Unsupported native provider: {provider}")
+        path = project_root / ".codex" / "agents" / f"{name}.toml"
+    elif provider == "copilot":
+        path = project_root / ".github" / "agents" / f"{name}.agent.md"
+    elif provider == "claude":
+        path = project_root / ".claude" / "agents" / f"{name}.md"
+    elif provider == "gemini":
+        path = project_root / ".gemini" / "agents" / f"{name}.md"
+    else:
+        raise NativeSyncError(f"Unsupported native provider: {provider}")
+    return ensure_within_project(project_root, path, label=f"{provider} native agent path")
 
 
 def _render(provider: str, definition: AgentDefinition) -> str:
@@ -143,7 +146,8 @@ def _managed(content: str) -> bool:
     return _MD_MARKER in content[:500] or _TOML_MARKER in content[:500]
 
 
-def _write_managed(path: Path, content: str, *, force: bool) -> Path | None:
+def _write_managed(project_root: Path, path: Path, content: str, *, force: bool) -> Path | None:
+    ensure_within_project(project_root, path, label="native agent output")
     if path.exists():
         existing = path.read_text(encoding="utf-8")
         if existing.rstrip() == content.rstrip():
@@ -158,15 +162,27 @@ def _write_managed(path: Path, content: str, *, force: bool) -> Path | None:
 def _sync_claude_skills(project_root: Path, *, force: bool) -> list[Path]:
     created: list[Path] = []
     for skill in list_skills(project_root):
-        # Only canonical open-standard skills are mirrored. Legacy .sdai/skills
-        # remain runtime-compatible but are not exported as provider-native folders.
-        canonical_root = project_root / ".agents" / "skills" / skill.name
+        canonical_root = ensure_within_project(
+            project_root,
+            project_root / ".agents" / "skills" / skill.name,
+            label="canonical skill source",
+        )
         if skill.root.resolve() != canonical_root.resolve():
             continue
-        target = project_root / ".claude" / "skills" / skill.name
-        marker = target / _SKILL_MARKER
+        target = ensure_within_project(
+            project_root,
+            project_root / ".claude" / "skills" / skill.name,
+            label="Claude skill output",
+        )
+        marker = ensure_within_project(
+            project_root, target / _SKILL_MARKER, label="Claude skill marker"
+        )
         if target.exists():
             if marker.exists() or force:
+                if target.is_symlink():
+                    raise NativeSyncError(
+                        f"Refusing to replace symlinked Claude skill directory '{target}'"
+                    )
                 shutil.rmtree(target)
             else:
                 raise NativeSyncError(
@@ -198,7 +214,9 @@ def sync_native_agents(
     for value in requested:
         for definition in definitions:
             path = _target(project_root, value, definition.name)
-            result = _write_managed(path, _render(value, definition), force=force)
+            result = _write_managed(
+                project_root, path, _render(value, definition), force=force
+            )
             if result is not None:
                 changed.append(result)
         if value == "claude":
