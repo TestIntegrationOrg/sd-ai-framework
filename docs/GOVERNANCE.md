@@ -1,14 +1,14 @@
 # Governance Model
 
-SD-AI separates **policy** from **execution**.
+SD-AI separates **policy**, **source-of-truth artifacts**, and **agent execution**.
 
-- `.sdai/constitution.yaml` contains durable engineering principles.
-- `.sdai/policies.yaml` classifies changes and approval expectations.
-- `.sdai/workflows/*.yaml` define executable lifecycle steps.
-- `specs/<feature>/` contains feature-specific source-of-truth artifacts.
+- `.sdai/constitution.yaml` — durable engineering principles
+- `.sdai/policies.yaml` — change classification and approval expectations
+- `.sdai/workflows/*.yaml` — deterministic lifecycle steps
+- `.sdai/agents.yaml` — external agent profiles
+- `.sdai/routing.yaml` — capability-to-profile defaults
+- `.sdai/prompts/` — version-controlled prompt templates
+- `.sdai/skills/` — reusable provider-neutral skills
+- `specs/<feature>/` — feature source-of-truth artifacts
 
-## Approval strategy
-
-Light changes should remain lightweight. Standard and critical changes add stronger gates based on impact and risk.
-
-Future versions will persist approval evidence and signatures rather than merely describing the gate.
+External agents do not bypass lifecycle approvals. A provider may propose architecture or modify code when explicitly permitted, but a provider response is not itself an approved specification or ADR.
