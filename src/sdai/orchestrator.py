@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+import time
+from typing import Callable, TypeVar
 
 from sdai.agent_platform import AgentRuntime, ExecutionMode
 from sdai.agent_platform.models import AgentInvocation
 from sdai.agents import ArchitectAgent, DeveloperAgent, PlannerAgent, RequirementAgent, SecurityAgent
 from sdai.agents.base import AgentResult
 from sdai.artifacts import write_text
+from sdai.conditions import evaluate_condition
+from sdai.governance import (
+    check_workflow_governance,
+    governance_enforced,
+    load_governance,
+)
 from sdai.models import FeatureContext, LifecycleMode
+from sdai.quality_gates import QualityGateResult, QualityGateRunner
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflows import (
+    FailureMode,
+    RetryPolicy,
     StepKind,
     WorkflowDefinition,
     WorkflowStep,
@@ -37,12 +49,25 @@ class StepExecution:
     status: str
     result: object | None = None
     message: str = ""
+    attempts: int = 1
+
+
+T = TypeVar("T")
 
 
 class Orchestrator:
-    def __init__(self, project_root: Path, *, agent_runtime: AgentRuntime | None = None):
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        agent_runtime: AgentRuntime | None = None,
+        quality_gate_runner: QualityGateRunner | None = None,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
         self.project_root = project_root.resolve()
         self.agent_runtime = agent_runtime or AgentRuntime(self.project_root)
+        self.quality_gate_runner = quality_gate_runner or QualityGateRunner(self.project_root)
+        self.sleeper = sleeper
 
     def context(self, feature_id: str) -> FeatureContext:
         return FeatureContext(self.project_root, feature_id)
@@ -75,6 +100,91 @@ class Orchestrator:
                 gates.append(item.gate or item.id)
         return gates
 
+    def _retry_call(self, policy: RetryPolicy, operation: Callable[[], T]) -> tuple[T, int]:
+        delay = policy.delay_seconds
+        last_error: Exception | None = None
+        for attempt in range(1, policy.max_attempts + 1):
+            try:
+                return operation(), attempt
+            except Exception as exc:  # retry boundary intentionally covers provider/tool failures
+                last_error = exc
+                if attempt >= policy.max_attempts:
+                    break
+                if delay > 0:
+                    self.sleeper(delay)
+                delay *= policy.backoff_multiplier
+        assert last_error is not None
+        raise last_error
+
+    def _persist_agent_output(
+        self,
+        context: FeatureContext,
+        step: WorkflowStep,
+        result,
+        mode: ExecutionMode,
+    ) -> Path:
+        artifact = context.artifact(step.save_as or f"ai/{step.id}.md")
+        write_text(
+            artifact,
+            f"# AI Step — {step.id}\n\n"
+            f"- Capability: {step.capability.value if step.capability else '-'}\n"
+            f"- Profile: {result.profile}\n"
+            f"- Provider: {result.provider}\n"
+            f"- Mode: {mode.value}\n\n"
+            f"## Output\n\n{result.output}\n",
+        )
+        return artifact
+
+    def _run_parallel_child(
+        self,
+        feature_id: str,
+        definition: WorkflowDefinition,
+        child: WorkflowStep,
+    ) -> StepExecution:
+        context = self.context(feature_id)
+        condition = evaluate_condition(
+            child.condition,
+            context=context,
+            workflow=definition.name,
+        )
+        if not condition.matched:
+            return StepExecution(
+                child.id,
+                child.kind,
+                "condition-skipped",
+                message=condition.detail,
+                attempts=0,
+            )
+        if child.capability is None:
+            return StepExecution(child.id, child.kind, "failed", message="parallel agent has no capability")
+        try:
+            result, attempts = self._retry_call(
+                child.retry,
+                lambda: self.agent_runtime.execute(
+                    feature_id,
+                    child.capability,
+                    profile_name=child.profile,
+                    mode=child.mode,
+                ),
+            )
+            artifact = self._persist_agent_output(context, child, result, child.mode)
+            return StepExecution(
+                child.id,
+                child.kind,
+                "completed",
+                result,
+                str(artifact.relative_to(self.project_root)),
+                attempts,
+            )
+        except Exception as exc:
+            return StepExecution(
+                child.id,
+                child.kind,
+                "failed",
+                message=str(exc),
+                attempts=child.retry.max_attempts,
+            )
+
     def _execute_workflow_step(
         self,
         feature_id: str,
@@ -95,6 +205,24 @@ class Orchestrator:
             self._invalidate_from(state, definition, step.id)
             save_workflow_state(context, state)
 
+        # Manual --force also intentionally bypasses a false condition.
+        if not force:
+            condition = evaluate_condition(
+                step.condition,
+                context=context,
+                workflow=definition.name,
+            )
+            if not condition.matched:
+                state.mark_complete(step.id)
+                save_workflow_state(context, state)
+                return StepExecution(
+                    step.id,
+                    step.kind,
+                    "condition-skipped",
+                    message=condition.detail,
+                    attempts=0,
+                )
+
         # Approval steps are always re-evaluated against the durable approval artifact.
         # Deleting/revoking that artifact therefore makes a later run pause again.
         if state.is_complete(step.id) and not force and step.kind != StepKind.APPROVAL:
@@ -103,15 +231,22 @@ class Orchestrator:
                 kind=step.kind,
                 status="skipped",
                 message="step already completed; use --force to run it again",
+                attempts=0,
             )
 
         if step.kind == StepKind.DETERMINISTIC:
             if step.action not in AGENTS:
                 raise ValueError(f"Unknown deterministic action: {step.action}")
-            result = AGENTS[step.action].run(context)
+            try:
+                result, attempts = self._retry_call(step.retry, lambda: AGENTS[step.action].run(context))
+            except Exception as exc:
+                state.last_status = "failed"
+                state.paused_at = step.id
+                save_workflow_state(context, state)
+                return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts)
             state.mark_complete(step.id)
             save_workflow_state(context, state)
-            return StepExecution(step.id, step.kind, "completed", result)
+            return StepExecution(step.id, step.kind, "completed", result, attempts=attempts)
 
         if step.kind == StepKind.AGENT:
             if step.capability is None:
@@ -125,34 +260,39 @@ class Orchestrator:
                     profile_name=profile,
                     mode=mode,
                 )
-                return StepExecution(step.id, step.kind, "dry-run", invocation)
-            result = self.agent_runtime.execute(
-                feature_id,
-                step.capability,
-                profile_name=profile,
-                mode=mode,
-            )
-            artifact = context.artifact(step.save_as or f"ai/{step.id}.md")
-            write_text(
-                artifact,
-                f"# AI Step — {step.id}\n\n"
-                f"- Capability: {step.capability.value}\n"
-                f"- Profile: {result.profile}\n"
-                f"- Provider: {result.provider}\n"
-                f"- Mode: {mode.value}\n\n"
-                f"## Output\n\n{result.output}\n",
-            )
+                return StepExecution(step.id, step.kind, "dry-run", invocation, attempts=0)
+            try:
+                result, attempts = self._retry_call(
+                    step.retry,
+                    lambda: self.agent_runtime.execute(
+                        feature_id,
+                        step.capability,
+                        profile_name=profile,
+                        mode=mode,
+                    ),
+                )
+            except Exception as exc:
+                state.last_status = "failed"
+                state.paused_at = step.id
+                save_workflow_state(context, state)
+                return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=step.retry.max_attempts)
+            artifact = self._persist_agent_output(context, step, result, mode)
             state.mark_complete(step.id)
             save_workflow_state(context, state)
-            return StepExecution(step.id, step.kind, "completed", result, str(artifact.relative_to(self.project_root)))
+            return StepExecution(
+                step.id,
+                step.kind,
+                "completed",
+                result,
+                str(artifact.relative_to(self.project_root)),
+                attempts,
+            )
 
         if step.kind == StepKind.APPROVAL:
             gate = step.gate or step.id
             if not is_approved(context, gate):
                 state.last_status = "paused"
                 state.paused_at = step.id
-                # If an approval used to be complete but the artifact was revoked,
-                # remove its completion marker before persisting the paused state.
                 state.completed_steps = [value for value in state.completed_steps if value != step.id]
                 save_workflow_state(context, state)
                 return StepExecution(
@@ -160,10 +300,80 @@ class Orchestrator:
                     step.kind,
                     "paused",
                     message=f"approval '{gate}' is required",
+                    attempts=0,
                 )
             state.mark_complete(step.id)
             save_workflow_state(context, state)
             return StepExecution(step.id, step.kind, "completed", message=f"approval '{gate}' satisfied")
+
+        if step.kind == StepKind.QUALITY_GATE:
+            gate_name = step.quality_gate or step.id
+            last_result: QualityGateResult | None = None
+            delay = step.retry.delay_seconds
+            for attempt in range(1, step.retry.max_attempts + 1):
+                try:
+                    last_result = self.quality_gate_runner.run(gate_name, context=context)
+                except Exception as exc:
+                    if attempt >= step.retry.max_attempts:
+                        state.last_status = "failed"
+                        state.paused_at = step.id
+                        save_workflow_state(context, state)
+                        return StepExecution(step.id, step.kind, "failed", message=str(exc), attempts=attempt)
+                else:
+                    if last_result.passed:
+                        state.mark_complete(step.id)
+                        save_workflow_state(context, state)
+                        return StepExecution(step.id, step.kind, "completed", last_result, attempts=attempt)
+                    if attempt >= step.retry.max_attempts:
+                        state.last_status = "failed"
+                        state.paused_at = step.id
+                        save_workflow_state(context, state)
+                        return StepExecution(
+                            step.id,
+                            step.kind,
+                            "failed",
+                            last_result,
+                            f"quality gate '{gate_name}' failed with exit code {last_result.return_code}",
+                            attempt,
+                        )
+                if delay > 0:
+                    self.sleeper(delay)
+                delay *= step.retry.backoff_multiplier
+            raise AssertionError("quality gate retry loop exhausted unexpectedly")
+
+        if step.kind == StepKind.PARALLEL:
+            governance = load_governance(self.project_root)
+            max_policy = int((governance.get("workflow") or {}).get("max_parallelism", 4))
+            workers = max(1, min(len(step.children), max_policy))
+            executions_by_id: dict[str, StepExecution] = {}
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sdai-agent") as pool:
+                future_map = {
+                    pool.submit(self._run_parallel_child, feature_id, definition, child): child
+                    for child in step.children
+                }
+                for future in as_completed(future_map):
+                    child = future_map[future]
+                    try:
+                        executions_by_id[child.id] = future.result()
+                    except Exception as exc:  # defensive: child normally converts failures itself
+                        executions_by_id[child.id] = StepExecution(
+                            child.id, child.kind, "failed", message=str(exc)
+                        )
+            executions = [executions_by_id[child.id] for child in step.children]
+            fatal = any(
+                execution.status == "failed" and child.on_failure == FailureMode.STOP
+                for child, execution in zip(step.children, executions)
+            )
+            if fatal:
+                state.last_status = "failed"
+                state.paused_at = step.id
+                save_workflow_state(context, state)
+                return StepExecution(step.id, step.kind, "failed", executions, "parallel child failed")
+            state.mark_complete(step.id)
+            save_workflow_state(context, state)
+            warning_count = sum(execution.status == "failed" for execution in executions)
+            message = f"{warning_count} non-blocking child failure(s)" if warning_count else ""
+            return StepExecution(step.id, step.kind, "completed", executions, message)
 
         findings = validate(context, definition.validation_mode)
         if has_blockers(findings):
@@ -188,10 +398,10 @@ class Orchestrator:
     ) -> StepExecution:
         """Run one named workflow step independently of predecessor state.
 
-        Read-only/advisory and deterministic steps can be run out of order directly.
-        A write-capable external-agent step can also be run at any time, but if an
-        earlier approval gate is unsatisfied the caller must use ``force`` to make
-        that governance bypass explicit.
+        Read-only/advisory, deterministic, quality-gate, validation, and parallel
+        review steps can be run out of order directly. A write-capable external-agent
+        step can also be run at any time, but if an earlier approval gate is
+        unsatisfied the caller must use ``force`` to make that bypass explicit.
         """
         definition = load_workflow(self.project_root, workflow)
         step = definition.step(step_id)
@@ -231,13 +441,21 @@ class Orchestrator:
     def run_workflow(self, feature_id: str, workflow: str | LifecycleMode) -> list[StepExecution]:
         workflow_name = workflow.value if isinstance(workflow, LifecycleMode) else str(workflow)
         definition = load_workflow(self.project_root, workflow_name)
+        if governance_enforced(self.project_root):
+            findings = check_workflow_governance(self.project_root, definition)
+            blockers = [finding for finding in findings if finding.level == "ERROR"]
+            if blockers:
+                detail = "; ".join(f"{item.code}: {item.message}" for item in blockers)
+                raise RuntimeError(f"Workflow governance rejected '{definition.name}': {detail}")
+
         context = self.context(feature_id)
         executions: list[StepExecution] = []
-
         for step in definition.steps:
             execution = self._execute_workflow_step(feature_id, definition, step)
             executions.append(execution)
-            if execution.status in {"paused", "failed"}:
+            if execution.status == "paused":
+                break
+            if execution.status == "failed" and step.on_failure == FailureMode.STOP:
                 break
 
         state = load_workflow_state(context, definition.name)
