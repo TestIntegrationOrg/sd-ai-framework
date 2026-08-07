@@ -16,7 +16,10 @@ def _relative(root: Path, path: Path) -> str:
 
 
 def _matches(relative: str, patterns: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns)
+    return any(
+        fnmatch.fnmatchcase(relative, pattern) or _static_prefix(pattern) == relative
+        for pattern in patterns
+    )
 
 
 def _static_prefix(pattern: str) -> str:
@@ -47,17 +50,27 @@ class WorkspaceMutationGuard:
 
     def _scan_roots(self) -> list[Path]:
         roots: list[Path] = []
-        seen: set[Path] = set()
+        seen: set[str] = set()
         for pattern in self.protected_patterns:
             prefix = _static_prefix(pattern)
-            root = self.project_root if prefix == "." else self.project_root / prefix
-            safe = ensure_within_project(
-                self.project_root, root, label=f"protected pattern '{pattern}'"
-            )
-            resolved = safe.resolve(strict=False)
-            if resolved not in seen:
-                seen.add(resolved)
-                roots.append(safe)
+            if prefix == ".":
+                root = self.project_root
+            else:
+                # Walk the static prefix lexically. If an agent replaced any ancestor
+                # with a symlink, scan that symlink itself instead of following it.
+                root = self.project_root
+                for part in Path(prefix).parts:
+                    root = root / part
+                    if root.is_symlink():
+                        break
+                else:
+                    root = ensure_within_project(
+                        self.project_root, root, label=f"protected pattern '{pattern}'"
+                    )
+            key = root.relative_to(self.project_root).as_posix() if root != self.project_root else "."
+            if key not in seen:
+                seen.add(key)
+                roots.append(root)
         return roots
 
     def _scan(self, *, allow_symlink: bool) -> dict[str, bytes | None]:
@@ -71,14 +84,14 @@ class WorkspaceMutationGuard:
                 candidates.extend(scan_root.rglob("*"))
             for path in candidates:
                 relative = _relative(self.project_root, path)
-                if relative in visited or not _matches(relative, self.protected_patterns):
+                is_scan_root_symlink = path == scan_root and path.is_symlink()
+                if relative in visited or (
+                    not is_scan_root_symlink and not _matches(relative, self.protected_patterns)
+                ):
                     continue
                 visited.add(relative)
                 if path.is_symlink():
                     if not allow_symlink:
-                        ensure_within_project(
-                            self.project_root, path, label=f"protected path '{relative}'"
-                        )
                         raise ProtectedPathViolation(
                             f"Protected path '{relative}' must not be a symlink"
                         )
@@ -108,13 +121,20 @@ class WorkspaceMutationGuard:
         # Remove new protected files/symlinks first.
         for relative in changed:
             if relative not in self._before:
+                # `relative` came from a project-root traversal. Unlink a newly-created
+                # symlink before resolving it so an agent cannot make containment checks
+                # follow a protected directory outside the repository.
+                raw_path = self.project_root / relative
+                if raw_path.is_symlink():
+                    raw_path.unlink()
+                    continue
                 path = ensure_within_project(
                     self.project_root,
-                    self.project_root / relative,
+                    raw_path,
                     label=f"protected path '{relative}'",
                 )
-                if path.exists() or path.is_symlink():
-                    if path.is_dir() and not path.is_symlink():
+                if path.exists():
+                    if path.is_dir():
                         # Files inside are removed individually; leave an empty directory.
                         continue
                     path.unlink()
@@ -125,13 +145,20 @@ class WorkspaceMutationGuard:
         for relative, content in self._before.items():
             if relative not in changed or content is None:
                 continue
+            raw_path = self.project_root / relative
+            current = self.project_root
+            for part in Path(relative).parts[:-1]:
+                current = current / part
+                if current.is_symlink():
+                    current.unlink()
+                    current.mkdir(parents=True, exist_ok=True)
+            if raw_path.is_symlink():
+                raw_path.unlink()
             path = ensure_within_project(
                 self.project_root,
-                self.project_root / relative,
+                raw_path,
                 label=f"protected path '{relative}'",
             )
-            if path.is_symlink():
-                path.unlink()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
         return changed
