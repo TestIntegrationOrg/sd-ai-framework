@@ -193,6 +193,9 @@ def scaffold_governance() -> str:
     data = {
         "version": 1,
         "workflow": {
+            # Existing projects remain compatible until an organization explicitly
+            # turns policy enforcement on.
+            "enforce": False,
             "max_parallelism": 4,
             "allowed_workspace_write_profiles": ["codex", "copilot", "claude", "gemini"],
             "require_prior_approval_for_workspace_write": True,
@@ -200,8 +203,8 @@ def scaffold_governance() -> str:
         "quality": {
             "required_gates": {
                 "light": [],
-                "standard": ["tests"],
-                "critical": ["tests"],
+                "standard": [],
+                "critical": [],
             }
         },
     }
@@ -211,6 +214,11 @@ def scaffold_governance() -> str:
 def load_governance(project_root: Path) -> dict[str, Any]:
     path = project_root / ".sdai" / "governance.yaml"
     return load_yaml(path) if path.exists() else {}
+
+
+def governance_enforced(project_root: Path) -> bool:
+    data = load_governance(project_root)
+    return bool((data.get("workflow") or {}).get("enforce", False))
 
 
 def check_workflow_governance(project_root: Path, definition: Any) -> list[GovernanceFinding]:
