@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -14,6 +15,18 @@ from sdai.models import FeatureContext, LifecycleMode
 
 class GovernanceError(RuntimeError):
     pass
+
+
+_SAFE_GATE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _safe_gate(value: str) -> str:
+    value = str(value).strip()
+    if not _SAFE_GATE.fullmatch(value):
+        raise GovernanceError(
+            "approval gate must use only letters, numbers, dot, underscore, or hyphen"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -51,19 +64,20 @@ def load_approval_policies(project_root: Path) -> dict[str, ApprovalPolicy]:
         raise GovernanceError("approval-policies.yaml 'gates' must be a mapping")
     result: dict[str, ApprovalPolicy] = {}
     for gate, raw in raw_gates.items():
+        safe_gate = _safe_gate(str(gate))
         if not isinstance(raw, dict):
-            raise GovernanceError(f"Approval policy '{gate}' must be a mapping")
+            raise GovernanceError(f"Approval policy '{safe_gate}' must be a mapping")
         required_roles = raw.get("required_roles") or []
         allowed = raw.get("allowed_approvers") or []
         if not isinstance(required_roles, list) or not all(isinstance(v, str) for v in required_roles):
-            raise GovernanceError(f"Approval policy '{gate}' required_roles must be a string list")
+            raise GovernanceError(f"Approval policy '{safe_gate}' required_roles must be a string list")
         if not isinstance(allowed, list) or not all(isinstance(v, str) for v in allowed):
-            raise GovernanceError(f"Approval policy '{gate}' allowed_approvers must be a string list")
+            raise GovernanceError(f"Approval policy '{safe_gate}' allowed_approvers must be a string list")
         minimum = int(raw.get("min_approvals", 1))
         if minimum < 1:
-            raise GovernanceError(f"Approval policy '{gate}' min_approvals must be >= 1")
-        result[str(gate)] = ApprovalPolicy(
-            gate=str(gate),
+            raise GovernanceError(f"Approval policy '{safe_gate}' min_approvals must be >= 1")
+        result[safe_gate] = ApprovalPolicy(
+            gate=safe_gate,
             min_approvals=minimum,
             required_roles=tuple(value.strip() for value in required_roles if value.strip()),
             allowed_approvers=tuple(value.strip() for value in allowed if value.strip()),
@@ -72,10 +86,12 @@ def load_approval_policies(project_root: Path) -> dict[str, ApprovalPolicy]:
 
 
 def _approval_path(context: FeatureContext, gate: str) -> Path:
+    gate = _safe_gate(gate)
     return context.artifact(f"approvals/{gate}.yaml")
 
 
 def _load_approval_document(context: FeatureContext, gate: str) -> dict[str, Any]:
+    gate = _safe_gate(gate)
     path = _approval_path(context, gate)
     if not path.exists():
         return {"version": 2, "gate": gate, "approvals": []}
@@ -101,6 +117,7 @@ def record_approval(
     role: str = "",
     note: str = "",
 ) -> ApprovalDecision:
+    gate = _safe_gate(gate)
     approved_by = approved_by.strip()
     role = role.strip()
     if not approved_by:
@@ -146,6 +163,7 @@ def evaluate_approval(
     *,
     document: dict[str, Any] | None = None,
 ) -> ApprovalDecision:
+    gate = _safe_gate(gate)
     policy = load_approval_policies(context.project_root).get(gate, ApprovalPolicy(gate=gate))
     document = document if document is not None else _load_approval_document(context, gate)
     approvals = document.get("approvals") or []
