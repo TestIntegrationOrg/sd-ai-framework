@@ -7,10 +7,12 @@ import subprocess
 import sys
 
 from sdai.agent_platform import AgentRuntime, Capability, ExecutionMode
+from sdai.agent_platform.definitions import list_agent_definitions, load_agent_definition
 from sdai.agent_platform.models import AgentInvocation
+from sdai.agent_platform.native import PROVIDERS, sync_native_agents
 from sdai.agent_platform.profiles import load_profiles
 from sdai.agent_platform.prompts import list_prompts, load_prompt
-from sdai.agent_platform.skills import list_skills, load_skill
+from sdai.agent_platform.skills import list_skills, load_skill, validate_skills
 from sdai.agents.base import AgentResult
 from sdai.artifacts import write_text
 from sdai.config import load_yaml
@@ -27,6 +29,7 @@ from sdai.models import FeatureContext, LifecycleMode, validate_feature_id
 from sdai.orchestrator import AGENTS, Orchestrator, StepExecution
 from sdai.quality_gates import QualityGateResult, QualityGateRunner, load_quality_gates
 from sdai.scaffold import init_project, upgrade_project
+from sdai.v05_scaffold import install_v05_scaffold
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflow_templates import install_current_workflows
 from sdai.workflows import grant_approval, load_workflow_state
@@ -43,6 +46,7 @@ def ensure_initialized(root: Path) -> None:
 
 def _install_current(root: Path) -> list[Path]:
     created = install_v04_scaffold(root)
+    created.extend(install_v05_scaffold(root))
     created.extend(install_current_workflows(root))
     return created
 
@@ -129,9 +133,10 @@ def _print_step_execution(execution: StepExecution, root: Path, *, indent: str =
         for child in result:
             _print_step_execution(child, root, indent=indent + "  ")
     elif isinstance(result, AgentInvocation):
+        semantic = result.agent_name or "-"
         print(
-            f"{indent}  profile={result.profile.name} provider={result.profile.provider} "
-            f"capability={result.capability.value} mode={result.mode.value}"
+            f"{indent}  agent={semantic} profile={result.profile.name} "
+            f"provider={result.profile.provider} capability={result.capability.value} mode={result.mode.value}"
         )
         print(f"{indent}\n--- SYSTEM ---\n")
         print(result.system)
@@ -142,7 +147,8 @@ def _print_step_execution(execution: StepExecution, root: Path, *, indent: str =
         if result.artifact:
             print(f"{indent}  + {result.artifact.relative_to(root)}")
     elif result is not None and hasattr(result, "profile") and hasattr(result, "provider"):
-        print(f"{indent}  profile={result.profile} provider={result.provider}")
+        semantic = getattr(result, "agent_name", None) or "-"
+        print(f"{indent}  agent={semantic} profile={result.profile} provider={result.provider}")
 
 
 def cmd_agent(args: argparse.Namespace) -> int:
@@ -184,7 +190,9 @@ def _step_detail(step) -> str:
     if step.action:
         return step.action
     if step.capability:
-        return step.capability.value
+        semantic = f"agent={step.agent_name} " if step.agent_name else ""
+        profile = f"profile={step.profile} " if step.profile else ""
+        return f"{semantic}{profile}capability={step.capability.value}".strip()
     if step.quality_gate:
         return step.quality_gate
     if step.gate:
@@ -203,7 +211,7 @@ def cmd_step(args: argparse.Namespace) -> int:
 
     if args.step_action == "list":
         state = load_workflow_state(context, definition.name)
-        for step in definition.steps:
+        for step, parent in definition.iter_steps():
             if state.is_complete(step.id):
                 status = "completed"
             elif state.paused_at == step.id:
@@ -211,9 +219,10 @@ def cmd_step(args: argparse.Namespace) -> int:
             else:
                 status = "pending"
             condition = "" if step.condition == "always" else f" if={step.condition}"
+            parent_text = f" parent={parent}" if parent else ""
             print(
                 f"{step.id:26} type={step.kind.value:13} status={status:9} "
-                f"{_step_detail(step)}{condition}"
+                f"{_step_detail(step)}{condition}{parent_text}"
             )
         return 0
 
@@ -226,6 +235,7 @@ def cmd_step(args: argparse.Namespace) -> int:
             force=args.force,
             dry_run=args.dry_run,
             profile_override=args.profile,
+            agent_override=args.agent,
             mode_override=mode_override,
         )
         _print_step_execution(execution, root)
@@ -270,6 +280,26 @@ def cmd_agents(args: argparse.Namespace) -> int:
             print(f"{profile.name:14} provider={profile.provider:8} {state:8} capabilities={capabilities}")
         return 0
 
+    if args.agent_action == "definitions":
+        for definition in list_agent_definitions(root):
+            capabilities = ",".join(value.value for value in definition.capabilities)
+            skills = ",".join(definition.skills) or "-"
+            print(
+                f"{definition.name:24} profile={definition.profile or '-':10} "
+                f"mode={definition.execution_mode.value:15} capabilities={capabilities} skills={skills}"
+            )
+        return 0
+
+    if args.agent_action == "show":
+        definition = load_agent_definition(root, args.name)
+        print(f"# {definition.name}\n\n{definition.description}\n")
+        print(f"Capabilities: {', '.join(value.value for value in definition.capabilities)}")
+        print(f"Default profile: {definition.profile or '-'}")
+        print(f"Execution mode: {definition.execution_mode.value}")
+        print(f"Skills: {', '.join(definition.skills) or '-'}\n")
+        print(definition.instructions)
+        return 0
+
     if args.agent_action == "doctor":
         exit_code = 0
         for name, provider, available, detail in runtime.doctor():
@@ -279,6 +309,16 @@ def cmd_agents(args: argparse.Namespace) -> int:
                 exit_code = 1
         return exit_code
 
+    if args.agent_action == "sync":
+        changed = sync_native_agents(root, provider=args.provider, force=args.force)
+        if not changed:
+            print("Native agent files already synchronized")
+            return 0
+        print(f"Synchronized {len(changed)} native agent/skill path(s)")
+        for path in changed:
+            print(f"  + {path.relative_to(root)}")
+        return 0
+
     if args.agent_action == "run":
         capability = Capability(args.capability)
         mode = ExecutionMode(args.mode)
@@ -287,11 +327,12 @@ def cmd_agents(args: argparse.Namespace) -> int:
                 args.feature_id,
                 capability,
                 profile_name=args.profile,
+                agent_name=args.agent,
                 mode=mode,
             )
             print(
-                f"profile={invocation.profile.name} provider={invocation.profile.provider} "
-                f"capability={capability.value} mode={mode.value}"
+                f"agent={invocation.agent_name or '-'} profile={invocation.profile.name} "
+                f"provider={invocation.profile.provider} capability={capability.value} mode={mode.value}"
             )
             print("\n--- SYSTEM ---\n")
             print(invocation.system)
@@ -303,11 +344,12 @@ def cmd_agents(args: argparse.Namespace) -> int:
             args.feature_id,
             capability,
             profile_name=args.profile,
+            agent_name=args.agent,
             mode=mode,
         )
         print(
-            f"[{result.profile}/{result.provider}] capability={result.capability.value} "
-            f"skills={','.join(result.skills) or '-'}"
+            f"[{result.agent_name or '-'}/{result.profile}/{result.provider}] "
+            f"capability={result.capability.value} skills={','.join(result.skills) or '-'}"
         )
         print(result.output)
         return 0
@@ -401,8 +443,6 @@ def _feature_title(feature_dir: Path, feature_id: str) -> str:
 def cmd_pr(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
-    if args.pr_action != "create":
-        raise ValueError(f"Unknown PR action: {args.pr_action}")
     context = FeatureContext(root, args.feature_id)
     feature_dir = context.feature_dir
     if not context.artifact("00-intake.md").exists():
@@ -427,9 +467,6 @@ def cmd_pr(args: argparse.Namespace) -> int:
 def cmd_integrations(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
-    if args.integration_action != "doctor":
-        raise ValueError(f"Unknown integrations action: {args.integration_action}")
-
     config_path = root / ".sdai" / "integrations.yaml"
     config = load_yaml(config_path) if config_path.exists() else {}
     exit_code = 0
@@ -459,7 +496,6 @@ def cmd_integrations(args: argparse.Namespace) -> int:
             exit_code = 1
     else:
         print("DISABLED jira    disabled by .sdai/integrations.yaml")
-
     return exit_code
 
 
@@ -468,12 +504,17 @@ def cmd_skills(args: argparse.Namespace) -> int:
     ensure_initialized(root)
     if args.skill_action == "list":
         for skill in list_skills(root):
-            capabilities = ",".join(value.value for value in skill.capabilities)
-            print(f"{skill.name:20} capabilities={capabilities}\n  {skill.description}")
+            capabilities = ",".join(value.value for value in skill.capabilities) or "all"
+            source = ".agents/skills" if ".agents" in skill.root.parts else ".sdai/skills"
+            print(f"{skill.name:24} source={source:14} capabilities={capabilities}\n  {skill.description}")
         return 0
     if args.skill_action == "show":
         skill = load_skill(root, args.name)
         print(f"# {skill.name}\n\n{skill.description}\n\n{skill.instructions}")
+        return 0
+    if args.skill_action == "validate":
+        names = validate_skills(root)
+        print(f"Validated {len(names)} skill(s): {', '.join(names) or '-'}")
         return 0
     raise ValueError(f"Unknown skills action: {args.skill_action}")
 
@@ -540,40 +581,49 @@ def parser() -> argparse.ArgumentParser:
     step_run.add_argument("feature_id")
     step_run.add_argument("step_id")
     step_run.add_argument("--workflow", default="standard")
-    step_run.add_argument("--force", action="store_true", help="Explicitly rerun/bypass condition or prior write gate")
+    step_run.add_argument("--force", action="store_true")
     step_run.add_argument("--dry-run", action="store_true")
-    step_run.add_argument("--profile")
+    step_run.add_argument("--agent", help="Override the semantic .agent role")
+    step_run.add_argument("--profile", help="Override the provider profile")
     step_run.add_argument("--mode", choices=[m.value for m in ExecutionMode])
     step_run.add_argument("--path")
     step_run.set_defaults(func=cmd_step)
 
-    approve = sub.add_parser("approve", help="Record an approval against a policy-backed gate")
+    approve = sub.add_parser("approve")
     approve.add_argument("feature_id")
     approve.add_argument("gate")
     approve.add_argument("--by", required=True)
-    approve.add_argument("--role", help="Approver role when required by approval-policies.yaml")
+    approve.add_argument("--role")
     approve.add_argument("--note")
     approve.add_argument("--path")
     approve.set_defaults(func=cmd_approve)
 
-    agents = sub.add_parser("agents")
+    agents = sub.add_parser("agents", help="Profiles, semantic agents, native sync, and execution")
     agents_sub = agents.add_subparsers(dest="agent_action", required=True)
-    agents_list = agents_sub.add_parser("list")
-    agents_list.add_argument("--path")
-    agents_list.set_defaults(func=cmd_agents)
-    agents_doctor = agents_sub.add_parser("doctor")
-    agents_doctor.add_argument("--path")
-    agents_doctor.set_defaults(func=cmd_agents)
+    for action in ("list", "definitions", "doctor"):
+        item = agents_sub.add_parser(action)
+        item.add_argument("--path")
+        item.set_defaults(func=cmd_agents)
+    agents_show = agents_sub.add_parser("show")
+    agents_show.add_argument("name")
+    agents_show.add_argument("--path")
+    agents_show.set_defaults(func=cmd_agents)
+    agents_sync = agents_sub.add_parser("sync")
+    agents_sync.add_argument("--provider", choices=["all", *PROVIDERS], default="all")
+    agents_sync.add_argument("--force", action="store_true")
+    agents_sync.add_argument("--path")
+    agents_sync.set_defaults(func=cmd_agents)
     agents_run = agents_sub.add_parser("run")
     agents_run.add_argument("capability", choices=[c.value for c in Capability])
     agents_run.add_argument("feature_id")
-    agents_run.add_argument("--profile")
+    agents_run.add_argument("--agent", help="Semantic agent definition name")
+    agents_run.add_argument("--profile", help="Provider profile override")
     agents_run.add_argument("--mode", choices=[m.value for m in ExecutionMode], default="advisory")
     agents_run.add_argument("--dry-run", action="store_true")
     agents_run.add_argument("--path")
     agents_run.set_defaults(func=cmd_agents)
 
-    gates = sub.add_parser("gates", help="List or manually execute command-based quality gates")
+    gates = sub.add_parser("gates")
     gates_sub = gates.add_subparsers(dest="gate_action", required=True)
     gates_list = gates_sub.add_parser("list")
     gates_list.add_argument("--path")
@@ -585,14 +635,14 @@ def parser() -> argparse.ArgumentParser:
     gates_run.add_argument("--path")
     gates_run.set_defaults(func=cmd_gates)
 
-    policy = sub.add_parser("policy", help="Evaluate workflow policy-as-code")
+    policy = sub.add_parser("policy")
     policy_sub = policy.add_subparsers(dest="policy_action", required=True)
     policy_check = policy_sub.add_parser("check")
     policy_check.add_argument("--workflow", default="enterprise")
     policy_check.add_argument("--path")
     policy_check.set_defaults(func=cmd_policy)
 
-    intake = sub.add_parser("intake", help="Create feature intake from external work systems")
+    intake = sub.add_parser("intake")
     intake_sub = intake.add_subparsers(dest="intake_source", required=True)
     intake_github = intake_sub.add_parser("github")
     intake_github.add_argument("feature_id")
@@ -608,7 +658,7 @@ def parser() -> argparse.ArgumentParser:
     intake_jira.add_argument("--path")
     intake_jira.set_defaults(func=cmd_intake)
 
-    pr = sub.add_parser("pr", help="GitHub pull-request automation")
+    pr = sub.add_parser("pr")
     pr_sub = pr.add_subparsers(dest="pr_action", required=True)
     pr_create = pr_sub.add_parser("create")
     pr_create.add_argument("feature_id")
@@ -616,17 +666,17 @@ def parser() -> argparse.ArgumentParser:
     pr_create.add_argument("--base", default="main")
     pr_create.add_argument("--head")
     pr_create.add_argument("--title")
-    pr_create.add_argument("--ready", action="store_true", help="Create ready-for-review instead of draft")
+    pr_create.add_argument("--ready", action="store_true")
     pr_create.add_argument("--path")
     pr_create.set_defaults(func=cmd_pr)
 
-    integrations = sub.add_parser("integrations", help="Inspect external integration readiness")
+    integrations = sub.add_parser("integrations")
     integrations_sub = integrations.add_subparsers(dest="integration_action", required=True)
     integrations_doctor = integrations_sub.add_parser("doctor")
     integrations_doctor.add_argument("--path")
     integrations_doctor.set_defaults(func=cmd_integrations)
 
-    skills = sub.add_parser("skills")
+    skills = sub.add_parser("skills", help="List, inspect, or validate shared skills")
     skills_sub = skills.add_subparsers(dest="skill_action", required=True)
     skills_list = skills_sub.add_parser("list")
     skills_list.add_argument("--path")
@@ -635,6 +685,9 @@ def parser() -> argparse.ArgumentParser:
     skills_show.add_argument("name")
     skills_show.add_argument("--path")
     skills_show.set_defaults(func=cmd_skills)
+    skills_validate = skills_sub.add_parser("validate")
+    skills_validate.add_argument("--path")
+    skills_validate.set_defaults(func=cmd_skills)
 
     prompts = sub.add_parser("prompts")
     prompts_sub = prompts.add_subparsers(dest="prompt_action", required=True)

@@ -1,0 +1,10 @@
+version: 1
+routes:
+  requirements: requirements-analyst
+  architecture: architect
+  planning: planner
+  coding: developer
+  review: code-reviewer
+  testing: tester
+  security: security-reviewer
+  documentation: documentation-writer

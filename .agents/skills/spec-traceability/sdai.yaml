@@ -1,0 +1,2 @@
+version: 1
+capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]

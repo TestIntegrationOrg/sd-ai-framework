@@ -5,7 +5,7 @@ from pathlib import Path
 from sdai.artifacts import write_text
 
 
-AGENTIC_WORKFLOW = """version: 3
+AGENTIC_WORKFLOW = """version: 5
 name: agentic
 validation_mode: critical
 steps:
@@ -16,6 +16,7 @@ steps:
 
   - id: requirements-review
     type: agent
+    agent: requirements-analyst
     capability: requirements
     mode: advisory
     save_as: ai/requirements-review.md
@@ -26,12 +27,14 @@ steps:
 
   - id: architecture-review
     type: agent
+    agent: architect
     capability: architecture
     mode: advisory
     save_as: ai/architecture-review.md
 
   - id: security-review
     type: agent
+    agent: security-reviewer
     capability: security
     mode: advisory
     save_as: ai/security-review.md
@@ -47,6 +50,7 @@ steps:
 
   - id: implementation
     type: agent
+    agent: developer
     capability: coding
     profile: codex
     mode: workspace-write
@@ -54,6 +58,7 @@ steps:
 
   - id: code-review
     type: agent
+    agent: code-reviewer
     capability: review
     profile: copilot
     mode: advisory
@@ -61,6 +66,7 @@ steps:
 
   - id: testing
     type: agent
+    agent: tester
     capability: testing
     profile: copilot
     mode: workspace-write
@@ -71,7 +77,7 @@ steps:
 """
 
 
-ENTERPRISE_WORKFLOW = """version: 4
+ENTERPRISE_WORKFLOW = """version: 5
 name: enterprise
 validation_mode: critical
 steps:
@@ -81,6 +87,7 @@ steps:
 
   - id: requirements-review
     type: agent
+    agent: requirements-analyst
     capability: requirements
     profile: claude
     mode: advisory
@@ -99,6 +106,7 @@ steps:
     steps:
       - id: architecture-review
         type: agent
+        agent: architect
         capability: architecture
         profile: claude
         mode: advisory
@@ -106,6 +114,7 @@ steps:
         save_as: ai/enterprise-architecture-review.md
       - id: security-review
         type: agent
+        agent: security-reviewer
         capability: security
         profile: copilot
         mode: advisory
@@ -126,6 +135,7 @@ steps:
 
   - id: implementation
     type: agent
+    agent: developer
     capability: coding
     profile: codex
     mode: workspace-write
@@ -139,12 +149,14 @@ steps:
     steps:
       - id: code-review
         type: agent
+        agent: code-reviewer
         capability: review
         profile: copilot
         mode: advisory
         save_as: ai/code-review.md
       - id: test-review
         type: agent
+        agent: tester
         capability: testing
         profile: claude
         mode: advisory
@@ -175,7 +187,6 @@ steps:
 
 
 def install_v03_workflows(root: Path) -> list[Path]:
-    """Install v0.3 workflow examples without overwriting team customizations."""
     created: list[Path] = []
     path = root / ".sdai" / "workflows" / "agentic.yaml"
     if not path.exists():
@@ -184,7 +195,6 @@ def install_v03_workflows(root: Path) -> list[Path]:
 
 
 def install_v04_workflows(root: Path) -> list[Path]:
-    """Install v0.4 enterprise workflow examples without overwriting custom files."""
     created: list[Path] = []
     path = root / ".sdai" / "workflows" / "enterprise.yaml"
     if not path.exists():
