@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -12,13 +13,66 @@ class ProviderExecutionError(RuntimeError):
     pass
 
 
+_BASE_ENVIRONMENT = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "COMSPEC",
+    "SYSTEMROOT",
+    "WINDIR",
+    "PATHEXT",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+)
+
+_PROVIDER_AUTH_ENVIRONMENT: dict[str, tuple[str, ...]] = {
+    "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"),
+    "copilot": ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"),
+    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"),
+    "gemini": (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+    ),
+}
+
+
+def build_provider_environment(
+    provider: str,
+    *,
+    profile_allowlist: tuple[str, ...] = (),
+    policy_allowlist: frozenset[str] | None = None,
+) -> dict[str, str]:
+    """Build a minimal subprocess environment instead of inheriting all employee secrets."""
+    base = set(_BASE_ENVIRONMENT)
+    requested = set(_PROVIDER_AUTH_ENVIRONMENT.get(provider, ())) | set(profile_allowlist)
+    if policy_allowlist is not None:
+        requested.intersection_update(policy_allowlist)
+    names = base | requested
+    return {name: value for name in names if (value := os.environ.get(name)) is not None}
+
+
 @dataclass
 class CliProvider(Provider):
     """Safe subprocess adapter for an external agent CLI.
 
     No shell is used. Arguments are passed directly to subprocess. A command may use
     ``{prompt}`` as an argument placeholder; otherwise the combined prompt is sent on
-    stdin and stdin is closed when the child process starts.
+    stdin. If no explicit environment is supplied, only the minimal process environment
+    is inherited rather than the caller's full secret-bearing environment.
     """
 
     command: list[str]
@@ -42,6 +96,9 @@ class CliProvider(Provider):
         payload = self._combined_prompt(system, prompt)
         command, stdin_payload = self._build_command(payload)
         self._last_command = command
+        environment = self.environment
+        if environment is None:
+            environment = build_provider_environment(self.provider_name)
         result = subprocess.run(
             command,
             cwd=self.cwd,
@@ -50,7 +107,7 @@ class CliProvider(Provider):
             text=True,
             timeout=self.timeout_seconds,
             check=False,
-            env=self.environment,
+            env=environment,
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()
