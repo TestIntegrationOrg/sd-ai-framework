@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
 
 from sdai.agent_platform.models import Capability, Skill
 from sdai.config import load_yaml
+from sdai.path_safety import ensure_within_project
 
 
 class SkillError(RuntimeError):
     pass
+
+
+_SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _validate_name(name: str) -> str:
+    name = name.strip()
+    if not _SAFE_SKILL_NAME.fullmatch(name):
+        raise SkillError("skill name must use only letters, numbers, dot, underscore, or hyphen")
+    return name
 
 
 def _capabilities(values: object) -> tuple[Capability, ...]:
@@ -40,16 +52,21 @@ def _frontmatter(text: str, path: Path) -> tuple[dict[str, Any], str]:
 
 
 def _canonical_root(project_root: Path, name: str) -> Path:
-    return project_root / ".agents" / "skills" / name
+    name = _validate_name(name)
+    root = project_root.resolve() / ".agents" / "skills" / name
+    return ensure_within_project(project_root, root, label="canonical skill path")
 
 
 def _legacy_root(project_root: Path, name: str) -> Path:
-    return project_root / ".sdai" / "skills" / name
+    name = _validate_name(name)
+    root = project_root.resolve() / ".sdai" / "skills" / name
+    return ensure_within_project(project_root, root, label="legacy skill path")
 
 
 def _load_canonical(project_root: Path, name: str) -> Skill:
+    name = _validate_name(name)
     root = _canonical_root(project_root, name)
-    path = root / "SKILL.md"
+    path = ensure_within_project(project_root, root / "SKILL.md", label="canonical SKILL.md")
     if not path.exists():
         raise SkillError(f"Canonical skill '{name}' must contain SKILL.md")
     metadata, instructions = _frontmatter(path.read_text(encoding="utf-8"), path)
@@ -63,7 +80,7 @@ def _load_canonical(project_root: Path, name: str) -> Skill:
     description = str(metadata.get("description") or "").strip()
     if not description:
         raise SkillError(f"Canonical skill '{name}' requires frontmatter description")
-    sidecar = root / "sdai.yaml"
+    sidecar = ensure_within_project(project_root, root / "sdai.yaml", label="skill sidecar")
     metadata_sdai = load_yaml(sidecar) if sidecar.exists() else {}
     return Skill(
         name=name,
@@ -75,9 +92,10 @@ def _load_canonical(project_root: Path, name: str) -> Skill:
 
 
 def _load_legacy(project_root: Path, name: str) -> Skill:
+    name = _validate_name(name)
     root = _legacy_root(project_root, name)
-    manifest_path = root / "skill.yaml"
-    instructions_path = root / "SKILL.md"
+    manifest_path = ensure_within_project(project_root, root / "skill.yaml", label="legacy skill manifest")
+    instructions_path = ensure_within_project(project_root, root / "SKILL.md", label="legacy SKILL.md")
     if not manifest_path.exists() or not instructions_path.exists():
         raise SkillError(f"Skill '{name}' must contain skill.yaml and SKILL.md")
     manifest = load_yaml(manifest_path)
@@ -94,25 +112,30 @@ def _load_legacy(project_root: Path, name: str) -> Skill:
 
 
 def load_skill(project_root: Path, name: str) -> Skill:
-    # v0.5 canonical open-standard skills win over the legacy .sdai/skills format.
+    name = _validate_name(name)
     if (_canonical_root(project_root, name) / "SKILL.md").exists():
         return _load_canonical(project_root, name)
     return _load_legacy(project_root, name)
 
 
 def list_skills(project_root: Path) -> list[Skill]:
+    project_root = project_root.resolve()
     names: set[str] = set()
-    canonical = project_root / ".agents" / "skills"
+    canonical = ensure_within_project(
+        project_root, project_root / ".agents" / "skills", label="canonical skills directory"
+    )
     if canonical.exists():
         names.update(
-            path.name
+            _validate_name(path.name)
             for path in canonical.iterdir()
             if path.is_dir() and (path / "SKILL.md").exists()
         )
-    legacy = project_root / ".sdai" / "skills"
+    legacy = ensure_within_project(
+        project_root, project_root / ".sdai" / "skills", label="legacy skills directory"
+    )
     if legacy.exists():
         names.update(
-            path.name
+            _validate_name(path.name)
             for path in legacy.iterdir()
             if path.is_dir() and (path / "skill.yaml").exists()
         )
@@ -130,5 +153,4 @@ def compose_skills(project_root: Path, names: tuple[str, ...], capability: Capab
 
 
 def validate_skills(project_root: Path) -> list[str]:
-    """Validate all discovered skills and return their names."""
     return [skill.name for skill in list_skills(project_root)]
