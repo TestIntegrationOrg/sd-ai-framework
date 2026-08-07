@@ -1,0 +1,23 @@
+version: 1
+providers:
+  allowed_profiles: [claude-enterprise, codex-enterprise, copilot-enterprise]
+  allowed_providers: [claude, codex, copilot]
+  allowed_models:
+    claude: [approved-architecture-model]
+    codex: [approved-coding-model]
+    copilot: [approved-review-model]
+capabilities:
+  architecture:
+    allowed_profiles: [claude-enterprise, codex-enterprise]
+  coding:
+    allowed_profiles: [codex-enterprise, copilot-enterprise]
+execution:
+  workspace_write: true
+  require_prior_approval_for_workspace_write: true
+  allow_force_approval_bypass: false
+  protected_paths:
+    - .github/workflows/**
+skills:
+  required:
+    architecture: [architecture-review]
+    coding: [secure-coding]
