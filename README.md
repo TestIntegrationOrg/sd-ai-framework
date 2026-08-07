@@ -81,7 +81,7 @@ Workflow state is persisted under the feature workspace. If an approval is missi
 
 ### Manual step execution
 
-Every named step can be run independently, even when earlier workflow steps are incomplete:
+Every named step can be targeted independently:
 
 ```bash
 sdai step list SCRIPT-123 --workflow agentic
@@ -90,13 +90,15 @@ sdai step run SCRIPT-123 architecture-review --workflow agentic
 sdai step run SCRIPT-123 implementation --workflow agentic --profile codex
 ```
 
-Completed steps are protected from accidental reruns. Use `--force` when the rerun is intentional:
+Deterministic and advisory/read-only agent steps may run even when predecessor steps are incomplete. A manual **workspace-write** agent step with an unsatisfied earlier approval requires `--force`, making the governance bypass explicit:
 
 ```bash
-sdai step run SCRIPT-123 architecture-review --workflow agentic --force
+sdai step run SCRIPT-123 implementation --workflow agentic --force
 ```
 
-This manual path does not enforce predecessor ordering. It is intended for targeted investigation, repair, review, experimentation, and controlled reruns.
+Completed steps are protected from accidental reruns. When `--force` reruns a completed step, SD-AI invalidates that step and downstream completion markers so later workflow execution cannot rely on stale derived artifacts.
+
+This manual path is intended for targeted investigation, repair, review, experimentation, recovery, and controlled reruns.
 
 ### Human approval and resume
 
@@ -110,7 +112,7 @@ sdai run SCRIPT-123 --workflow agentic
 # workflow resumes after the approval gate
 ```
 
-Approval records are persisted under `specs/<feature>/approvals/`.
+Approval records are persisted under `specs/<feature>/approvals/`. Approval steps are re-evaluated against the durable artifact on later runs, so removing/revoking the artifact makes the workflow pause again.
 
 ## Multi-agent architecture
 
@@ -236,8 +238,6 @@ sdai prompts show architect.md
 ```
 
 ## Lifecycle modes and workflows
-
-The built-in deterministic workflows remain available:
 
 | Workflow | Typical use | Flow |
 |---|---|---|
