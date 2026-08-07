@@ -9,6 +9,7 @@ import yaml
 
 from sdai.agent_platform.models import Capability, ExecutionMode
 from sdai.config import load_yaml
+from sdai.path_safety import ensure_within_project
 
 
 class AgentDefinitionError(RuntimeError):
@@ -95,8 +96,10 @@ def _contains_secret_key(value: object, *, prefix: str = "") -> str | None:
 
 
 def load_agent_definition(project_root: Path, name: str) -> AgentDefinition:
+    project_root = project_root.resolve()
     name = _validate_name(name)
     path = project_root / ".sdai" / "agents" / f"{name}.agent.md"
+    ensure_within_project(project_root, path, label="agent definition path")
     if not path.exists():
         raise AgentDefinitionError(f"Unknown semantic agent '{name}'")
     metadata, instructions = _frontmatter(path.read_text(encoding="utf-8"), path)
@@ -145,7 +148,9 @@ def load_agent_definition(project_root: Path, name: str) -> AgentDefinition:
 
 
 def list_agent_definitions(project_root: Path) -> list[AgentDefinition]:
+    project_root = project_root.resolve()
     root = project_root / ".sdai" / "agents"
+    ensure_within_project(project_root, root, label="agent definitions directory")
     if not root.exists():
         return []
     definitions: list[AgentDefinition] = []
@@ -156,7 +161,9 @@ def list_agent_definitions(project_root: Path) -> list[AgentDefinition]:
 
 
 def load_agent_routes(project_root: Path) -> dict[Capability, str]:
+    project_root = project_root.resolve()
     path = project_root / ".sdai" / "agent-routing.yaml"
+    ensure_within_project(project_root, path, label="agent routing path")
     if not path.exists():
         return {}
     data = load_yaml(path)
