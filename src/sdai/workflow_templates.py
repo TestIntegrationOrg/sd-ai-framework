@@ -71,6 +71,109 @@ steps:
 """
 
 
+ENTERPRISE_WORKFLOW = """version: 4
+name: enterprise
+validation_mode: critical
+steps:
+  - id: specification
+    type: deterministic
+    action: specify
+
+  - id: requirements-review
+    type: agent
+    capability: requirements
+    profile: claude
+    mode: advisory
+    retry:
+      max_attempts: 2
+      delay_seconds: 1
+    save_as: ai/requirements-review.md
+
+  - id: architecture-baseline
+    type: deterministic
+    action: architect
+
+  - id: design-reviews
+    type: parallel
+    description: Independent read-only architecture and security reviews.
+    steps:
+      - id: architecture-review
+        type: agent
+        capability: architecture
+        profile: claude
+        mode: advisory
+        retry: 2
+        save_as: ai/enterprise-architecture-review.md
+      - id: security-review
+        type: agent
+        capability: security
+        profile: copilot
+        mode: advisory
+        retry: 2
+        save_as: ai/enterprise-security-review.md
+
+  - id: architecture-approval
+    type: approval
+    gate: enterprise-architecture
+
+  - id: security-approval
+    type: approval
+    gate: enterprise-security
+
+  - id: plan
+    type: deterministic
+    action: plan
+
+  - id: implementation
+    type: agent
+    capability: coding
+    profile: codex
+    mode: workspace-write
+    retry:
+      max_attempts: 2
+      delay_seconds: 1
+    save_as: ai/implementation.md
+
+  - id: post-implementation-review
+    type: parallel
+    steps:
+      - id: code-review
+        type: agent
+        capability: review
+        profile: copilot
+        mode: advisory
+        save_as: ai/code-review.md
+      - id: test-review
+        type: agent
+        capability: testing
+        profile: claude
+        mode: advisory
+        save_as: ai/test-review.md
+
+  - id: tests
+    type: quality-gate
+    gate: tests
+    retry:
+      max_attempts: 2
+      delay_seconds: 1
+
+  - id: trivy
+    type: quality-gate
+    gate: trivy
+    if: env:SDAI_TRIVY
+    on_failure: stop
+
+  - id: sonar
+    type: quality-gate
+    gate: sonar
+    if: env:SDAI_SONAR
+    on_failure: stop
+
+  - id: validate
+    type: validate
+"""
+
+
 def install_v03_workflows(root: Path) -> list[Path]:
     """Install v0.3 workflow examples without overwriting team customizations."""
     created: list[Path] = []
@@ -78,3 +181,16 @@ def install_v03_workflows(root: Path) -> list[Path]:
     if not path.exists():
         created.append(write_text(path, AGENTIC_WORKFLOW, overwrite=False))
     return created
+
+
+def install_v04_workflows(root: Path) -> list[Path]:
+    """Install v0.4 enterprise workflow examples without overwriting custom files."""
+    created: list[Path] = []
+    path = root / ".sdai" / "workflows" / "enterprise.yaml"
+    if not path.exists():
+        created.append(write_text(path, ENTERPRISE_WORKFLOW, overwrite=False))
+    return created
+
+
+def install_current_workflows(root: Path) -> list[Path]:
+    return [*install_v03_workflows(root), *install_v04_workflows(root)]
