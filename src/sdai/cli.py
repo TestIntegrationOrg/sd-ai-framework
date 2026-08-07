@@ -13,8 +13,9 @@ from sdai.agent_platform.prompts import list_prompts, load_prompt
 from sdai.agent_platform.skills import list_skills, load_skill
 from sdai.agents.base import AgentResult
 from sdai.artifacts import write_text
+from sdai.config import load_yaml
 from sdai.enterprise_scaffold import install_v04_scaffold
-from sdai.governance import check_workflow_governance, evaluate_approval
+from sdai.governance import check_workflow_governance
 from sdai.integrations.github import (
     GitHubCli,
     PullRequestRequest,
@@ -22,7 +23,7 @@ from sdai.integrations.github import (
     github_issue_intake,
 )
 from sdai.integrations.jira import JiraClient, jira_issue_intake
-from sdai.models import LifecycleMode
+from sdai.models import FeatureContext, LifecycleMode, validate_feature_id
 from sdai.orchestrator import AGENTS, Orchestrator, StepExecution
 from sdai.quality_gates import QualityGateResult, QualityGateRunner, load_quality_gates
 from sdai.scaffold import init_project, upgrade_project
@@ -76,8 +77,9 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
 def cmd_feature(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
-    feature_dir = root / "specs" / args.feature_id
-    intake = f"""# Feature Intake — {args.feature_id}
+    feature_id = validate_feature_id(args.feature_id)
+    context = FeatureContext(root, feature_id)
+    intake = f"""# Feature Intake — {feature_id}
 
 ## Title
 {args.title}
@@ -94,8 +96,8 @@ manual
 ## Status
 intake
 """
-    write_text(feature_dir / "00-intake.md", intake, overwrite=False)
-    print(f"Created specs/{args.feature_id}/00-intake.md")
+    write_text(context.artifact("00-intake.md"), intake, overwrite=False)
+    print(f"Created specs/{feature_id}/00-intake.md")
     return 0
 
 
@@ -320,7 +322,10 @@ def cmd_gates(args: argparse.Namespace) -> int:
     if args.gate_action == "list":
         for gate in gates.values():
             state = "enabled" if gate.enabled else "disabled"
-            print(f"{gate.name:16} {state:8} timeout={gate.timeout_seconds}s command={' '.join(gate.command)}")
+            print(
+                f"{gate.name:16} {state:8} timeout={gate.timeout_seconds}s "
+                f"executable={gate.command[0]} args={max(0, len(gate.command) - 1)}"
+            )
         return 0
     if args.gate_action == "run":
         context = Orchestrator(root).context(args.feature_id) if args.feature_id else None
@@ -351,16 +356,17 @@ def cmd_intake(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
     if args.intake_source == "github":
+        feature_id = validate_feature_id(args.feature_id)
         issue = GitHubCli(cwd=root).issue(args.repo, args.issue)
-        content = github_issue_intake(issue, args.feature_id, args.workflow)
-        feature_id = args.feature_id
+        content = github_issue_intake(issue, feature_id, args.workflow)
     elif args.intake_source == "jira":
         issue = JiraClient.from_env().issue(args.issue_key)
-        feature_id = args.feature_id or issue.key
+        feature_id = validate_feature_id(args.feature_id or issue.key)
         content = jira_issue_intake(issue, feature_id, args.workflow)
     else:
         raise ValueError(f"Unknown intake source: {args.intake_source}")
-    write_text(root / "specs" / feature_id / "00-intake.md", content, overwrite=False)
+    context = FeatureContext(root, feature_id)
+    write_text(context.artifact("00-intake.md"), content, overwrite=False)
     print(f"Created specs/{feature_id}/00-intake.md from {args.intake_source}")
     return 0
 
@@ -397,10 +403,13 @@ def cmd_pr(args: argparse.Namespace) -> int:
     ensure_initialized(root)
     if args.pr_action != "create":
         raise ValueError(f"Unknown PR action: {args.pr_action}")
-    feature_dir = root / "specs" / args.feature_id
+    context = FeatureContext(root, args.feature_id)
+    feature_dir = context.feature_dir
+    if not context.artifact("00-intake.md").exists():
+        raise FileNotFoundError(f"Feature intake not found for {context.feature_id}")
     head = args.head or _current_git_branch(root)
-    title = args.title or _feature_title(feature_dir, args.feature_id)
-    body = build_pull_request_body(feature_dir, args.feature_id)
+    title = args.title or _feature_title(feature_dir, context.feature_id)
+    body = build_pull_request_body(feature_dir, context.feature_id)
     url = GitHubCli(cwd=root).create_pull_request(
         PullRequestRequest(
             repository=args.repo,
@@ -420,16 +429,38 @@ def cmd_integrations(args: argparse.Namespace) -> int:
     ensure_initialized(root)
     if args.integration_action != "doctor":
         raise ValueError(f"Unknown integrations action: {args.integration_action}")
-    gh_ok, gh_detail = GitHubCli(cwd=root).availability()
-    print(f"{'OK' if gh_ok else 'MISSING':7} github  {gh_detail}")
-    jira_base = os.getenv("JIRA_BASE_URL")
-    jira_auth = bool(os.getenv("JIRA_BEARER_TOKEN") or (os.getenv("JIRA_EMAIL") and os.getenv("JIRA_API_TOKEN")))
-    jira_ok = bool(jira_base and jira_auth)
-    print(
-        f"{'OK' if jira_ok else 'MISSING':7} jira    "
-        f"{'environment configured' if jira_ok else 'set JIRA_BASE_URL and Jira credentials'}"
-    )
-    return 0 if gh_ok and jira_ok else 1
+
+    config_path = root / ".sdai" / "integrations.yaml"
+    config = load_yaml(config_path) if config_path.exists() else {}
+    exit_code = 0
+
+    github_config = config.get("github") or {}
+    if bool(github_config.get("enabled", True)):
+        gh_ok, gh_detail = GitHubCli(cwd=root).availability()
+        print(f"{'OK' if gh_ok else 'MISSING':8} github  {gh_detail}")
+        if not gh_ok:
+            exit_code = 1
+    else:
+        print("DISABLED github  disabled by .sdai/integrations.yaml")
+
+    jira_config = config.get("jira") or {}
+    if bool(jira_config.get("enabled", False)):
+        jira_base = os.getenv("JIRA_BASE_URL", "")
+        jira_auth = bool(
+            os.getenv("JIRA_BEARER_TOKEN")
+            or (os.getenv("JIRA_EMAIL") and os.getenv("JIRA_API_TOKEN"))
+        )
+        jira_ok = jira_base.startswith("https://") and jira_auth
+        print(
+            f"{'OK' if jira_ok else 'MISSING':8} jira    "
+            f"{'environment configured' if jira_ok else 'set HTTPS JIRA_BASE_URL and Jira credentials'}"
+        )
+        if not jira_ok:
+            exit_code = 1
+    else:
+        print("DISABLED jira    disabled by .sdai/integrations.yaml")
+
+    return exit_code
 
 
 def cmd_skills(args: argparse.Namespace) -> int:
