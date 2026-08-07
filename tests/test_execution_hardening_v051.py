@@ -95,3 +95,21 @@ not-real-but-must-never-be-printed
         runtime.build_invocation(
             "SECRET-1", Capability.ARCHITECTURE, mode=ExecutionMode.ADVISORY
         )
+
+
+def test_workspace_guard_restores_protected_root_replaced_by_symlink(tmp_path: Path):
+    spec = tmp_path / "specs" / "F-2" / "specification.md"
+    write_text(spec, "approved")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-replacement"
+    outside.mkdir()
+    with pytest.raises(ProtectedPathViolation, match="changes were restored"):
+        with WorkspaceMutationGuard(tmp_path, CORE_PROTECTED_PATHS):
+            # Simulate an agent replacing the entire protected tree with a symlink.
+            import shutil
+            shutil.rmtree(tmp_path / "specs")
+            try:
+                os.symlink(outside, tmp_path / "specs", target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"symlink unavailable: {exc}")
+    assert spec.read_text(encoding="utf-8").strip() == "approved"
+    assert not (tmp_path / "specs").is_symlink()
