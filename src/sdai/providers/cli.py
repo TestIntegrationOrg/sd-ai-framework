@@ -38,9 +38,9 @@ _BASE_ENVIRONMENT = (
 )
 
 _PROVIDER_AUTH_ENVIRONMENT: dict[str, tuple[str, ...]] = {
-    "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"),
+    "codex": ("OPENAI_API_KEY", "CODEX_HOME"),
     "copilot": ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"),
-    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"),
+    "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
     "gemini": (
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
