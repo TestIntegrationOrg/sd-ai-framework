@@ -2,140 +2,55 @@
 
 **One open-source framework for Spec-Driven Development (SDD) + AI-Driven Development Life Cycle (AI-DLC).**
 
-SD-AI treats the **approved specification and architecture artifacts as the source of truth**. Deterministic lifecycle agents create and validate those artifacts; interchangeable external AI agents can perform requirements analysis, architecture, planning, coding, testing, review, security, and documentation work around them.
+SD-AI treats approved specifications and architecture artifacts as the source of truth. Deterministic lifecycle steps, interchangeable AI agents, approval gates, quality gates, and enterprise integrations operate around that source of truth.
 
-> Project status: **0.3.0 / declarative multi-agent orchestration**.
+> Project status: **0.4.0 / enterprise integrations and governance**.
 
 ## Lifecycle
 
 ```text
-Business Intent
-   ↓
-Requirement
-   ↓
-Specification ───────────────┐
-   ↓                         │
-Architecture + ADRs          │ source of truth
-   ↓                         │
-Plan + Tasks                 │
-   ↓                         │
-AI Agents                    │
-   ↓                         │
-Code / Test / Review         │
-   ↓                         │
-Spec/Architecture Validation ┘
-   ↓
-PR / CI/CD
+Business / Jira / GitHub Issue
+            ↓
+      Feature Intake
+            ↓
+      Specification
+            ↓
+  Architecture + ADRs
+            ↓
+ ┌──────────┴──────────┐
+ │ Parallel AI Reviews │
+ │ Architecture/Security
+ └──────────┬──────────┘
+            ↓
+   Human Approval Gates
+            ↓
+        Plan / Tasks
+            ↓
+  AI Workspace Implementation
+            ↓
+ ┌──────────┴──────────┐
+ │ Parallel Code/Test  │
+ │ Review Agents       │
+ └──────────┬──────────┘
+            ↓
+ Test / Trivy / Sonar Gates
+            ↓
+ Spec + Architecture Validation
+            ↓
+        GitHub PR
 ```
 
 ## Principles
 
-1. **Spec first** — important implementation decisions trace to an approved specification.
-2. **Architecture as code** — architecture, ADRs, Mermaid/C4, OpenAPI/AsyncAPI belong in Git.
-3. **Agent separation of duties** — lifecycle capabilities are explicit and independently routable.
-4. **Human approval where risk requires it** — workflows can pause and resume at durable approval gates.
-5. **Provider neutral** — Codex, Copilot, Claude, Gemini, local models, and future providers sit behind adapters.
-6. **Skills and prompts are code** — reusable agent behavior is version controlled and reviewable.
-7. **Manual control is always available** — any named workflow step can be inspected or run independently at any time.
-8. **Validation closes the loop** — implementation is checked against specification and architecture.
-
-## v0.3 declarative orchestration
-
-Workflow YAML can mix deterministic SDD steps, external AI agents, human approval gates, and validation:
-
-```yaml
-version: 3
-name: agentic
-validation_mode: critical
-steps:
-  - id: spec-baseline
-    type: deterministic
-    action: specify
-
-  - id: architecture-review
-    type: agent
-    capability: architecture
-    mode: advisory
-
-  - id: architecture-approval
-    type: approval
-    gate: architecture
-
-  - id: implementation
-    type: agent
-    capability: coding
-    profile: codex
-    mode: workspace-write
-
-  - id: code-review
-    type: agent
-    capability: review
-    profile: copilot
-    mode: advisory
-
-  - id: validate
-    type: validate
-```
-
-Workflow state is persisted under the feature workspace. If an approval is missing, the workflow stops safely; after approval, the next `sdai run` resumes and skips completed steps.
-
-### Manual step execution
-
-Every named step can be targeted independently:
-
-```bash
-sdai step list SCRIPT-123 --workflow agentic
-sdai step run SCRIPT-123 architecture-review --workflow agentic --dry-run
-sdai step run SCRIPT-123 architecture-review --workflow agentic
-sdai step run SCRIPT-123 implementation --workflow agentic --profile codex
-```
-
-Deterministic and advisory/read-only agent steps may run even when predecessor steps are incomplete. A manual **workspace-write** agent step with an unsatisfied earlier approval requires `--force`, making the governance bypass explicit:
-
-```bash
-sdai step run SCRIPT-123 implementation --workflow agentic --force
-```
-
-Completed steps are protected from accidental reruns. When `--force` reruns a completed step, SD-AI invalidates that step and downstream completion markers so later workflow execution cannot rely on stale derived artifacts.
-
-This manual path is intended for targeted investigation, repair, review, experimentation, recovery, and controlled reruns.
-
-### Human approval and resume
-
-```bash
-sdai run SCRIPT-123 --workflow agentic
-# workflow pauses at architecture-approval
-
-sdai approve SCRIPT-123 architecture --by "architect@example.com" --note "Reviewed ADR and threat model"
-
-sdai run SCRIPT-123 --workflow agentic
-# workflow resumes after the approval gate
-```
-
-Approval records are persisted under `specs/<feature>/approvals/`. Approval steps are re-evaluated against the durable artifact on later runs, so removing/revoking the artifact makes the workflow pause again.
-
-## Multi-agent architecture
-
-```text
-                      SD-AI
-                        │
-              ┌─────────┴─────────┐
-              │                   │
-          SDD Control         AI Execution
-              │                   │
-      Spec / Arch / ADR       Capability Router
-      Plan / Validation            │
-              │          ┌─────────┼──────────┐
-              │          ▼         ▼          ▼
-              │       Codex     Copilot     Claude
-              │          │         │          │
-              │          └─────────┼──────────┘
-              │                    ▼
-              │              Prompt + Skills
-              └────────────────────┘
-```
-
-Built-in adapters support **Codex**, **GitHub Copilot CLI**, **Claude Code**, **Gemini CLI**, custom/local command agents, and Python provider plugins via the `sdai.providers` entry-point group.
+1. **Spec first** — implementation and tests trace to approved requirements.
+2. **Architecture as code** — architecture, ADRs, Mermaid/C4 and contracts live in Git.
+3. **Provider neutral** — Codex, Copilot, Claude, Gemini and custom agents sit behind adapters.
+4. **Skills and prompts are code** — reusable agent behavior is version controlled.
+5. **Least privilege** — advisory mode is read-only; workspace writes are explicit.
+6. **Human governance** — risky workflows can pause for role-backed approvals.
+7. **Manual control remains available** — any named top-level workflow step can be run independently.
+8. **Policy is reviewable** — workflow and approval rules live under `.sdai/`.
+9. **Validation closes the loop** — quality gates and spec/architecture checks run before delivery.
 
 ## Quick start
 
@@ -145,42 +60,33 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 
 sdai init
-sdai feature SCRIPT-123 --title "KMS-backed script signing" \
-  --description "Sign PowerShell artifacts without exporting the private key" \
-  --workflow agentic
+sdai feature FEATURE-123 \
+  --title "Add governed signing workflow" \
+  --description "Implement the feature with architecture and security review" \
+  --workflow enterprise
 
-sdai step list SCRIPT-123 --workflow agentic
-sdai run SCRIPT-123 --workflow agentic
+sdai step list FEATURE-123 --workflow enterprise
+sdai run FEATURE-123 --workflow enterprise
 ```
 
-For an existing project, add missing current scaffold files without overwriting custom files:
+Upgrade an existing SD-AI project without overwriting team customizations:
 
 ```bash
 sdai upgrade
 ```
 
-## External agents
+## Multi-agent support
 
-```bash
-sdai agents list
-sdai agents doctor
-sdai agents run architecture SCRIPT-123 --dry-run
-sdai agents run architecture SCRIPT-123 --profile codex --dry-run
-sdai agents run coding SCRIPT-123 --profile claude --dry-run
-sdai agents run review SCRIPT-123 --profile copilot --dry-run
-```
+Built-in adapters support:
 
-External execution defaults to **advisory** mode. Repository writes require an explicit mode:
+- Codex
+- GitHub Copilot CLI
+- Claude Code
+- Gemini CLI
+- custom/local command agents
+- Python provider plugins through the `sdai.providers` entry-point group
 
-```bash
-sdai agents run coding SCRIPT-123 --profile codex --mode workspace-write
-```
-
-Provider-specific permissions still apply. SD-AI does not automatically grant broad unrestricted permissions.
-
-## Capability routing
-
-The scaffold demonstrates different agents for different lifecycle jobs:
+Default routing remains configurable:
 
 ```yaml
 routes:
@@ -194,20 +100,276 @@ routes:
   documentation: gemini
 ```
 
-These are defaults only. Edit `.sdai/routing.yaml`, set a workflow step profile, or override a manual invocation with `--profile`.
+Override any agent manually:
+
+```bash
+sdai agents run architecture FEATURE-123 --profile codex --dry-run
+sdai agents run coding FEATURE-123 --profile claude --mode workspace-write
+```
+
+## v0.4 workflow features
+
+Workflow YAML supports deterministic steps, AI-agent steps, approvals, quality gates, validation, conditions, retries, failure handling, and bounded parallel advisory agents.
+
+```yaml
+version: 4
+name: enterprise
+validation_mode: critical
+steps:
+  - id: specification
+    type: deterministic
+    action: specify
+
+  - id: design-reviews
+    type: parallel
+    steps:
+      - id: architecture-review
+        type: agent
+        capability: architecture
+        profile: claude
+        mode: advisory
+      - id: security-review
+        type: agent
+        capability: security
+        profile: copilot
+        mode: advisory
+
+  - id: architecture-approval
+    type: approval
+    gate: enterprise-architecture
+
+  - id: implementation
+    type: agent
+    capability: coding
+    profile: codex
+    mode: workspace-write
+    retry:
+      max_attempts: 2
+      delay_seconds: 1
+
+  - id: tests
+    type: quality-gate
+    gate: tests
+
+  - id: trivy
+    type: quality-gate
+    gate: trivy
+    if: env:SDAI_TRIVY
+
+  - id: validate
+    type: validate
+```
+
+### Conditions
+
+The condition language is deliberately small and does **not** use Python `eval`.
+
+```text
+always
+never
+env:NAME
+env:NAME=value
+artifact:relative/path
+approved:gate
+step:step-id=completed
+not:<condition>
+```
+
+Example:
+
+```yaml
+- id: trivy
+  type: quality-gate
+  gate: trivy
+  if: env:SDAI_TRIVY
+```
+
+### Retry and failure handling
+
+```yaml
+retry:
+  max_attempts: 3
+  delay_seconds: 2
+  backoff_multiplier: 2
+on_failure: stop   # or continue
+```
+
+### Parallel agents
+
+Parallel groups currently allow **advisory/read-only agent children only**. This prevents concurrent agents from racing on repository writes.
+
+```yaml
+- id: independent-reviews
+  type: parallel
+  steps:
+    - id: architecture
+      type: agent
+      capability: architecture
+      profile: claude
+      mode: advisory
+    - id: security
+      type: agent
+      capability: security
+      profile: copilot
+      mode: advisory
+```
+
+## Run any step manually
+
+Manual control is a core framework rule:
+
+```bash
+sdai step list FEATURE-123 --workflow enterprise
+sdai step run FEATURE-123 design-reviews --workflow enterprise
+sdai step run FEATURE-123 tests --workflow enterprise
+sdai step run FEATURE-123 implementation --workflow enterprise --profile codex
+```
+
+A completed step is protected from accidental rerun. Use `--force` deliberately:
+
+```bash
+sdai step run FEATURE-123 architecture-baseline --workflow enterprise --force
+```
+
+A forced upstream rerun invalidates downstream completion markers. A manual workspace-writing AI step before an unsatisfied prior approval also requires `--force`, so the governance bypass is explicit.
+
+`--force` can also intentionally bypass a false step condition for targeted recovery or investigation.
+
+## Role-backed approvals
+
+Approval policies live in:
+
+```text
+.sdai/approval-policies.yaml
+```
+
+The existing `architecture` gate remains backward compatible. The enterprise workflow demonstrates role-backed gates:
+
+```bash
+sdai approve FEATURE-123 enterprise-architecture \
+  --by architect@example.com \
+  --role architect \
+  --note "Reviewed ADRs and architecture risks"
+
+sdai approve FEATURE-123 enterprise-security \
+  --by security@example.com \
+  --role security
+```
+
+Policies support:
+
+```yaml
+enterprise-architecture:
+  min_approvals: 1
+  required_roles: [architect]
+  allowed_approvers: []
+```
+
+Repeated approval by the same identity does not count as multiple distinct approvals.
+
+## Policy-as-code
+
+Organization-level governance lives in:
+
+```text
+.sdai/governance.yaml
+```
+
+It can define:
+
+- maximum parallelism
+- allowed workspace-write profiles
+- required quality gates by lifecycle rigor
+- opt-in automatic workflow policy enforcement
+
+Check a workflow manually:
+
+```bash
+sdai policy check --workflow enterprise
+```
+
+Automatic enforcement is **off by default** for backward compatibility and can be enabled in `governance.yaml`.
+
+## Quality gates
+
+Quality gates are argument-list commands, never shell strings. Defaults are stored in:
+
+```text
+.sdai/quality-gates.yaml
+```
+
+Scaffolded gates include:
+
+- `tests` — enabled by default
+- `trivy` — disabled until configured/enabled
+- `sonar` — disabled until configured/enabled
+
+Inspect or run them independently:
+
+```bash
+sdai gates list
+sdai gates run tests --feature-id FEATURE-123
+sdai gates run trivy --feature-id FEATURE-123 --show-output
+```
+
+Gate results are persisted under `specs/<feature>/quality-gates/` and become context for downstream review agents.
+
+## GitHub integration
+
+GitHub integration uses the local `gh` authentication context; SD-AI does not store a GitHub token.
+
+Create an intake from an issue:
+
+```bash
+sdai intake github FEATURE-123 \
+  --repo my-org/my-repo \
+  --issue 123 \
+  --workflow enterprise
+```
+
+Create a draft pull request from the feature artifacts:
+
+```bash
+sdai pr create FEATURE-123 \
+  --repo my-org/my-repo \
+  --base main
+```
+
+Use `--ready` to create a ready-for-review PR rather than a draft.
+
+## Jira integration
+
+Jira intake uses environment-based authentication. Credentials are not written to `.sdai`.
+
+Configure one supported authentication path:
+
+```text
+JIRA_BASE_URL
+JIRA_EMAIL + JIRA_API_TOKEN
+```
+
+or:
+
+```text
+JIRA_BASE_URL
+JIRA_BEARER_TOKEN
+```
+
+Then:
+
+```bash
+sdai intake jira PROJ-123 --workflow enterprise
+```
+
+Check local integration readiness:
+
+```bash
+sdai integrations doctor
+```
 
 ## Skills
 
-Provider-neutral skills live under `.sdai/skills/`:
-
-```text
-spec-traceability/
-architecture-review/
-secure-coding/
-test-design/
-```
-
-Each skill contains a `skill.yaml` manifest and `SKILL.md`. A profile can attach several skills; only skills applicable to the requested capability are injected.
+Provider-neutral skills live under `.sdai/skills/` and are injected only for matching capabilities.
 
 ```bash
 sdai skills list
@@ -216,60 +378,51 @@ sdai skills show architecture-review
 
 ## Prompts
 
-Reusable prompts live under `.sdai/prompts/`:
-
-```text
-requirements.md
-architect.md
-planner.md
-developer.md
-reviewer.md
-tester.md
-security.md
-documentation.md
-general.md
-```
-
-`prompt: auto` selects the capability-specific prompt.
+Version-controlled prompts live under `.sdai/prompts/`.
 
 ```bash
 sdai prompts list
 sdai prompts show architect.md
 ```
 
-## Lifecycle modes and workflows
+## Built-in workflows
 
 | Workflow | Typical use | Flow |
 |---|---|---|
-| `light` | bug, logging, small refactor | intake → implement → validate |
-| `standard` | normal feature/API change | specify → architect → plan → implement → validate |
-| `critical` | security, data model, cross-service architecture | specify → architect → security → plan → implement → validate |
-| `agentic` | governed AI-DLC | spec → AI reviews → approval → AI implementation/review/test → validation |
+| `light` | bug, logging, small refactor | intake → implementation brief → validation |
+| `standard` | normal feature/API change | spec → architecture → plan → implementation → validation |
+| `critical` | security/data/architecture change | spec → architecture → security → plan → implementation → validation |
+| `agentic` | governed multi-agent AI-DLC | spec → AI reviews → approval → AI implementation/review/test → validation |
+| `enterprise` | governed enterprise AI-DLC | spec → parallel reviews → role approvals → AI implementation → parallel review → quality gates → validation |
 
-Teams can add any custom file under `.sdai/workflows/<name>.yaml`. `validation_mode` remains `light`, `standard`, or `critical` even when the workflow name is custom.
+Teams can add any custom `.sdai/workflows/<name>.yaml` file.
 
-## CLI
+## CLI overview
 
 ```text
 sdai init
 sdai upgrade
 sdai feature <id> --title ... --description ... [--workflow NAME]
 
-sdai specify <id>
-sdai architect <id>
-sdai plan <id>
-sdai implement <id>
-sdai security <id>
-sdai validate <id>
+sdai intake github <id> --repo OWNER/REPO --issue N
+sdai intake jira ISSUE-KEY [--feature-id ID]
 
 sdai run <id> --workflow NAME
 sdai step list <id> --workflow NAME
 sdai step run <id> <step-id> --workflow NAME [--force] [--dry-run] [--profile NAME] [--mode advisory|workspace-write]
-sdai approve <id> <gate> --by APPROVER [--note ...]
+
+sdai approve <id> <gate> --by IDENTITY [--role ROLE] [--note ...]
 
 sdai agents list
 sdai agents doctor
 sdai agents run <capability> <id> [--profile NAME] [--mode advisory|workspace-write] [--dry-run]
+
+sdai gates list
+sdai gates run <gate> [--feature-id ID]
+sdai policy check --workflow NAME
+sdai integrations doctor
+sdai pr create <id> --repo OWNER/REPO [--base main] [--head BRANCH] [--ready]
+
 sdai skills list
 sdai skills show <name>
 sdai prompts list
@@ -281,6 +434,7 @@ sdai prompts show <name>
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agent platform](docs/AGENT-PLATFORM.md)
 - [Workflow orchestration](docs/WORKFLOWS.md)
+- [Enterprise governance](docs/ENTERPRISE.md)
 - [Provider adapters](docs/PROVIDERS.md)
 - [Skills](docs/SKILLS.md)
 - [Prompts](docs/PROMPTS.md)
@@ -290,23 +444,22 @@ sdai prompts show <name>
 
 - [x] SDD lifecycle and validation
 - [x] Architecture/ADR generation
-- [x] Provider-neutral external agent runtime
-- [x] Codex, Copilot, Claude, Gemini adapters
-- [x] Custom command and Python provider extension points
-- [x] Capability routing and profile overrides
-- [x] Provider-neutral skills
-- [x] Version-controlled prompt templates
-- [x] Advisory/workspace-write execution modes
-- [x] Declarative deterministic/agent/approval/validation workflow steps
-- [x] Persisted workflow state and pause/resume
+- [x] Codex/Copilot/Claude/Gemini/custom agent adapters
+- [x] Skills and version-controlled prompts
+- [x] Declarative deterministic/agent/approval/validation workflows
 - [x] Manual execution of any named workflow step
-- [ ] Signed/role-based approval policy
-- [ ] GitHub/Jira integration adapters
-- [ ] OpenAPI/AsyncAPI validators
-- [ ] Policy-as-code engine
+- [x] Workflow conditions, retries and failure handling
+- [x] Parallel advisory-agent execution
+- [x] Role/minimum approval policies
+- [x] Policy-as-code checks
+- [x] Test/Trivy/Sonar quality-gate framework
+- [x] GitHub issue intake and PR automation
+- [x] Jira issue intake
+- [ ] Signed or externally verified approval identities
+- [ ] OpenAPI/AsyncAPI contract validators
 - [ ] Multi-repository feature graph
-- [ ] Sonar/Trivy integration
-- [ ] Web control plane
+- [ ] Remote orchestration/control plane
+- [ ] Web UI
 
 ## License
 
