@@ -69,6 +69,7 @@ class WorkflowStep:
     kind: StepKind
     action: str | None = None
     capability: Capability | None = None
+    agent_name: str | None = None
     profile: str | None = None
     mode: ExecutionMode = ExecutionMode.ADVISORY
     save_as: str | None = None
@@ -88,11 +89,6 @@ class WorkflowDefinition:
     steps: tuple[WorkflowStep, ...]
 
     def iter_steps(self) -> Iterator[tuple[WorkflowStep, str | None]]:
-        """Yield every addressable step, including parallel children.
-
-        Parallel groups are currently one level deep and contain only agent children,
-        so a child can be addressed manually by its unique id.
-        """
         for item in self.steps:
             yield item, None
             for child in item.children:
@@ -149,9 +145,7 @@ def _parse_retry(raw: object, step_id: str) -> RetryPolicy:
     if raw is None:
         return RetryPolicy()
     if isinstance(raw, int):
-        attempts = raw
-        delay = 0.0
-        multiplier = 1.0
+        attempts, delay, multiplier = raw, 0.0, 1.0
     elif isinstance(raw, dict):
         attempts = int(raw.get("max_attempts", 1))
         delay = float(raw.get("delay_seconds", 0.0))
@@ -181,14 +175,12 @@ def _common(raw: dict[str, Any], step_id: str) -> dict[str, Any]:
     }
 
 
-def _parse_step(raw: object, index: int, *, parent: str | None = None) -> WorkflowStep:
-    # Backward compatibility with v0.1/v0.2 workflows that used a list of strings.
+def _parse_step(raw: object, index: int) -> WorkflowStep:
     if isinstance(raw, str):
         step_id = _safe_name(raw, f"workflow step #{index + 1}")
         if step_id == "validate":
             return WorkflowStep(id="validate", kind=StepKind.VALIDATE)
         return WorkflowStep(id=step_id, kind=StepKind.DETERMINISTIC, action=step_id)
-
     if not isinstance(raw, dict):
         raise WorkflowConfigError(f"Workflow step #{index + 1} must be a string or mapping")
 
@@ -225,10 +217,12 @@ def _parse_step(raw: object, index: int, *, parent: str | None = None) -> Workfl
             str(raw["save_as"]) if raw.get("save_as") else f"ai/{step_id}.md",
             f"save_as for step '{step_id}'",
         )
+        agent_name = _safe_name(str(raw["agent"]), f"semantic agent for step '{step_id}'") if raw.get("agent") else None
         return WorkflowStep(
             id=step_id,
             kind=kind,
             capability=capability,
+            agent_name=agent_name,
             profile=str(raw["profile"]) if raw.get("profile") else None,
             mode=mode,
             save_as=save_as,
@@ -250,18 +244,13 @@ def _parse_step(raw: object, index: int, *, parent: str | None = None) -> Workfl
         raw_children = raw.get("steps") or []
         if not isinstance(raw_children, list) or not raw_children:
             raise WorkflowConfigError(f"Parallel step '{step_id}' must define a non-empty steps list")
-        children = tuple(
-            _parse_step(item, child_index, parent=step_id)
-            for child_index, item in enumerate(raw_children)
-        )
+        children = tuple(_parse_step(item, child_index) for child_index, item in enumerate(raw_children))
         child_ids = [child.id for child in children]
         if len(child_ids) != len(set(child_ids)):
             raise WorkflowConfigError(f"Parallel step '{step_id}' contains duplicate child ids")
         for child in children:
             if child.kind != StepKind.AGENT:
-                raise WorkflowConfigError(
-                    f"Parallel step '{step_id}' currently supports only agent children"
-                )
+                raise WorkflowConfigError(f"Parallel step '{step_id}' currently supports only agent children")
             if child.mode != ExecutionMode.ADVISORY:
                 raise WorkflowConfigError(
                     f"Parallel child '{child.id}' must use advisory mode to prevent concurrent workspace writes"
@@ -284,12 +273,10 @@ def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
         raise WorkflowConfigError(
             f"Workflow '{name}' must define validation_mode as light, standard, or critical"
         ) from exc
-    steps = tuple(_parse_step(raw, index) for index, raw in enumerate(raw_steps))
-    definition_name = _safe_name(str(data.get("name") or name), "workflow definition name")
     definition = WorkflowDefinition(
-        name=definition_name,
+        name=_safe_name(str(data.get("name") or name), "workflow definition name"),
         validation_mode=validation_mode,
-        steps=steps,
+        steps=tuple(_parse_step(raw, index) for index, raw in enumerate(raw_steps)),
     )
     all_ids = [step.id for step, _ in definition.iter_steps()]
     if len(all_ids) != len(set(all_ids)):
@@ -300,8 +287,7 @@ def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
 
 
 def _state_path(context: FeatureContext, workflow: str) -> Path:
-    workflow = _safe_name(workflow, "workflow name")
-    return context.artifact(f".sdai/workflows/{workflow}.yaml")
+    return context.artifact(f".sdai/workflows/{_safe_name(workflow, 'workflow name')}.yaml")
 
 
 def load_workflow_state(context: FeatureContext, workflow: str) -> WorkflowState:
