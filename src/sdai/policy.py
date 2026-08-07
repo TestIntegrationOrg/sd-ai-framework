@@ -35,6 +35,14 @@ CORE_PROTECTED_PATHS: tuple[str, ...] = (
     ".claude/skills/**",
     ".gemini/agents/**",
     ".github/agents/**",
+    ".github/workflows/**",
+    ".github/CODEOWNERS",
+    "CODEOWNERS",
+    ".git/config",
+    ".git/HEAD",
+    ".git/index",
+    ".git/hooks/**",
+    ".git/refs/**",
     "specs/**",
 )
 
@@ -71,10 +79,9 @@ class EffectiveConfiguration:
     environment_allowlist: frozenset[str] | None
     required_skills_map: dict[str, tuple[str, ...]]
 
-    def assert_profile_allowed(
+    def assert_base_profile_allowed(
         self,
         profile: "AgentProfile",
-        capability: "Capability",
         mode: "ExecutionMode",
     ) -> None:
         if self.allowed_profiles is not None and profile.name not in self.allowed_profiles:
@@ -86,6 +93,39 @@ class EffectiveConfiguration:
                 f"Provider '{profile.provider}' is not permitted by the effective SD-AI policy"
             )
 
+        # Both provider-level and profile-level model rules apply. A lower layer cannot
+        # use a profile-specific rule to escape an organization provider model allowlist.
+        model_rules = [
+            rule
+            for rule in (
+                self.allowed_models.get(profile.provider),
+                self.allowed_models.get(profile.name),
+            )
+            if rule is not None
+        ]
+        if model_rules:
+            approved = set(model_rules[0])
+            for rule in model_rules[1:]:
+                approved.intersection_update(rule)
+            if not profile.model:
+                raise PolicyError(
+                    f"Profile '{profile.name}' must pin an approved model because policy restricts models"
+                )
+            if profile.model not in approved:
+                raise PolicyError(
+                    f"Model '{profile.model}' is not permitted for profile '{profile.name}'"
+                )
+
+        if mode.value == "workspace-write" and not self.workspace_write:
+            raise PolicyError("workspace-write execution is disabled by the effective SD-AI policy")
+
+    def assert_profile_allowed(
+        self,
+        profile: "AgentProfile",
+        capability: "Capability",
+        mode: "ExecutionMode",
+    ) -> None:
+        self.assert_base_profile_allowed(profile, mode)
         capability_name = capability.value
         capability_profiles = self.capability_profiles.get(capability_name)
         if capability_profiles is not None and profile.name not in capability_profiles:
@@ -97,23 +137,6 @@ class EffectiveConfiguration:
             raise PolicyError(
                 f"Provider '{profile.provider}' is not permitted for capability '{capability_name}'"
             )
-
-        model_rule = self.allowed_models.get(profile.name)
-        if model_rule is None:
-            model_rule = self.allowed_models.get(profile.provider)
-        if model_rule is not None:
-            if not profile.model:
-                raise PolicyError(
-                    f"Profile '{profile.name}' must pin an approved model because policy restricts "
-                    f"models for '{profile.provider}'"
-                )
-            if profile.model not in model_rule:
-                raise PolicyError(
-                    f"Model '{profile.model}' is not permitted for profile '{profile.name}'"
-                )
-
-        if mode.value == "workspace-write" and not self.workspace_write:
-            raise PolicyError("workspace-write execution is disabled by the effective SD-AI policy")
 
     def required_skills(self, capability: "Capability") -> tuple[str, ...]:
         return self.required_skills_map.get(capability.value, ())
@@ -166,6 +189,11 @@ def _capability_rules(
             raise PolicyError(f"{source}: unknown capability '{capability_name}'")
         if not isinstance(raw, dict):
             raise PolicyError(f"{source}: capability '{capability}' must be a mapping")
+        _reject_unknown(
+            raw,
+            {"allowed_profiles", "allowed_providers"},
+            label=f"{source}: capability '{capability}'",
+        )
         allowed_profiles = _optional_string_set(
             raw.get("allowed_profiles"),
             label=f"{source}: {capability}.allowed_profiles",
@@ -197,13 +225,43 @@ def _required_skills(value: object, *, source: str) -> dict[str, tuple[str, ...]
     return result
 
 
+def _reject_unknown(mapping: dict[str, Any], allowed: set[str], *, label: str) -> None:
+    unknown = sorted(set(mapping) - allowed)
+    if unknown:
+        raise PolicyError(f"{label} contains unsupported key(s): {', '.join(unknown)}")
+
+
 def _load_layer(path: Path, source: str) -> PolicyLayer:
     data = load_yaml(path)
+    if data.get("version", 1) != 1:
+        raise PolicyError(f"{source}: policy version must be 1")
+    _reject_unknown(
+        data,
+        {"version", "providers", "capabilities", "execution", "skills"},
+        label=source,
+    )
     providers = data.get("providers") or {}
     execution = data.get("execution") or {}
     skills = data.get("skills") or {}
     if not isinstance(providers, dict) or not isinstance(execution, dict) or not isinstance(skills, dict):
         raise PolicyError(f"{source}: providers, execution, and skills must be mappings")
+    _reject_unknown(
+        providers,
+        {"allowed_profiles", "allowed_providers", "allowed_models"},
+        label=f"{source}: providers",
+    )
+    _reject_unknown(
+        execution,
+        {
+            "workspace_write",
+            "require_prior_approval_for_workspace_write",
+            "allow_force_approval_bypass",
+            "protected_paths",
+            "environment_allowlist",
+        },
+        label=f"{source}: execution",
+    )
+    _reject_unknown(skills, {"required"}, label=f"{source}: skills")
 
     capability_profiles, capability_providers = _capability_rules(
         data.get("capabilities"), source=source
@@ -212,6 +270,12 @@ def _load_layer(path: Path, source: str) -> PolicyLayer:
     protected = execution.get("protected_paths") or []
     if not isinstance(protected, list) or not all(isinstance(item, str) and item.strip() for item in protected):
         raise PolicyError(f"{source}: execution.protected_paths must be a string list")
+    for pattern in protected:
+        candidate = Path(pattern.strip())
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise PolicyError(
+                f"{source}: protected path patterns must be relative to the repository"
+            )
 
     return PolicyLayer(
         source=source,
@@ -324,8 +388,10 @@ def load_effective_configuration(
     if not isinstance(policy_config, dict):
         raise PolicyError("config.yaml policy must be a mapping")
 
-    org_env_name = str(policy_config.get("organization_env") or "SDAI_ORG_POLICY_PATH")
-    user_env_name = str(policy_config.get("user_env") or "SDAI_USER_POLICY_PATH")
+    # Organization policy discovery is intentionally not repo-configurable. A repo
+    # cannot redirect the company-managed environment variable to bypass enterprise policy.
+    org_env_name = "SDAI_ORG_POLICY_PATH"
+    user_env_name = "SDAI_USER_POLICY_PATH"
     repo_relative = str(policy_config.get("repository") or ".sdai/policy.yaml")
 
     layers: list[PolicyLayer] = []
@@ -381,6 +447,10 @@ def load_effective_configuration(
     environment_allowlist = _intersect(
         [layer.environment_allowlist for layer in layers]
     )
+    # Enterprise subprocesses fail closed: provider credential/environment variables
+    # must be named by company policy. Native CLI credential stores remain available.
+    if effective_mode == OperatingMode.ENTERPRISE and environment_allowlist is None:
+        environment_allowlist = frozenset()
 
     return EffectiveConfiguration(
         operating_mode=effective_mode,
