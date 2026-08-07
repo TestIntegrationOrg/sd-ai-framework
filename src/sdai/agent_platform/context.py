@@ -35,8 +35,7 @@ def collect_feature_context(context: FeatureContext, *, max_chars_per_file: int 
         sections.append(f"## Artifact: {relative}\n{_read_bounded(path, max_chars_per_file)}")
         seen.add(path.resolve())
 
-    # v0.3 persists external-agent outputs so later lifecycle agents can consume
-    # architecture reviews, security reviews, code reviews, and test findings.
+    # External-agent outputs are durable lifecycle context for downstream agents.
     ai_root = context.artifact("ai")
     if ai_root.exists():
         for path in sorted(ai_root.rglob("*.md")):
@@ -44,12 +43,26 @@ def collect_feature_context(context: FeatureContext, *, max_chars_per_file: int 
                 continue
             relative = path.relative_to(context.feature_dir).as_posix()
             sections.append(f"## Artifact: {relative}\n{_read_bounded(path, max_chars_per_file)}")
+
+    # Quality-gate reports are also relevant to review/security/documentation agents.
+    gate_root = context.artifact("quality-gates")
+    if gate_root.exists():
+        for path in sorted(gate_root.rglob("*.md")):
+            relative = path.relative_to(context.feature_dir).as_posix()
+            sections.append(f"## Artifact: {relative}\n{_read_bounded(path, max_chars_per_file)}")
     return "\n\n".join(sections)
 
 
 def load_governance_context(project_root: Path) -> str:
     sections: list[str] = []
-    for relative in (".sdai/constitution.yaml", ".sdai/policies.yaml"):
+    for relative in (
+        ".sdai/constitution.yaml",
+        ".sdai/policies.yaml",
+        ".sdai/governance.yaml",
+        ".sdai/approval-policies.yaml",
+        ".sdai/quality-gates.yaml",
+        ".sdai/integrations.yaml",
+    ):
         path = project_root / relative
         if path.exists():
             sections.append(f"## {relative}\n{path.read_text(encoding='utf-8')}")
