@@ -83,9 +83,20 @@ class Orchestrator:
 
     @staticmethod
     def _invalidate_from(state, definition: WorkflowDefinition, step_id: str) -> None:
-        ids = [item.id for item in definition.steps]
-        index = ids.index(step_id)
-        invalid = set(ids[index:])
+        """Invalidate the selected top-level derivation and everything downstream.
+
+        If the selected step is a parallel child, the parallel parent is the
+        derivation boundary: rerunning one child can change the parent's review
+        result, so the parent and all later steps become stale.
+        """
+        top_level_id = definition.top_level_id(step_id)
+        top_steps = list(definition.steps)
+        ids = [item.id for item in top_steps]
+        index = ids.index(top_level_id)
+        invalid: set[str] = set()
+        for item in top_steps[index:]:
+            invalid.add(item.id)
+            invalid.update(child.id for child in item.children)
         state.completed_steps = [value for value in state.completed_steps if value not in invalid]
         state.last_status = "running"
         state.paused_at = None
@@ -93,8 +104,9 @@ class Orchestrator:
     @staticmethod
     def _prior_approval_gates(definition: WorkflowDefinition, step_id: str) -> list[str]:
         gates: list[str] = []
+        top_level_id = definition.top_level_id(step_id)
         for item in definition.steps:
-            if item.id == step_id:
+            if item.id == top_level_id:
                 break
             if item.kind == StepKind.APPROVAL:
                 gates.append(item.gate or item.id)
@@ -134,6 +146,36 @@ class Orchestrator:
             f"## Output\n\n{result.output}\n",
         )
         return artifact
+
+    def _dry_run_parallel_child(
+        self,
+        feature_id: str,
+        definition: WorkflowDefinition,
+        child: WorkflowStep,
+    ) -> StepExecution:
+        context = self.context(feature_id)
+        condition = evaluate_condition(
+            child.condition,
+            context=context,
+            workflow=definition.name,
+        )
+        if not condition.matched:
+            return StepExecution(
+                child.id,
+                child.kind,
+                "condition-skipped",
+                message=condition.detail,
+                attempts=0,
+            )
+        if child.capability is None:
+            return StepExecution(child.id, child.kind, "failed", message="parallel agent has no capability")
+        invocation = self.agent_runtime.build_invocation(
+            feature_id,
+            child.capability,
+            profile_name=child.profile,
+            mode=child.mode,
+        )
+        return StepExecution(child.id, child.kind, "dry-run", invocation, attempts=0)
 
     def _run_parallel_child(
         self,
@@ -200,12 +242,12 @@ class Orchestrator:
         state = load_workflow_state(context, definition.name)
 
         if force and state.is_complete(step.id):
-            # A deliberate rerun invalidates this step and all downstream completion
-            # markers so later workflow execution cannot rely on stale derived artifacts.
+            # A deliberate rerun invalidates this step's top-level derivation and
+            # all downstream completion markers.
             self._invalidate_from(state, definition, step.id)
             save_workflow_state(context, state)
 
-        # Manual --force also intentionally bypasses a false condition.
+        # Manual --force intentionally bypasses a false condition.
         if not force:
             condition = evaluate_condition(
                 step.condition,
@@ -224,7 +266,6 @@ class Orchestrator:
                 )
 
         # Approval steps are always re-evaluated against the durable approval artifact.
-        # Deleting/revoking that artifact therefore makes a later run pause again.
         if state.is_complete(step.id) and not force and step.kind != StepKind.APPROVAL:
             return StepExecution(
                 step_id=step.id,
@@ -342,6 +383,13 @@ class Orchestrator:
             raise AssertionError("quality gate retry loop exhausted unexpectedly")
 
         if step.kind == StepKind.PARALLEL:
+            if dry_run:
+                executions = [
+                    self._dry_run_parallel_child(feature_id, definition, child)
+                    for child in step.children
+                ]
+                return StepExecution(step.id, step.kind, "dry-run", executions, attempts=0)
+
             governance = load_governance(self.project_root)
             max_policy = int((governance.get("workflow") or {}).get("max_parallelism", 4))
             workers = max(1, min(len(step.children), max_policy))
@@ -360,6 +408,13 @@ class Orchestrator:
                             child.id, child.kind, "failed", message=str(exc)
                         )
             executions = [executions_by_id[child.id] for child in step.children]
+
+            # Persist child completion status so every nested step remains manually
+            # addressable and protected from accidental reruns after a group run.
+            for child_execution in executions:
+                if child_execution.status in {"completed", "condition-skipped"}:
+                    state.mark_complete(child_execution.step_id)
+
             fatal = any(
                 execution.status == "failed" and child.on_failure == FailureMode.STOP
                 for child, execution in zip(step.children, executions)
@@ -396,12 +451,11 @@ class Orchestrator:
         profile_override: str | None = None,
         mode_override: ExecutionMode | None = None,
     ) -> StepExecution:
-        """Run one named workflow step independently of predecessor state.
+        """Run any named workflow step independently of predecessor state.
 
-        Read-only/advisory, deterministic, quality-gate, validation, and parallel
-        review steps can be run out of order directly. A write-capable external-agent
-        step can also be run at any time, but if an earlier approval gate is
-        unsatisfied the caller must use ``force`` to make that bypass explicit.
+        Top-level steps and nested parallel-agent children are both addressable by
+        unique id. A write-capable external-agent step can run at any time, but an
+        unsatisfied earlier approval requires ``force`` to make that bypass explicit.
         """
         definition = load_workflow(self.project_root, workflow)
         step = definition.step(step_id)
