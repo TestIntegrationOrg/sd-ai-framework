@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sdai.agent_platform.context import collect_feature_context, load_governance_context
-from sdai.agent_platform.definitions import resolve_agent_definition
+from sdai.agent_platform.definitions import AgentDefinition, resolve_agent_definition
 from sdai.agent_platform.guardrails import enforce_prompt_safety
 from sdai.agent_platform.models import (
     AgentExecutionResult,
@@ -54,6 +54,21 @@ Reusable skills:
 """
 
 
+def _resolve_semantic_definition(
+    project_root: Path,
+    capability: Capability,
+    requested: str | None,
+) -> AgentDefinition | None:
+    # Backward compatibility: v0.1-v0.4 projects can install newer workflow
+    # templates without yet having the v0.5 semantic-agent scaffold. If the
+    # semantic-agent directory does not exist at all, use the legacy provider/
+    # capability route. Once the directory exists, explicit agent names are
+    # validated strictly so typos do not silently fall back.
+    if requested and not (project_root / ".sdai" / "agents").exists():
+        return None
+    return resolve_agent_definition(project_root, capability, requested)
+
+
 @dataclass
 class AgentRuntime:
     project_root: Path
@@ -68,7 +83,7 @@ class AgentRuntime:
         mode: ExecutionMode = ExecutionMode.ADVISORY,
     ) -> AgentInvocation:
         project_root = self.project_root.resolve()
-        definition = resolve_agent_definition(project_root, capability, agent_name)
+        definition = _resolve_semantic_definition(project_root, capability, agent_name)
         requested_profile = profile_name or (definition.profile if definition else None)
         profile = resolve_profile(project_root, capability, requested_profile)
         prompt_name = PROMPT_BY_CAPABILITY[capability] if profile.prompt == "auto" else profile.prompt
@@ -133,10 +148,13 @@ class AgentRuntime:
         enforce_prompt_safety(invocation.system, invocation.prompt)
         provider = ProviderFactory.create(invocation.profile, mode=mode, cwd=invocation.cwd)
         output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-
-        definition = resolve_agent_definition(
-            self.project_root.resolve(), capability, invocation.agent_name
-        ) if invocation.agent_name else None
+        definition = (
+            _resolve_semantic_definition(
+                self.project_root.resolve(), capability, invocation.agent_name
+            )
+            if invocation.agent_name
+            else None
+        )
         effective_skill_names = tuple(
             dict.fromkeys(
                 [
