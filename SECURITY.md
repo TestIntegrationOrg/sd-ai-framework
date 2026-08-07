@@ -4,12 +4,18 @@ SD-AI treats AI output and external issue/log/scanner content as untrusted. Do n
 production secrets, private keys, credentials, tokens, or sensitive production data in
 prompts or generated artifacts.
 
+For the exact v0.5.1 execution boundary—including built-in protected paths, protected-file restoration, provider environment construction, prompt/symlink containment, and provider argument restrictions—see [Execution Security Reference](docs/EXECUTION-SECURITY.md).
+
+For normative individual/enterprise policy precedence and merge semantics, see [Enterprise Policy Reference](docs/ENTERPRISE-POLICY.md).
+
 ## Configuration modes
 
 Individual and enterprise modes use the same security engine. Enterprise mode adds a
 company-managed organization policy through `SDAI_ORG_POLICY_PATH`; repository and user
 configuration may narrow but cannot expand organization provider/model permissions.
 Organization policy must be stored outside the repository.
+
+Repository configuration cannot rename or redirect `SDAI_ORG_POLICY_PATH`. For a true organizational trust boundary, the enterprise must also control that environment setting and policy file through its managed developer environment, CI runner, corporate launcher, endpoint controls, or equivalent platform mechanism.
 
 ## External agents
 
@@ -19,6 +25,7 @@ Organization policy must be stored outside the repository.
   override those privilege controls.
 - External CLI providers receive a minimal environment rather than inheriting the
   caller's complete environment. Provider/profile variables are allowlisted.
+- Enterprise mode fails closed for provider/profile environment variables unless effective organization policy permits them.
 - Prompt-safety checks run when an invocation is built, so dry-run cannot print content
   that real execution would reject.
 - The prompt safety guard is defense-in-depth, not a complete secret scanner.
@@ -30,10 +37,12 @@ must be treated as trusted code.
 ## Protected source-of-truth paths
 
 Workspace-writing agents are not allowed to modify SD-AI governance, canonical
-agent/skill definitions, provider-native generated definitions, or `specs/**`.
+agent/skill definitions, provider-native generated definitions, specifications, selected Git metadata, or CI/CODEOWNERS controls in the built-in protected set.
 SD-AI snapshots protected paths around an external workspace-write execution. If those
 paths change, it restores them and fails the step. Organization/repository/user policy
 may add more protected paths.
+
+The exact built-in path list and restore semantics are maintained in [Execution Security Reference](docs/EXECUTION-SECURITY.md).
 
 ## Path containment
 
