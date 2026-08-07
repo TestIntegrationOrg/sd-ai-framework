@@ -29,18 +29,18 @@ Transport = Callable[[Request], bytes]
 
 
 def _default_transport(request: Request) -> bytes:
-    with urlopen(request, timeout=30) as response:  # nosec B310 - URL is configured by the user
+    with urlopen(request, timeout=30) as response:  # nosec B310 - HTTPS is enforced by JiraClient
         return response.read()
 
 
 class JiraClient:
-    """Minimal Jira Cloud REST adapter with credentials sourced from environment.
+    """Minimal Jira REST adapter with credentials sourced from environment.
 
     Supported authentication:
       JIRA_BEARER_TOKEN
       or JIRA_EMAIL + JIRA_API_TOKEN
 
-    Project files never contain credentials.
+    Project files never contain credentials and HTTPS is mandatory.
     """
 
     def __init__(
@@ -53,8 +53,8 @@ class JiraClient:
         transport: Transport | None = None,
     ):
         base_url = base_url.strip().rstrip("/")
-        if not base_url.startswith(("https://", "http://")):
-            raise JiraIntegrationError("Jira base URL must start with http:// or https://")
+        if not base_url.startswith("https://"):
+            raise JiraIntegrationError("Jira base URL must use https://")
         self.base_url = base_url
         self.email = email
         self.api_token = api_token
@@ -123,7 +123,7 @@ class JiraClient:
             issue_type=_nested_name(issue_fields.get("issuetype")),
             priority=_nested_name(issue_fields.get("priority")),
             labels=tuple(str(v) for v in (issue_fields.get("labels") or []) if v),
-            url=f"{self.base_url}/browse/{quote(str(data.get('key') or key), safe='-')}"
+            url=f"{self.base_url}/browse/{quote(str(data.get('key') or key), safe='-')}",
         )
 
 
