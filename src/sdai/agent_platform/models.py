@@ -57,6 +57,7 @@ class AgentInvocation:
     prompt: str
     cwd: Path
     mode: ExecutionMode = ExecutionMode.ADVISORY
+    agent_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,3 +69,4 @@ class AgentExecutionResult:
     output: str
     prompt: str
     skills: tuple[str, ...] = field(default_factory=tuple)
+    agent_name: str | None = None
