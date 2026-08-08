@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import os
 from pathlib import Path
@@ -61,6 +61,8 @@ class PolicyLayer:
     protected_paths: tuple[str, ...] = ()
     environment_allowlist: frozenset[str] | None = None
     required_skills: dict[str, tuple[str, ...]] | None = None
+    required_architecture_artifacts: dict[str, tuple[str, ...]] | None = None
+    architecture_allow_waivers: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ class EffectiveConfiguration:
     protected_paths: tuple[str, ...]
     environment_allowlist: frozenset[str] | None
     required_skills_map: dict[str, tuple[str, ...]]
+    required_architecture_artifacts_map: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    architecture_allow_waivers: bool = True
 
     def assert_base_profile_allowed(
         self,
@@ -141,6 +145,11 @@ class EffectiveConfiguration:
     def required_skills(self, capability: "Capability") -> tuple[str, ...]:
         return self.required_skills_map.get(capability.value, ())
 
+    def required_architecture_artifacts(self, lifecycle_mode: str) -> tuple[str, ...]:
+        return self.required_architecture_artifacts_map.get(lifecycle_mode, ())
+
+
+
 
 def _optional_bool(mapping: dict[str, Any], key: str, *, label: str) -> bool | None:
     if key not in mapping:
@@ -149,7 +158,6 @@ def _optional_bool(mapping: dict[str, Any], key: str, *, label: str) -> bool | N
     if not isinstance(value, bool):
         raise PolicyError(f"{label} must be true or false")
     return value
-
 
 def _optional_string_set(value: object, *, label: str) -> frozenset[str] | None:
     if value is None:
@@ -225,6 +233,28 @@ def _required_skills(value: object, *, source: str) -> dict[str, tuple[str, ...]
     return result
 
 
+
+
+def _required_architecture_artifacts(value: object, *, source: str) -> dict[str, tuple[str, ...]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PolicyError(f"{source}: architecture_validation.required must be a mapping")
+    result: dict[str, tuple[str, ...]] = {}
+    for mode_name, names in value.items():
+        mode = str(mode_name)
+        if mode not in {"light", "standard", "critical"}:
+            raise PolicyError(f"{source}: unknown lifecycle mode '{mode}' in architecture_validation.required")
+        parsed = _optional_string_set(names, label=f"{source}: required architecture artifacts for {mode}")
+        assert parsed is not None
+        for name in parsed:
+            if not name.replace("-", "").isalnum() or name.lower() != name:
+                raise PolicyError(
+                    f"{source}: architecture requirement names must be lowercase kebab-case"
+                )
+        result[mode] = tuple(sorted(parsed))
+    return result
+
 def _reject_unknown(mapping: dict[str, Any], allowed: set[str], *, label: str) -> None:
     unknown = sorted(set(mapping) - allowed)
     if unknown:
@@ -237,14 +267,15 @@ def _load_layer(path: Path, source: str) -> PolicyLayer:
         raise PolicyError(f"{source}: policy version must be 1")
     _reject_unknown(
         data,
-        {"version", "providers", "capabilities", "execution", "skills"},
+        {"version", "providers", "capabilities", "execution", "skills", "architecture_validation"},
         label=source,
     )
     providers = data.get("providers") or {}
     execution = data.get("execution") or {}
     skills = data.get("skills") or {}
-    if not isinstance(providers, dict) or not isinstance(execution, dict) or not isinstance(skills, dict):
-        raise PolicyError(f"{source}: providers, execution, and skills must be mappings")
+    architecture_validation = data.get("architecture_validation") or {}
+    if not isinstance(providers, dict) or not isinstance(execution, dict) or not isinstance(skills, dict) or not isinstance(architecture_validation, dict):
+        raise PolicyError(f"{source}: providers, execution, skills, and architecture_validation must be mappings")
     _reject_unknown(
         providers,
         {"allowed_profiles", "allowed_providers", "allowed_models"},
@@ -262,6 +293,11 @@ def _load_layer(path: Path, source: str) -> PolicyLayer:
         label=f"{source}: execution",
     )
     _reject_unknown(skills, {"required"}, label=f"{source}: skills")
+    _reject_unknown(
+        architecture_validation,
+        {"required", "allow_waivers"},
+        label=f"{source}: architecture_validation",
+    )
 
     capability_profiles, capability_providers = _capability_rules(
         data.get("capabilities"), source=source
@@ -307,6 +343,14 @@ def _load_layer(path: Path, source: str) -> PolicyLayer:
             label=f"{source}: execution.environment_allowlist",
         ),
         required_skills=_required_skills(skills.get("required"), source=source),
+        required_architecture_artifacts=_required_architecture_artifacts(
+            architecture_validation.get("required"), source=source
+        ),
+        architecture_allow_waivers=_optional_bool(
+            architecture_validation,
+            "allow_waivers",
+            label=f"{source}: architecture_validation.allow_waivers",
+        ),
     )
 
 
@@ -347,6 +391,18 @@ def _merge_required_skills(layers: list[PolicyLayer]) -> dict[str, tuple[str, ..
                     bucket.append(name)
     return {key: tuple(value) for key, value in result.items()}
 
+
+
+
+def _merge_required_architecture_artifacts(layers: list[PolicyLayer]) -> dict[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {}
+    for layer in layers:
+        for mode, names in (layer.required_architecture_artifacts or {}).items():
+            bucket = result.setdefault(mode, [])
+            for name in names:
+                if name not in bucket:
+                    bucket.append(name)
+    return {key: tuple(value) for key, value in result.items()}
 
 def _external_policy_path(value: str, *, label: str, project_root: Path) -> Path:
     path = Path(value).expanduser()
@@ -447,6 +503,10 @@ def load_effective_configuration(
     environment_allowlist = _intersect(
         [layer.environment_allowlist for layer in layers]
     )
+    required_architecture_artifacts = _merge_required_architecture_artifacts(layers)
+    architecture_allow_waivers = all(
+        layer.architecture_allow_waivers is not False for layer in layers
+    )
     # Enterprise subprocesses fail closed: provider credential/environment variables
     # must be named by company policy. Native CLI credential stores remain available.
     if effective_mode == OperatingMode.ENTERPRISE and environment_allowlist is None:
@@ -466,6 +526,8 @@ def load_effective_configuration(
         protected_paths=tuple(protected),
         environment_allowlist=environment_allowlist,
         required_skills_map=_merge_required_skills(layers),
+        required_architecture_artifacts_map=required_architecture_artifacts,
+        architecture_allow_waivers=architecture_allow_waivers,
     )
 
 
@@ -480,4 +542,7 @@ execution:
   protected_paths: []
 skills:
   required: {}
+architecture_validation:
+  required: {}
+  allow_waivers: true
 """

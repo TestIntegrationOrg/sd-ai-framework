@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from sdai.config import load_yaml
+from sdai.architecture_artifact_validator import validate_architecture_artifacts
 from sdai.models import FeatureContext, LifecycleMode
 
 
@@ -60,6 +62,17 @@ def validate(context: FeatureContext, mode: LifecycleMode) -> list[ValidationFin
         for marker in ("FR-001", "NFR-001", "AC-001"):
             if marker not in spec:
                 findings.append(ValidationFinding("ERROR", "SPEC_BASELINE", f"Specification missing {marker}"))
+
+    for architecture_finding in validate_architecture_artifacts(context, mode):
+        if architecture_finding.level == "INFO":
+            continue
+        findings.append(
+            ValidationFinding(
+                architecture_finding.level,
+                architecture_finding.code,
+                architecture_finding.message,
+            )
+        )
 
     adr_path = context.artifact("adr/ADR-001-initial-architecture.md")
     if adr_path.exists() and "Status: Proposed" in adr_path.read_text(encoding="utf-8"):

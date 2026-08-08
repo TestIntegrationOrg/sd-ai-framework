@@ -4,7 +4,7 @@
 
 SD-AI treats approved specification and architecture artifacts as source of truth. Semantic agent roles, provider profiles, reusable skills, declarative workflows, approvals, quality gates, and integrations operate around that source of truth.
 
-> Project status: **0.5.1 / configuration-driven individual + enterprise execution hardening**.
+> Project status: **0.5.3 / architecture skill pack + deterministic architecture-artifact lifecycle validation**.
 
 ## One framework, same capabilities
 
@@ -193,6 +193,8 @@ If `SDAI_ORG_POLICY_PATH` is present, organization policy is applied even if a r
 
 ## Agent files and skills
 
+The default Architect now composes a dedicated architecture skill pack for RFCs, ADRs, C4 views, editable Draw.io XML, PlantUML sequence diagrams, API/event contracts, and threat modeling. Critical/standard lifecycle validation can make those artifacts required through the deterministic architecture-artifact validator. See [Architecture skills](docs/ARCHITECTURE-SKILLS.md) and [Architecture artifact validation](docs/ARCHITECTURE-VALIDATION.md).
+
 Canonical semantic agents:
 
 ```text
@@ -286,6 +288,8 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [Configuration modes](docs/CONFIGURATION-MODES.md)
 - [Enterprise policy reference](docs/ENTERPRISE-POLICY.md)
 - [Execution security reference](docs/EXECUTION-SECURITY.md)
+- [Architecture skills](docs/ARCHITECTURE-SKILLS.md)
+- [Architecture artifact validation](docs/ARCHITECTURE-VALIDATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agent platform](docs/AGENT-PLATFORM.md)
 - [Agent files and skills](docs/AGENT-FILES.md)
@@ -310,9 +314,12 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [x] Canonical `.agent.md` semantic role files
 - [x] Shared `.agents/skills` skill source
 - [x] Provider-native agent synchronization
+- [x] RFC/ADR/C4/Draw.io/PlantUML/API/threat-model architecture skill pack
+- [x] Deterministic architecture-artifact validation for standard/critical features
 - [x] Configuration-driven individual + enterprise provider/model policy
 - [x] Protected source-of-truth workspace writes
 - [x] External provider environment isolation
+- [x] Enterprise architecture authoring skill pack
 - [ ] Identity-backed enterprise approvals
 - [ ] OpenAPI / AsyncAPI / JSON Schema contract validation
 - [ ] Requirement → ADR → task → code → test traceability graph

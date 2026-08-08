@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sdai.architecture_skills import (
+    ARCHITECT_V051,
+    ARCHITECT_V052,
+    ARCHITECT_V053,
+    SKILLS as ARCHITECTURE_SKILLS,
+    _skill_markdown,
+    _skill_metadata,
+)
 from sdai.artifacts import write_text
+from sdai.architecture_artifact_validator import scaffold_architecture_validation
 
 
 AGENT_ROUTING = """version: 1
@@ -18,10 +27,10 @@ routes:
 """
 
 
-AGENT_DEFINITIONS = {
+AGENTS: dict[str, str] = {
     "requirements-analyst": """---
 name: requirements-analyst
-description: Analyze product intent and turn it into clear, testable, traceable requirements.
+description: Analyze product requirements, ambiguity, NFRs, and acceptance criteria without inventing business intent.
 capabilities: [requirements]
 skills: [requirements-analysis, spec-traceability]
 profile: claude
@@ -30,24 +39,12 @@ providers: {}
 ---
 # Requirements Analyst
 
-Analyze business intent before implementation begins. Separate facts, assumptions, recommendations, and open questions. Identify ambiguous behavior, missing acceptance criteria, NFRs, dependencies, edge cases, and conflicts with existing approved artifacts. Never invent business requirements to close a gap silently.
+Convert product/Jira/business intent into explicit requirements, NFRs, constraints, acceptance criteria, assumptions, dependencies, and open questions. Separate facts from assumptions and do not write implementation code.
 """,
-    "architect": """---
-name: architect
-description: Generate architecture options, trade-offs, ADR proposals, and architecture-as-code artifacts.
-capabilities: [architecture, review]
-skills: [architecture-design, architecture-review, spec-traceability]
-profile: claude
-execution_mode: advisory
-providers: {}
----
-# Architect
-
-Start from requirements, NFRs, constraints, and existing-system evidence. Identify architecture drivers, generate viable alternatives, compare trade-offs, and recommend decisions explicitly. Produce or improve C4/Mermaid, interfaces, data flows, trust boundaries, deployment design, operational considerations, and ADR proposals. Do not silently change approved requirements.
-""",
+    "architect": ARCHITECT_V053,
     "planner": """---
 name: planner
-description: Convert approved specifications and architecture into a dependency-aware implementation plan.
+description: Convert approved specification and architecture into a dependency-aware implementation plan and task graph.
 capabilities: [planning]
 skills: [implementation-planning, spec-traceability]
 profile: codex
@@ -56,11 +53,11 @@ providers: {}
 ---
 # Planner
 
-Create the smallest dependency-aware plan that realizes the approved specification and architecture. Make task ordering, parallel work, risks, migration, verification, rollback, and ownership boundaries explicit. Every material task must trace to a requirement, acceptance criterion, ADR, NFR, or accepted risk.
+Plan only from approved requirements and architecture. Produce dependency-aware, independently verifiable tasks with explicit requirement/ADR traceability, sequencing, parallelism, migration considerations, and validation steps. Do not silently change architecture.
 """,
     "developer": """---
 name: developer
-description: Implement approved tasks with tests while preserving specification and architecture traceability.
+description: Implement approved tasks safely within specification and architecture boundaries.
 capabilities: [coding]
 skills: [secure-coding, test-design, spec-traceability]
 profile: codex
@@ -69,11 +66,11 @@ providers: {}
 ---
 # Developer
 
-Implement only approved scope and prefer the smallest maintainable change. Follow repository conventions and architecture decisions, add or update automated tests, and report conflicts rather than silently rewriting requirements or ADRs. Never expose secrets, private keys, credentials, or sensitive production data.
+Implement the smallest change that satisfies approved requirements, architecture, and tasks. Preserve behavior outside scope, add tests, follow repository conventions, and surface any material architecture divergence as a proposed decision rather than silently changing source-of-truth artifacts.
 """,
     "code-reviewer": """---
 name: code-reviewer
-description: Review code for correctness, architecture drift, security, testing, and traceability.
+description: Review implementation for correctness, security, tests, architecture drift, and specification traceability.
 capabilities: [review]
 skills: [architecture-review, secure-coding, test-design, spec-traceability]
 profile: copilot
@@ -82,11 +79,11 @@ providers: {}
 ---
 # Code Reviewer
 
-Review the implementation against approved requirements, architecture, ADRs, tasks, tests, and governance. Prioritize correctness defects, regressions, missing tests, security issues, architecture drift, unsafe operational behavior, and untraceable changes. Give actionable findings with evidence and severity.
+Review repository changes against requirements, architecture, ADRs, security constraints, and tests. Prioritize correctness, regression risk, security, missing tests, architecture drift, and traceability gaps. Provide evidence and actionable findings.
 """,
     "tester": """---
 name: tester
-description: Design risk-based tests tied directly to acceptance criteria and important failure modes.
+description: Design risk-based tests that prove acceptance criteria and important failure modes.
 capabilities: [testing]
 skills: [test-design, spec-traceability]
 profile: copilot
@@ -95,11 +92,11 @@ providers: {}
 ---
 # Tester
 
-Build a verification strategy from acceptance criteria, NFRs, architecture risks, and failure modes. Cover unit, integration, contract, authorization, resilience, retry/idempotency, migration, and observability where applicable. Flag requirements that cannot be verified objectively.
+Design tests from acceptance criteria, architecture contracts, and failure modes. Cover unit, integration, contract, resilience, security, retry/idempotency, and observability behavior when relevant. Flag untestable requirements explicitly.
 """,
     "security-reviewer": """---
 name: security-reviewer
-description: Review architecture and implementation through explicit trust boundaries and least privilege.
+description: Review architecture and implementation for trust boundaries, abuse cases, least privilege, and security controls.
 capabilities: [security, review]
 skills: [secure-coding, architecture-review, spec-traceability]
 profile: claude
@@ -108,11 +105,11 @@ providers: {}
 ---
 # Security Reviewer
 
-Analyze trust boundaries, authentication, authorization, secrets, cryptographic key handling, data exposure, input handling, supply-chain risk, abuse cases, auditability, network access, and operational privileges. Distinguish confirmed findings from hypotheses and require evidence before marking a risk resolved.
+Review trust boundaries, identity, authorization, secrets, data exposure, injection, supply chain, abuse cases, auditability, and least privilege against approved requirements and architecture. Distinguish confirmed findings from hypotheses and do not invent compliance claims.
 """,
     "documentation-writer": """---
 name: documentation-writer
-description: Keep technical documentation aligned with approved design, implementation, and operational behavior.
+description: Keep technical documentation aligned with approved architecture, implementation, tests, and operational behavior.
 capabilities: [documentation]
 skills: [documentation-quality, spec-traceability]
 profile: gemini
@@ -121,146 +118,138 @@ providers: {}
 ---
 # Documentation Writer
 
-Create concise technical documentation that is consistent with the specification, ADRs, architecture diagrams, interfaces, implementation, tests, deployment, security constraints, and operational behavior. Identify documentation drift rather than copying stale text forward.
+Create or improve maintainable technical documentation that stays consistent with approved requirements, architecture, ADRs, contracts, implementation, tests, and operations. Identify documentation drift instead of silently normalizing contradictions.
 """,
 }
 
 
-SKILLS = {
-    "requirements-analysis": (
-        "Analyze requirements for ambiguity, completeness, testability, dependencies, assumptions, and NFRs.",
-        ["requirements"],
-        """# Requirements Analysis
+BASE_SKILLS: dict[str, dict[str, object]] = {
+    "requirements-analysis": {
+        "description": "Turn product intent into explicit requirements, NFRs, acceptance criteria, assumptions, and open questions.",
+        "capabilities": ["requirements"],
+        "instructions": """# Requirements Analysis
 
-- Separate business facts from assumptions and recommendations.
-- Convert desired behavior into observable acceptance criteria.
-- Identify missing actors, inputs, outputs, boundaries, failure behavior, compatibility, and lifecycle behavior.
-- Capture scalability, availability, latency, security, compliance, cost, and operability needs when material.
-- Surface unresolved questions instead of inventing answers.
+- Separate business facts, assumptions, constraints, dependencies, and open questions.
+- Make acceptance criteria observable and testable.
+- Identify NFRs that materially affect architecture: scale, latency, availability, security, compliance, operability, data lifecycle, cost, and compatibility.
+- Do not invent business behavior to fill an ambiguity; surface it for clarification.
+- Assign or preserve stable requirement/acceptance identifiers when the repository uses them.
 """,
-    ),
-    "architecture-design": (
-        "Design architecture from explicit drivers, constraints, alternatives, and quality attributes.",
-        ["architecture"],
-        """# Architecture Design
+    },
+    "implementation-planning": {
+        "description": "Create dependency-aware implementation plans tied to approved requirements and architecture decisions.",
+        "capabilities": ["planning"],
+        "instructions": """# Implementation Planning
 
-- Derive architecture drivers from requirements and NFRs before choosing technology.
-- Generate multiple viable options for material decisions and compare trade-offs.
-- Define system context, containers/components, data flows, interfaces, events, deployment, trust boundaries, and failure recovery.
-- Prefer reversible decisions when uncertainty is high.
-- Record material choices as ADR proposals with consequences and risks.
+- Decompose work into small, verifiable tasks with explicit dependencies.
+- Trace material tasks to requirements, acceptance criteria, ADRs, contracts, or risks.
+- Identify parallelizable work, migrations, compatibility requirements, feature flags, rollout, rollback, and verification.
+- Keep architecture decisions out of implementation tasks unless they are already approved; unresolved architecture belongs in an ADR/RFC proposal.
 """,
-    ),
-    "architecture-review": (
-        "Evaluate architecture and implementation against quality attributes and approved decisions.",
-        ["architecture", "review", "security"],
-        """# Architecture Review
+    },
+    "spec-traceability": {
+        "description": "Keep requirements, architecture, ADRs, tasks, code, tests, and review findings traceable.",
+        "capabilities": ["requirements", "architecture", "planning", "coding", "review", "testing", "security", "documentation"],
+        "instructions": """# Spec Traceability
 
-- Check alignment with architecture drivers, constraints, and ADRs.
-- Evaluate scalability, reliability, security, performance, cost, operability, maintainability, and reversibility.
-- Identify hidden coupling, incorrect service boundaries, data ownership conflicts, unsafe failure modes, and architecture drift.
-- Support findings with concrete evidence from artifacts or code.
+- Reference requirement/acceptance IDs when proposing or implementing material work.
+- Treat approved specifications and ADRs as source-of-truth artifacts.
+- Flag code, tests, contracts, or diagrams that cannot be traced to approved intent.
+- Never resolve a conflict by silently changing the requirement or architecture.
 """,
-    ),
-    "implementation-planning": (
-        "Create dependency-aware, verifiable implementation plans with explicit rollout and risk handling.",
-        ["planning"],
-        """# Implementation Planning
-
-- Break work into independently verifiable tasks with explicit dependencies.
-- Identify work that can run in parallel and work that requires sequencing.
-- Include contract/data migration, observability, testing, security, rollout, rollback, and documentation work when applicable.
-- Trace every material task to approved source-of-truth artifacts.
-""",
-    ),
-    "spec-traceability": (
-        "Keep requirements, architecture, tasks, code, tests, reviews, and delivery evidence traceable.",
-        ["requirements", "architecture", "planning", "coding", "review", "testing", "security", "documentation"],
-        """# Spec Traceability
-
-- Reference requirement, acceptance, NFR, ADR, or task IDs for material work.
-- Treat approved specifications and ADRs as source of truth.
-- Flag behavior or code that cannot be traced to approved intent.
-- Do not resolve conflicts by silently changing upstream artifacts.
-""",
-    ),
-    "secure-coding": (
-        "Apply least privilege, safe input handling, secret hygiene, and supply-chain-aware coding practices.",
-        ["coding", "review", "security"],
-        """# Secure Coding
+    },
+    "secure-coding": {
+        "description": "Apply secure implementation and review practices.",
+        "capabilities": ["coding", "review", "security"],
+        "instructions": """# Secure Coding
 
 - Apply least privilege and explicit trust boundaries.
-- Never expose credentials, tokens, private keys, or sensitive production data.
-- Validate untrusted inputs and use safe APIs instead of ad-hoc shell/parsing behavior.
-- Review authentication, authorization, cryptography, logging, deserialization, dependency, and supply-chain implications.
-- Make security-relevant failure behavior explicit and testable.
+- Do not expose credentials, tokens, private keys, or sensitive production data.
+- Validate untrusted inputs and use safe output/context encoding.
+- Prefer safe APIs over ad-hoc parsing, unsafe deserialization, or shell execution.
+- Treat dependency, build, and supply-chain changes as security relevant.
 """,
-    ),
-    "test-design": (
-        "Build risk-based automated tests tied to acceptance criteria and critical failure modes.",
-        ["coding", "review", "testing"],
-        """# Test Design
+    },
+    "test-design": {
+        "description": "Build risk-based tests tied to acceptance criteria, contracts, and failure modes.",
+        "capabilities": ["testing", "coding", "review"],
+        "instructions": """# Test Design
 
 - Trace tests to acceptance criteria and material NFRs.
-- Cover success, boundary, failure, authorization, retry/idempotency, and recovery behavior where relevant.
-- Use deterministic test data and isolate external dependencies appropriately.
-- Include contract/integration/resilience/security tests when unit tests cannot prove the behavior.
-- Flag acceptance criteria that are not observable or objectively testable.
+- Cover success, boundary, failure, timeout, retry/idempotency, authorization, and concurrency paths where relevant.
+- Add integration/contract/resilience tests where unit tests cannot prove system behavior.
+- Prefer deterministic tests and explicit test data.
+- Flag acceptance criteria that cannot be observed or verified.
 """,
-    ),
-    "documentation-quality": (
-        "Keep technical documentation concise, accurate, versioned, and aligned with current system behavior.",
-        ["documentation", "review"],
-        """# Documentation Quality
+    },
+    "documentation-quality": {
+        "description": "Produce durable technical documentation that stays aligned with the implemented and approved system.",
+        "capabilities": ["documentation", "review"],
+        "instructions": """# Documentation Quality
 
-- Document decisions and operational behavior, not implementation trivia that will immediately drift.
-- Keep architecture, interfaces, configuration, deployment, security, troubleshooting, and rollback information consistent.
-- Link documentation to source-of-truth artifacts when possible.
-- Identify stale or contradictory documentation explicitly.
+- Keep terminology, component names, contracts, and operational behavior consistent with approved architecture and code.
+- Prefer concise version-controlled source over screenshots when the source can be rendered.
+- Include prerequisites, failure behavior, verification, migration, and rollback guidance when relevant.
+- Identify documentation drift explicitly instead of repeating stale claims.
 """,
-    ),
+    },
 }
 
 
-def _skill_markdown(name: str, description: str, instructions: str) -> str:
-    return (
-        "---\n"
-        f"name: {name}\n"
-        f"description: {description}\n"
-        "---\n"
-        f"{instructions.strip()}\n"
-    )
+SKILLS: dict[str, dict[str, object]] = {**BASE_SKILLS, **ARCHITECTURE_SKILLS}
+SHARED_SKILLS = SKILLS
+AGENT_FILES = AGENTS
 
 
-def _skill_sidecar(capabilities: list[str]) -> str:
-    values = ", ".join(capabilities)
-    return f"version: 1\ncapabilities: [{values}]\n"
+def _write_missing(path: Path, content: str, created: list[Path]) -> None:
+    if not path.exists():
+        created.append(write_text(path, content, overwrite=False))
 
 
 def install_v05_scaffold(root: Path) -> list[Path]:
-    """Install canonical semantic agents and open-standard skills without overwriting custom files."""
+    """Install canonical semantic agents and shared skills without overwriting team customizations.
+
+    v0.5.3 extends the v0.5 scaffold with the architecture authoring skill pack and
+    architecture-artifact lifecycle validation. An
+    existing Architect definition is upgraded only when it exactly matches the stock
+    v0.5.1 definition; customized agent files and skill files remain untouched.
+    """
+    if not (root / ".sdai" / "config.yaml").exists():
+        raise FileNotFoundError("Not an SD-AI project. Run `sdai init` first.")
+
     created: list[Path] = []
-    route_path = root / ".sdai" / "agent-routing.yaml"
-    if not route_path.exists():
-        created.append(write_text(route_path, AGENT_ROUTING, overwrite=False))
+    _write_missing(root / ".sdai" / "agent-routing.yaml", AGENT_ROUTING, created)
+    _write_missing(
+        root / ".sdai" / "architecture-validation.yaml",
+        scaffold_architecture_validation(),
+        created,
+    )
 
-    for name, content in AGENT_DEFINITIONS.items():
+    for name, content in AGENTS.items():
         path = root / ".sdai" / "agents" / f"{name}.agent.md"
-        if not path.exists():
-            created.append(write_text(path, content, overwrite=False))
+        if name == "architect" and path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing in {ARCHITECT_V051.strip(), ARCHITECT_V052.strip()}:
+                created.append(write_text(path, ARCHITECT_V053, overwrite=True))
+                continue
+        _write_missing(path, content, created)
 
-    for name, (description, capabilities, instructions) in SKILLS.items():
+    for name, spec in SKILLS.items():
         skill_root = root / ".agents" / "skills" / name
-        skill_path = skill_root / "SKILL.md"
-        sidecar_path = skill_root / "sdai.yaml"
-        if not skill_path.exists():
-            created.append(
-                write_text(
-                    skill_path,
-                    _skill_markdown(name, description, instructions),
-                    overwrite=False,
-                )
-            )
-        if not sidecar_path.exists():
-            created.append(write_text(sidecar_path, _skill_sidecar(capabilities), overwrite=False))
+        _write_missing(
+            skill_root / "SKILL.md",
+            _skill_markdown(name, str(spec["description"]), str(spec["instructions"])),
+            created,
+        )
+        _write_missing(
+            skill_root / "sdai.yaml",
+            _skill_metadata(list(spec["capabilities"])),
+            created,
+        )
+
     return created
+
+
+# Compatibility aliases for callers/tests that imported an earlier helper name.
+install_v05 = install_v05_scaffold
+scaffold_v05 = install_v05_scaffold

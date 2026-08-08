@@ -1,2 +1,2 @@
 version: 1
-capabilities: [architecture]
+capabilities: [architecture, review]

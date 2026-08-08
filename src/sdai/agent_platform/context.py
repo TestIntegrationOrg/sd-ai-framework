@@ -19,6 +19,19 @@ _CONTEXT_ARTIFACTS = (
 )
 
 
+_ARCHITECTURE_CONTEXT_ROOTS = ("rfc", "architecture", "adr", "contracts", "security")
+_ARCHITECTURE_CONTEXT_SUFFIXES = {
+    ".md",
+    ".mmd",
+    ".puml",
+    ".plantuml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".proto",
+}
+
+
 def _read_bounded(path: Path, max_chars_per_file: int, *, root: Path) -> str:
     safe = ensure_within_project(root, path, label="agent context file")
     text = safe.read_text(encoding="utf-8")
@@ -39,6 +52,30 @@ def collect_feature_context(context: FeatureContext, *, max_chars_per_file: int 
             f"{_read_bounded(path, max_chars_per_file, root=context.feature_dir)}"
         )
         seen.add(path.resolve())
+
+    # RFCs, architecture-as-code diagrams, ADRs, contracts, and threat-model artifacts
+    # are durable design context for downstream developer/test/security/review agents.
+    # Draw.io XML is intentionally not injected by default because it is typically a
+    # presentation derivative and can be very large; the corresponding C4/PlantUML/
+    # Mermaid sources should carry the machine-readable architecture semantics.
+    for relative_root in _ARCHITECTURE_CONTEXT_ROOTS:
+        root = context.artifact(relative_root)
+        if not root.exists() or not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            safe = ensure_within_project(
+                context.feature_dir, path, label="architecture artifact context"
+            )
+            if not safe.is_file() or safe.suffix.lower() not in _ARCHITECTURE_CONTEXT_SUFFIXES:
+                continue
+            if safe.resolve() in seen:
+                continue
+            relative = safe.relative_to(context.feature_dir).as_posix()
+            sections.append(
+                f"## Artifact: {relative}\n"
+                f"{_read_bounded(safe, max_chars_per_file, root=context.feature_dir)}"
+            )
+            seen.add(safe.resolve())
 
     # External-agent outputs are durable lifecycle context for downstream agents.
     ai_root = context.artifact("ai")

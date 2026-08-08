@@ -1,0 +1,92 @@
+version: 1
+modes:
+  light:
+    required: []
+  standard:
+    required:
+      - specification
+      - architecture-alternatives
+      - decision-matrix
+      - adr
+      - traceability
+  critical:
+    required:
+      - specification
+      - rfc
+      - architecture-alternatives
+      - decision-matrix
+      - adr
+      - c4-context
+      - component-diagram
+      - sequence-diagram
+      - security-model
+      - api-event-contracts
+      - traceability
+settings:
+  allow_waivers: true
+  waiver_file: architecture/validation-waivers.yaml
+  critical_waiver_requires_approval: true
+requirements:
+  specification:
+    description: Approved feature specification
+    any_of: [specification.md]
+    check: markdown
+  rfc:
+    description: Decision-ready engineering RFC
+    any_of: [rfc/RFC-*.md]
+    check: markdown
+  architecture-alternatives:
+    description: Architecture alternatives and explicit trade-offs
+    any_of: [architecture/architecture.md]
+    check: alternatives
+  decision-matrix:
+    description: Architecture decision matrix
+    any_of: [architecture/decision-matrix.md]
+    check: markdown
+  adr:
+    description: Architecture Decision Record
+    any_of: [adr/ADR-*.md]
+    check: adr
+  c4-context:
+    description: C4 system-context diagram
+    any_of:
+      - architecture/diagrams/context.puml
+      - architecture/diagrams/context.mmd
+      - architecture/diagrams/context.drawio
+    check: diagram
+  component-diagram:
+    description: Component-level architecture diagram
+    any_of:
+      - architecture/diagrams/component*.puml
+      - architecture/diagrams/component*.mmd
+      - architecture/diagrams/component*.drawio
+    check: diagram
+  sequence-diagram:
+    description: Runtime interaction/sequence diagram
+    any_of:
+      - architecture/diagrams/*sequence*.puml
+      - architecture/diagrams/*sequence*.mmd
+      - architecture/diagrams/*sequence*.drawio
+    check: diagram
+  security-model:
+    description: Threat/security model
+    any_of: [security/threat-model.md]
+    check: markdown
+  api-event-contracts:
+    description: Version-controlled API/event/schema contract
+    any_of:
+      - contracts/openapi*.yaml
+      - contracts/openapi*.yml
+      - contracts/openapi*.json
+      - contracts/asyncapi*.yaml
+      - contracts/asyncapi*.yml
+      - contracts/asyncapi*.json
+      - contracts/**/*.proto
+      - contracts/schemas/*.json
+      - contracts/schemas/*.yaml
+      - contracts/schemas/*.yml
+    check: contract
+  traceability:
+    description: Requirement-to-task traceability
+    any_of: [tasks.yaml, specification.md]
+    check: traceability
