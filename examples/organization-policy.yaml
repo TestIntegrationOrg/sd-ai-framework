@@ -21,3 +21,13 @@ skills:
   required:
     architecture: [architecture-review]
     coding: [secure-coding]
+architecture_validation:
+  required:
+    critical:
+      - rfc
+      - c4-context
+      - component-diagram
+      - sequence-diagram
+      - security-model
+      - api-event-contracts
+  allow_waivers: false
