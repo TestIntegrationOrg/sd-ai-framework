@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -11,13 +12,17 @@ from typing import Mapping, Protocol
 
 import yaml
 
-from sdai.extensions.manifests import ExtensionKind, ExtensionManifestError, parse_extension_manifest
-from sdai.path_safety import ensure_within_project
+from sdai.extensions.manifests import (
+    ExtensionKind,
+    ExtensionManifestError,
+    parse_extension_manifest,
+)
+from sdai.path_safety import PathSafetyError, ensure_within_project
 from sdai.text import TextEncodingError, read_utf8_text
 
 
 class PluginStepError(RuntimeError):
-    """Raised when a plugin manifest, policy, permission, or execution result is unsafe."""
+    """Raised when a plugin manifest, policy, permission, or result is unsafe."""
 
 
 _SAFE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$")
@@ -29,6 +34,7 @@ _DOS_DEVICE = re.compile(
     r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
     re.IGNORECASE,
 )
+_TRUSTED_COMMAND_PATH_ENV = "SDAI_PLUGIN_TRUSTED_COMMAND_PATH"
 
 
 @dataclass(frozen=True)
@@ -106,7 +112,13 @@ class PluginExecutionPlan:
         }
 
     def to_json(self) -> str:
-        return json.dumps(self.as_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+        return json.dumps(
+            self.as_dict(),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
 
 
 @dataclass(frozen=True)
@@ -140,7 +152,13 @@ class PluginResult:
         }
 
     def to_json(self) -> str:
-        return json.dumps(self.as_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+        return json.dumps(
+            self.as_dict(),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
 
 
 class PluginExecutor(Protocol):
@@ -152,12 +170,7 @@ class PluginExecutor(Protocol):
 
 
 class PluginExecutorRegistry:
-    """Registry of executor implementations installed/trusted by SDAI code.
-
-    Manifests name an executor ID only. They cannot import a Python module or
-    specify an arbitrary callable. Installing executable plugin code is therefore
-    a separate trusted-publisher/package operation rather than a YAML capability.
-    """
+    """Registry of executor implementations installed/trusted by SDAI code."""
 
     def __init__(self) -> None:
         self._executors: dict[str, PluginExecutor] = {}
@@ -204,21 +217,14 @@ def _safe_repo_path(value: object, label: str) -> str:
     text = value.strip()
     if text == ".":
         return "."
-    if (
-        "\\" in text
-        or text.startswith("/")
-        or re.match(r"^[A-Za-z]:", text)
-    ):
+    if "\\" in text or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
         raise _fail(
             "SDAI-PLUGIN-001",
             f"{label} must be a repository-relative POSIX path",
         )
     parts = text.split("/")
     if any(part in {"", ".", ".."} for part in parts):
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"{label} contains an invalid path segment",
-        )
+        raise _fail("SDAI-PLUGIN-001", f"{label} contains an invalid path segment")
     for part in parts:
         if (
             any(char in _WINDOWS_INVALID_CHARS for char in part)
@@ -233,11 +239,7 @@ def _safe_repo_path(value: object, label: str) -> str:
     return text
 
 
-def _string_list(
-    value: object,
-    label: str,
-    validator=None,
-) -> tuple[str, ...]:
+def _string_list(value: object, label: str, validator=None) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, list) or not all(
@@ -245,8 +247,7 @@ def _string_list(
     ):
         raise _fail("SDAI-PLUGIN-001", f"{label} must be a string list")
     result = tuple(
-        validator(item, label) if validator else item.strip()
-        for item in value
+        validator(item, label) if validator else item.strip() for item in value
     )
     if len(result) != len(set(result)):
         raise _fail("SDAI-PLUGIN-001", f"{label} must not contain duplicates")
@@ -255,10 +256,7 @@ def _string_list(
 
 def _parse_permissions(raw: object, label: str) -> PluginPermissions:
     if not isinstance(raw, Mapping):
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"{label} permissions must be a mapping",
-        )
+        raise _fail("SDAI-PLUGIN-001", f"{label} permissions must be a mapping")
     allowed = {
         "filesystem",
         "network",
@@ -270,14 +268,10 @@ def _parse_permissions(raw: object, label: str) -> PluginPermissions:
     if unknown:
         raise _fail(
             "SDAI-PLUGIN-001",
-            f"{label} permissions has unknown field(s): "
-            + ", ".join(map(str, unknown)),
+            f"{label} permissions has unknown field(s): {', '.join(map(str, unknown))}",
         )
     filesystem = raw.get("filesystem") or {}
-    if (
-        not isinstance(filesystem, Mapping)
-        or set(filesystem) - {"read", "write"}
-    ):
+    if not isinstance(filesystem, Mapping) or set(filesystem) - {"read", "write"}:
         raise _fail(
             "SDAI-PLUGIN-001",
             f"{label} permissions.filesystem must contain only read/write",
@@ -335,10 +329,7 @@ def _plugin_path(root: Path, plugin_id: str) -> Path:
             f"plugin '{plugin_id}' exists in more than one location",
         )
     if not existing:
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' does not exist",
-        )
+        raise _fail("SDAI-PLUGIN-001", f"plugin '{plugin_id}' does not exist")
     path = existing[0]
     if path.is_symlink() or not path.is_file():
         raise _fail(
@@ -348,10 +339,7 @@ def _plugin_path(root: Path, plugin_id: str) -> Path:
     return path
 
 
-def load_plugin_manifest(
-    project_root: Path,
-    plugin_id: str,
-) -> PluginManifest:
+def load_plugin_manifest(project_root: Path, plugin_id: str) -> PluginManifest:
     root = project_root.resolve()
     plugin_id = _safe_id(plugin_id, "plugin id")
     path = _plugin_path(root, plugin_id)
@@ -364,10 +352,7 @@ def load_plugin_manifest(
             f"unable to read plugin '{plugin_id}': {exc}",
         ) from exc
     if not isinstance(raw, Mapping):
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' must be a YAML mapping",
-        )
+        raise _fail("SDAI-PLUGIN-001", f"plugin '{plugin_id}' must be a YAML mapping")
     try:
         manifest = parse_extension_manifest(raw, source=source)
     except ExtensionManifestError as exc:
@@ -376,23 +361,17 @@ def load_plugin_manifest(
             f"invalid plugin '{plugin_id}': {exc}",
         ) from exc
     if manifest.kind is not ExtensionKind.PLUGIN_STEP:
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' kind must be PluginStep",
-        )
+        raise _fail("SDAI-PLUGIN-001", f"plugin '{plugin_id}' kind must be PluginStep")
     if manifest.metadata.id != plugin_id:
         raise _fail(
             "SDAI-PLUGIN-001",
             f"plugin filename/id mismatch for '{plugin_id}'",
         )
-    unknown = sorted(
-        set(manifest.spec) - {"publisher", "executor", "permissions"}
-    )
+    unknown = sorted(set(manifest.spec) - {"publisher", "executor", "permissions"})
     if unknown:
         raise _fail(
             "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' has unknown spec field(s): "
-            + ", ".join(unknown),
+            f"plugin '{plugin_id}' has unknown spec field(s): {', '.join(unknown)}",
         )
     publisher = _safe_id(manifest.spec.get("publisher"), "publisher")
     executor = _safe_id(manifest.spec.get("executor"), "executor")
@@ -416,13 +395,7 @@ def load_plugin_manifest(
 
 
 _POLICY_KEYS = frozenset(
-    {
-        "version",
-        "allowed_plugins",
-        "denied_plugins",
-        "trusted_publishers",
-        "permissions",
-    }
+    {"version", "allowed_plugins", "denied_plugins", "trusted_publishers", "permissions"}
 )
 
 
@@ -435,10 +408,7 @@ def _read_policy(path: Path, source: str) -> dict[str, object]:
             f"unable to read plugin policy {source}: {exc}",
         ) from exc
     if not isinstance(raw, Mapping):
-        raise _fail(
-            "SDAI-PLUGIN-002",
-            f"plugin policy {source} must be a mapping",
-        )
+        raise _fail("SDAI-PLUGIN-002", f"plugin policy {source} must be a mapping")
     unknown = sorted(set(raw) - _POLICY_KEYS)
     if unknown or raw.get("version") != 1:
         raise _fail(
@@ -494,11 +464,7 @@ def load_plugin_policy(
 
     repo = root / ".sdai" / "plugin-policy.yaml"
     if repo.exists():
-        safe = ensure_within_project(
-            root,
-            repo,
-            label="repository plugin policy",
-        )
+        safe = ensure_within_project(root, repo, label="repository plugin policy")
         if safe.is_symlink() or not safe.is_file():
             raise _fail(
                 "SDAI-PLUGIN-002",
@@ -552,15 +518,11 @@ def load_plugin_policy(
                     _safe_id,
                 ),
             )
-        permissions = raw.get("permissions")
-        if permissions is not None:
-            parsed = _policy_permissions(permissions, source)
+        if raw.get("permissions") is not None:
+            parsed = _policy_permissions(raw["permissions"], source)
             read_paths = _intersection(read_paths, parsed.filesystem_read)
             write_paths = _intersection(write_paths, parsed.filesystem_write)
-            environment_names = _intersection(
-                environment_names,
-                parsed.environment,
-            )
+            environment_names = _intersection(environment_names, parsed.environment)
             commands = _intersection(commands, parsed.commands)
             allow_workspace_write = (
                 parsed.workspace_write
@@ -577,11 +539,7 @@ def load_plugin_policy(
         trusted_publishers = {"sdai"}
 
     return PluginPolicy(
-        allowed_plugins=(
-            None
-            if allowed_plugins is None
-            else tuple(sorted(allowed_plugins))
-        ),
+        allowed_plugins=None if allowed_plugins is None else tuple(sorted(allowed_plugins)),
         denied_plugins=tuple(sorted(denied_plugins)),
         trusted_publishers=tuple(sorted(trusted_publishers or ())),
         allow_workspace_write=bool(allow_workspace_write),
@@ -606,7 +564,14 @@ def _path_allowed(requested: str, allowed: tuple[str, ...]) -> bool:
 
 
 def _validate_json_inputs(value: object, *, label: str) -> object:
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise _fail(
+                "SDAI-PLUGIN-001",
+                f"{label} contains a non-finite number",
+            )
         return value
     if isinstance(value, str):
         if "\x00" in value or _FORBIDDEN_TEMPLATE.search(value):
@@ -616,10 +581,7 @@ def _validate_json_inputs(value: object, *, label: str) -> object:
             )
         return value
     if isinstance(value, list):
-        return [
-            _validate_json_inputs(item, label=label)
-            for item in value
-        ]
+        return [_validate_json_inputs(item, label=label) for item in value]
     if isinstance(value, Mapping):
         result: dict[str, object] = {}
         for key, item in value.items():
@@ -630,10 +592,7 @@ def _validate_json_inputs(value: object, *, label: str) -> object:
                 )
             result[key] = _validate_json_inputs(item, label=label)
         return result
-    raise _fail(
-        "SDAI-PLUGIN-001",
-        f"{label} must contain JSON-compatible values",
-    )
+    raise _fail("SDAI-PLUGIN-001", f"{label} must contain JSON-compatible values")
 
 
 def prepare_plugin_step(
@@ -653,10 +612,7 @@ def prepare_plugin_step(
             "SDAI-PLUGIN-003",
             f"plugin '{plugin.id}' is denied by effective policy",
         )
-    if (
-        policy.allowed_plugins is not None
-        and plugin.id not in policy.allowed_plugins
-    ):
+    if policy.allowed_plugins is not None and plugin.id not in policy.allowed_plugins:
         raise _fail(
             "SDAI-PLUGIN-003",
             f"plugin '{plugin.id}' is not in the effective allowed_plugins set",
@@ -674,10 +630,7 @@ def prepare_plugin_step(
             "workspace_write permission is denied by effective policy",
         )
     if requested.network:
-        raise _fail(
-            "SDAI-PLUGIN-004",
-            "network permission is not supported in plugin v1",
-        )
+        raise _fail("SDAI-PLUGIN-004", "network permission is not supported in plugin v1")
     for path in requested.filesystem_read:
         if not _path_allowed(path, policy.allowed_read_paths):
             raise _fail(
@@ -690,18 +643,13 @@ def prepare_plugin_step(
                 "SDAI-PLUGIN-003",
                 f"filesystem write permission '{path}' is denied by effective policy",
             )
-    missing_environment = sorted(
-        set(requested.environment) - set(policy.allowed_environment)
-    )
+    missing_environment = sorted(set(requested.environment) - set(policy.allowed_environment))
     if missing_environment:
         raise _fail(
             "SDAI-PLUGIN-003",
-            "environment permission denied: "
-            + ", ".join(missing_environment),
+            "environment permission denied: " + ", ".join(missing_environment),
         )
-    missing_commands = sorted(
-        set(requested.commands) - set(policy.allowed_commands)
-    )
+    missing_commands = sorted(set(requested.commands) - set(policy.allowed_commands))
     if missing_commands:
         raise _fail(
             "SDAI-PLUGIN-003",
@@ -733,26 +681,92 @@ _PROTECTED_PREFIXES = (
     ".github/agents",
     "specs",
 )
-_PROTECTED_FILES = frozenset({"CODEOWNERS"})
+_PROTECTED_FILES = frozenset(
+    {
+        "codeowners",
+        ".github/codeowners",
+        "docs/codeowners",
+    }
+)
+
+
+def _normalized_protected_path(relative: str) -> str:
+    return relative.strip("/").replace("\\", "/").casefold()
 
 
 def _is_protected(relative: str) -> bool:
-    normalized = relative.strip("/")
+    normalized = _normalized_protected_path(relative)
     if normalized in _PROTECTED_FILES:
         return True
     return any(
-        normalized == prefix or normalized.startswith(prefix + "/")
+        normalized == prefix.casefold()
+        or normalized.startswith(prefix.casefold() + "/")
         for prefix in _PROTECTED_PREFIXES
     )
 
 
-class PluginExecutionServices:
-    """Framework services exposed to trusted executor implementations.
+def _relative_to_root(root: Path, path: Path, *, label: str) -> str:
+    try:
+        return path.resolve(strict=False).relative_to(root).as_posix()
+    except ValueError as exc:
+        raise _fail("SDAI-PLUGIN-005", f"{label} escaped the project workspace") from exc
 
-    The executor implementation itself is trusted installed code. These services
-    enforce the manifest/policy contract for framework-mediated I/O/commands; the
-    YAML manifest cannot load code, obtain a raw shell, or bypass protected writes.
-    """
+
+def _reject_symlink_components(root: Path, path: Path, *, label: str) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise _fail("SDAI-PLUGIN-005", f"{label} escaped the project workspace") from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"{label} must not traverse symlink component '{current.relative_to(root).as_posix()}'",
+            )
+
+
+def _trusted_command_directories(
+    root: Path,
+    environ: Mapping[str, str],
+) -> tuple[Path, ...]:
+    raw = environ.get(_TRUSTED_COMMAND_PATH_ENV, "").strip()
+    if not raw:
+        raise _fail(
+            "SDAI-PLUGIN-005",
+            f"command execution requires administrator-controlled {_TRUSTED_COMMAND_PATH_ENV}",
+        )
+    directories: list[Path] = []
+    for item in raw.split(os.pathsep):
+        text = item.strip()
+        if not text:
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"{_TRUSTED_COMMAND_PATH_ENV} contains an empty search path",
+            )
+        candidate = Path(text)
+        if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"{_TRUSTED_COMMAND_PATH_ENV} entries must be absolute regular directories",
+            )
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"{_TRUSTED_COMMAND_PATH_ENV} must not include a workspace-controlled directory",
+            )
+        directories.append(resolved)
+    return tuple(directories)
+
+
+class PluginExecutionServices:
+    """Permission-checked services exposed to trusted executor implementations."""
 
     def __init__(
         self,
@@ -770,22 +784,28 @@ class PluginExecutionServices:
         value: str,
         permission_paths: tuple[str, ...],
         operation: str,
-    ) -> tuple[Path, str]:
+    ) -> tuple[Path, str, str]:
         relative = _safe_repo_path(value, f"plugin {operation} path")
         if not _path_allowed(relative, permission_paths):
             raise _fail(
                 "SDAI-PLUGIN-005",
                 f"plugin did not declare {operation} permission for '{relative}'",
             )
-        path = ensure_within_project(
+        lexical = self.root if relative == "." else self.root / Path(*relative.split("/"))
+        try:
+            ensure_within_project(self.root, lexical, label=f"plugin {operation} path")
+        except PathSafetyError as exc:
+            raise _fail("SDAI-PLUGIN-005", str(exc)) from exc
+        _reject_symlink_components(self.root, lexical, label=f"plugin {operation} path")
+        resolved_relative = _relative_to_root(
             self.root,
-            self.root / Path(*relative.split("/")),
+            lexical,
             label=f"plugin {operation} path",
         )
-        return path, relative
+        return lexical, relative, resolved_relative
 
     def read_text(self, relative_path: str) -> str:
-        path, _ = self._relative(
+        path, _, _ = self._relative(
             relative_path,
             self.plan.permissions.filesystem_read,
             "read",
@@ -793,8 +813,7 @@ class PluginExecutionServices:
         if path.is_symlink() or not path.is_file():
             raise _fail(
                 "SDAI-PLUGIN-005",
-                "plugin read target must be a regular non-symlink file: "
-                + relative_path,
+                "plugin read target must be a regular non-symlink file: " + relative_path,
             )
         return read_utf8_text(path)
 
@@ -804,12 +823,20 @@ class PluginExecutionServices:
                 "SDAI-PLUGIN-005",
                 "plugin did not declare workspace_write permission",
             )
-        path, relative = self._relative(
+        path, relative, resolved_relative = self._relative(
             relative_path,
             self.plan.permissions.filesystem_write,
             "write",
         )
-        if _is_protected(relative):
+        if _is_protected(relative) or _is_protected(resolved_relative):
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"plugin cannot write protected path '{relative}'",
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_components(self.root, path, label="plugin write path")
+        resolved_relative = _relative_to_root(self.root, path, label="plugin write path")
+        if _is_protected(resolved_relative):
             raise _fail(
                 "SDAI-PLUGIN-005",
                 f"plugin cannot write protected path '{relative}'",
@@ -819,7 +846,6 @@ class PluginExecutionServices:
                 "SDAI-PLUGIN-005",
                 f"plugin cannot write through symlink '{relative}'",
             )
-        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", newline="\n")
 
     def getenv(self, name: str) -> str | None:
@@ -845,13 +871,8 @@ class PluginExecutionServices:
                 "SDAI-PLUGIN-005",
                 "plugin executable must be a bare executable name",
             )
-        if not isinstance(argv, (list, tuple)) or not all(
-            isinstance(item, str) for item in argv
-        ):
-            raise _fail(
-                "SDAI-PLUGIN-005",
-                "plugin argv must be a string list",
-            )
+        if not isinstance(argv, (list, tuple)) or not all(isinstance(item, str) for item in argv):
+            raise _fail("SDAI-PLUGIN-005", "plugin argv must be a string list")
         if any(
             "\x00" in item
             or "\n" in item
@@ -863,11 +884,29 @@ class PluginExecutionServices:
                 "SDAI-PLUGIN-005",
                 "plugin argv contains unsafe NUL/newline/template syntax",
             )
-        resolved = shutil.which(executable)
-        if resolved is None:
+
+        trusted_directories = _trusted_command_directories(self.root, self.environ)
+        trusted_path = os.pathsep.join(str(path) for path in trusted_directories)
+        resolved_text = shutil.which(executable, path=trusted_path)
+        if resolved_text is None:
             raise _fail(
                 "SDAI-PLUGIN-005",
-                f"allowed executable '{executable}' was not found",
+                f"allowed executable '{executable}' was not found in the trusted command path",
+            )
+        resolved = Path(resolved_text)
+        if resolved.is_symlink() or not resolved.is_file():
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"allowed executable '{executable}' must resolve to a regular non-symlink file",
+            )
+        resolved = resolved.resolve()
+        if not any(
+            resolved == directory / resolved.name or directory in resolved.parents
+            for directory in trusted_directories
+        ):
+            raise _fail(
+                "SDAI-PLUGIN-005",
+                f"allowed executable '{executable}' resolved outside the trusted command path",
             )
 
         child_environment = {
@@ -881,7 +920,7 @@ class PluginExecutionServices:
                     child_environment.setdefault(name, self.environ[name])
 
         return subprocess.run(
-            [resolved, *argv],
+            [str(resolved), *argv],
             cwd=self.root,
             env=child_environment,
             shell=False,
@@ -917,20 +956,19 @@ def execute_plugin_step(
             "SDAI-PLUGIN-006",
             f"trusted plugin executor '{plan.plugin.executor}' is not registered",
         )
-    services = PluginExecutionServices(
-        project_root,
-        plan,
-        environ=environ,
-    )
+    services = PluginExecutionServices(project_root, plan, environ=environ)
     result = executor.execute(plan, services)
     if not isinstance(result, PluginResult):
-        raise _fail(
-            "SDAI-PLUGIN-006",
-            "plugin executor returned an invalid result type",
-        )
+        raise _fail("SDAI-PLUGIN-006", "plugin executor returned an invalid result type")
     if result.status not in {"passed", "failed"}:
-        raise _fail(
-            "SDAI-PLUGIN-006",
-            "plugin result status must be passed or failed",
-        )
+        raise _fail("SDAI-PLUGIN-006", "plugin result status must be passed or failed")
+    if not isinstance(result.summary, str):
+        raise _fail("SDAI-PLUGIN-006", "plugin result summary must be a string")
+    normalized_data = _validate_json_inputs(
+        dict(result.data or {}),
+        label="plugin result data",
+    )
+    assert isinstance(normalized_data, dict)
+    if normalized_data != dict(result.data or {}):
+        result = PluginResult(result.status, result.summary, result.findings, normalized_data)
     return plan, result
