@@ -11,6 +11,7 @@ from sdai.agent_platform.definitions import AgentDefinition, list_agent_definiti
 from sdai.agent_platform.models import ExecutionMode
 from sdai.agent_platform.skills import list_skills
 from sdai.artifacts import write_text
+from sdai.text import read_utf8_text
 from sdai.path_safety import ensure_within_project
 
 
@@ -149,7 +150,7 @@ def _managed(content: str) -> bool:
 def _write_managed(project_root: Path, path: Path, content: str, *, force: bool) -> Path | None:
     ensure_within_project(project_root, path, label="native agent output")
     if path.exists():
-        existing = path.read_text(encoding="utf-8")
+        existing = read_utf8_text(path)
         if existing.rstrip() == content.rstrip():
             return None
         if not force and not _managed(existing):

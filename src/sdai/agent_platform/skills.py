@@ -9,6 +9,7 @@ import yaml
 from sdai.agent_platform.models import Capability, Skill
 from sdai.config import load_yaml
 from sdai.path_safety import ensure_within_project
+from sdai.text import read_utf8_text
 
 
 class SkillError(RuntimeError):
@@ -69,7 +70,7 @@ def _load_canonical(project_root: Path, name: str) -> Skill:
     path = ensure_within_project(project_root, root / "SKILL.md", label="canonical SKILL.md")
     if not path.exists():
         raise SkillError(f"Canonical skill '{name}' must contain SKILL.md")
-    metadata, instructions = _frontmatter(path.read_text(encoding="utf-8"), path)
+    metadata, instructions = _frontmatter(read_utf8_text(path), path)
     metadata_name = str(metadata.get("name") or "").strip()
     if not metadata_name:
         raise SkillError(f"Canonical skill '{name}' requires frontmatter name")
@@ -106,7 +107,7 @@ def _load_legacy(project_root: Path, name: str) -> Skill:
         name=name,
         description=str(manifest.get("description") or ""),
         capabilities=_capabilities(manifest.get("capabilities") or []),
-        instructions=instructions_path.read_text(encoding="utf-8").strip(),
+        instructions=read_utf8_text(instructions_path).strip(),
         root=root,
     )
 

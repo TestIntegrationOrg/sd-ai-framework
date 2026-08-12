@@ -5,6 +5,8 @@ from typing import Any
 
 import yaml
 
+from sdai.text import read_utf8_text
+
 
 class ConfigError(RuntimeError):
     pass
@@ -13,7 +15,7 @@ class ConfigError(RuntimeError):
 def load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"Configuration not found: {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(read_utf8_text(path)) or {}
     if not isinstance(data, dict):
         raise ConfigError(f"Expected mapping in {path}")
     return data

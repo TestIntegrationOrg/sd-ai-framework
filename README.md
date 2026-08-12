@@ -18,6 +18,7 @@ The same runtime and CLI support:
 - custom/declarative workflows
 - manual execution of any named workflow step
 - advisory and workspace-write execution
+- explicit UTF-8 provider and repository-text boundaries across Windows and Linux
 - approvals, retries, conditions, parallel advisory agents, and pause/resume
 - GitHub/Jira integrations
 - test, Trivy, and Sonar quality gates

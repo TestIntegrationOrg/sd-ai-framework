@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from typing import Callable
 
+from sdai.text import read_utf8_text
+
 
 class GitHubIntegrationError(RuntimeError):
     pass
@@ -168,7 +170,7 @@ def build_pull_request_body(feature_dir: Path, feature_id: str) -> str:
     ):
         path = feature_dir / relative
         if path.exists():
-            text = path.read_text(encoding="utf-8")
+            text = read_utf8_text(path)
             # Keep generated PR bodies bounded; full artifacts remain in the repository.
             if len(text) > 6000:
                 text = text[:6000] + "\n\n[truncated; see repository artifact]"

@@ -12,6 +12,7 @@ from sdai.config import load_yaml
 from sdai.models import FeatureContext, LifecycleMode
 from sdai.path_safety import ensure_within_project
 from sdai.policy import EffectiveConfiguration, load_effective_configuration
+from sdai.text import read_utf8_text
 
 
 @dataclass(frozen=True)
@@ -248,7 +249,7 @@ def _matches(context: FeatureContext, patterns: Iterable[str]) -> list[Path]:
 
 
 def _text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_utf8_text(path)
 
 
 def _non_placeholder_markdown(path: Path) -> bool:

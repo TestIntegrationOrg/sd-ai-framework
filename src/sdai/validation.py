@@ -6,6 +6,7 @@ from pathlib import Path
 from sdai.config import load_yaml
 from sdai.architecture_artifact_validator import validate_architecture_artifacts
 from sdai.models import FeatureContext, LifecycleMode
+from sdai.text import read_utf8_text
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def validate(context: FeatureContext, mode: LifecycleMode) -> list[ValidationFin
 
     spec_path = context.artifact("specification.md")
     if spec_path.exists():
-        spec = spec_path.read_text(encoding="utf-8")
+        spec = read_utf8_text(spec_path)
         for marker in ("FR-001", "NFR-001", "AC-001"):
             if marker not in spec:
                 findings.append(ValidationFinding("ERROR", "SPEC_BASELINE", f"Specification missing {marker}"))
@@ -75,7 +76,7 @@ def validate(context: FeatureContext, mode: LifecycleMode) -> list[ValidationFin
         )
 
     adr_path = context.artifact("adr/ADR-001-initial-architecture.md")
-    if adr_path.exists() and "Status: Proposed" in adr_path.read_text(encoding="utf-8"):
+    if adr_path.exists() and "Status: Proposed" in read_utf8_text(adr_path):
         findings.append(
             ValidationFinding("WARN", "ADR_PROPOSED", "Initial architecture ADR is still Proposed; approve it before critical implementation")
         )

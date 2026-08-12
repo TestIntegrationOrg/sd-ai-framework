@@ -13,6 +13,24 @@ class ProviderExecutionError(RuntimeError):
     pass
 
 
+def _escaped_byte_preview(data: bytes, start: int, end: int) -> str:
+    return "".join(
+        chr(value) if 0x20 <= value <= 0x7E and value != 0x5C else f"\\x{value:02x}"
+        for value in data[start:end]
+    )
+
+
+def _decode_provider_output(data: bytes, *, provider: str, stream: str) -> str:
+    try:
+        return data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        preview = _escaped_byte_preview(data, exc.start, exc.end)
+        raise ProviderExecutionError(
+            f"{provider} returned invalid UTF-8 on {stream} at byte {exc.start}; "
+            f"offending-byte preview: {preview}. Configure the provider to emit UTF-8."
+        ) from exc
+
+
 _BASE_ENVIRONMENT = (
     "PATH",
     "HOME",
@@ -99,22 +117,34 @@ class CliProvider(Provider):
         environment = self.environment
         if environment is None:
             environment = build_provider_environment(self.provider_name)
+        stdin_bytes = (
+            stdin_payload.encode("utf-8", errors="strict")
+            if stdin_payload is not None
+            else None
+        )
         result = subprocess.run(
             command,
             cwd=self.cwd,
-            input=stdin_payload,
-            capture_output=True,
-            text=True,
+            input=stdin_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=self.timeout_seconds,
             check=False,
             env=environment,
         )
+        stdout = _decode_provider_output(
+            result.stdout or b"", provider=self.provider_name, stream="stdout"
+        )
+        stderr = _decode_provider_output(
+            result.stderr or b"", provider=self.provider_name, stream="stderr"
+        )
         if result.returncode != 0:
-            stderr = result.stderr.strip()
             raise ProviderExecutionError(
-                f"{self.provider_name} failed with exit code {result.returncode}: {stderr}"
+                f"{self.provider_name} failed with exit code {result.returncode}: "
+                f"{stderr.strip()}"
             )
-        output = result.stdout.strip()
+        # Remove only a leading UTF-8 BOM before the existing whitespace normalization.
+        output = stdout.removeprefix("\ufeff").strip()
         if not output:
             raise ProviderExecutionError(f"{self.provider_name} returned no output")
         return output

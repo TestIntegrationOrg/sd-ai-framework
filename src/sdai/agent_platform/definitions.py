@@ -10,6 +10,7 @@ import yaml
 from sdai.agent_platform.models import Capability, ExecutionMode
 from sdai.config import load_yaml
 from sdai.path_safety import ensure_within_project
+from sdai.text import read_utf8_text
 
 
 class AgentDefinitionError(RuntimeError):
@@ -118,7 +119,7 @@ def load_agent_definition(project_root: Path, name: str) -> AgentDefinition:
     ensure_within_project(project_root, path, label="agent definition path")
     if not path.exists():
         raise AgentDefinitionError(f"Unknown semantic agent '{name}'")
-    metadata, instructions = _frontmatter(path.read_text(encoding="utf-8"), path)
+    metadata, instructions = _frontmatter(read_utf8_text(path), path)
     metadata_name = _validate_name(str(metadata.get("name") or name), "frontmatter agent name")
     if metadata_name != name:
         raise AgentDefinitionError(

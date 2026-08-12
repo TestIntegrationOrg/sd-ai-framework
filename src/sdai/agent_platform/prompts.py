@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from sdai.path_safety import ensure_within_project
+from sdai.text import read_utf8_text
 
 
 _TOKEN = re.compile(r"{{\s*([a-zA-Z0-9_.-]+)\s*}}")
@@ -44,7 +45,7 @@ def load_prompt(project_root: Path, name: str) -> str:
     path = _prompt_path(project_root, name)
     if not path.exists() or not path.is_file():
         raise PromptError(f"Prompt not found: {path}")
-    return path.read_text(encoding="utf-8")
+    return read_utf8_text(path)
 
 
 def list_prompts(project_root: Path) -> list[str]:

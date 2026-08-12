@@ -29,6 +29,7 @@ from sdai.models import FeatureContext, LifecycleMode, validate_feature_id
 from sdai.orchestrator import AGENTS, Orchestrator, StepExecution
 from sdai.quality_gates import QualityGateResult, QualityGateRunner, load_quality_gates
 from sdai.scaffold import init_project, upgrade_project
+from sdai.text import read_utf8_text
 from sdai.v05_scaffold import install_v05_scaffold
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflow_templates import install_current_workflows
@@ -431,7 +432,7 @@ def _feature_title(feature_dir: Path, feature_id: str) -> str:
     intake = feature_dir / "00-intake.md"
     if not intake.exists():
         return feature_id
-    lines = intake.read_text(encoding="utf-8").splitlines()
+    lines = read_utf8_text(intake).splitlines()
     for index, line in enumerate(lines):
         if line.strip() == "## Title" and index + 1 < len(lines):
             for candidate in lines[index + 1 :]:
