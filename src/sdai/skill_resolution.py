@@ -372,6 +372,21 @@ def _role_status(
     return True, ()
 
 
+def _task_keyword_matches(task: str, keyword: str) -> bool:
+    """Match a case-insensitive task token/phrase without arbitrary substrings.
+
+    Unicode casefolding keeps matching deterministic across platforms. Word
+    characters are treated as part of a token; punctuation/whitespace may bound a
+    keyword or phrase. Thus ``bug`` matches ``fix a bug`` and ``bug-fix`` but does
+    not match ``debug`` or ``buggy``.
+    """
+
+    folded_task = task.casefold()
+    folded_keyword = keyword.casefold()
+    pattern = rf"(?<!\w){re.escape(folded_keyword)}(?!\w)"
+    return re.search(pattern, folded_task) is not None
+
+
 def _context_status(
     metadata: SkillMetadata,
     *,
@@ -386,9 +401,13 @@ def _context_status(
             return False, (f"domain filter excludes {domain or '<unspecified>'}",)
         reasons.append(f"domain {domain} matched")
     if metadata.selection.task_keywords:
-        folded = (task or "").casefold()
+        task_text = task or ""
         keyword = next(
-            (item for item in metadata.selection.task_keywords if item.casefold() in folded),
+            (
+                item
+                for item in metadata.selection.task_keywords
+                if _task_keyword_matches(task_text, item)
+            ),
             None,
         )
         if keyword is None:
