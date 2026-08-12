@@ -64,18 +64,32 @@ def _strings(value: object, *, label: str, allow_empty: bool = False) -> tuple[s
     return values
 
 
-def _validate_core_language_binding(
+def _load_pack_skill(
+    root: Path,
     pack_id: str,
-    languages: tuple[str, ...],
-    skill: SkillMetadata,
-) -> None:
-    language_rules = skill.compatibility.get("languages", {})
-    if not set(language_rules).intersection(languages):
+    name: str,
+    group: str,
+) -> SkillMetadata:
+    try:
+        load_skill(root, name)
+        metadata = load_skill_metadata(root, name)
+        load_eval_scenarios(root, "skill", name)
+    except RuntimeError as exc:
+        raise _fail(
+            "SDAI-LANGPACK-002",
+            f"pack '{pack_id}' {group} skill '{name}' is invalid: {exc}",
+        ) from exc
+    if not metadata.selection.auto:
         raise _fail(
             "SDAI-LANGPACK-003",
-            f"core skill '{skill.name}' in '{pack_id}' must declare compatibility with one of: "
-            + ", ".join(languages),
+            f"pack '{pack_id}' {group} skill '{name}' must opt into automatic selection",
         )
+    if not metadata.capabilities:
+        raise _fail(
+            "SDAI-LANGPACK-003",
+            f"pack '{pack_id}' {group} skill '{name}' must declare lifecycle capabilities",
+        )
+    return metadata
 
 
 def load_language_pack(project_root: Path, pack_id: str) -> LanguagePack:
@@ -85,11 +99,22 @@ def load_language_pack(project_root: Path, pack_id: str) -> LanguagePack:
         root / ".sdai" / "extensions" / "packs" / f"{pack_id}.yaml",
         label="language pack manifest",
     )
-    manifest = load_extension_manifest(root, path)
+    try:
+        manifest = load_extension_manifest(root, path)
+    except RuntimeError as exc:
+        raise _fail(
+            "SDAI-LANGPACK-001",
+            f"invalid language pack manifest '{_portable(root, path)}': {exc}",
+        ) from exc
     if manifest.kind is not ExtensionKind.PACK:
         raise _fail(
             "SDAI-LANGPACK-001",
             f"{_portable(root, path)} must be a Pack manifest",
+        )
+    if manifest.metadata.id != pack_id:
+        raise _fail(
+            "SDAI-LANGPACK-001",
+            f"pack manifest id '{manifest.metadata.id}' must match requested/file id '{pack_id}'",
         )
     unknown = sorted(set(manifest.spec) - _SPEC_KEYS)
     if unknown:
@@ -137,28 +162,23 @@ def load_language_pack(project_root: Path, pack_id: str) -> LanguagePack:
 
     core_metadata: dict[str, SkillMetadata] = {}
     for name in core:
-        try:
-            load_skill(root, name)
-            metadata = load_skill_metadata(root, name)
-            load_eval_scenarios(root, "skill", name)
-        except RuntimeError as exc:
+        metadata = _load_pack_skill(root, pack_id, name, "core")
+        language_rules = metadata.compatibility.get("languages", {})
+        if not set(language_rules).intersection(languages):
             raise _fail(
-                "SDAI-LANGPACK-002",
-                f"pack '{pack_id}' core skill '{name}' is invalid: {exc}",
-            ) from exc
-        _validate_core_language_binding(pack_id, languages, metadata)
+                "SDAI-LANGPACK-003",
+                f"core skill '{name}' in '{pack_id}' must declare compatibility with one of: "
+                + ", ".join(languages),
+            )
         core_metadata[name] = metadata
 
     for name in frameworks:
-        try:
-            load_skill(root, name)
-            metadata = load_skill_metadata(root, name)
-            load_eval_scenarios(root, "skill", name)
-        except RuntimeError as exc:
+        metadata = _load_pack_skill(root, pack_id, name, "framework")
+        if not metadata.compatibility.get("frameworks"):
             raise _fail(
-                "SDAI-LANGPACK-002",
-                f"pack '{pack_id}' framework skill '{name}' is invalid: {exc}",
-            ) from exc
+                "SDAI-LANGPACK-003",
+                f"framework skill '{name}' in '{pack_id}' must declare framework compatibility",
+            )
         if not set(metadata.requires).intersection(core_metadata):
             raise _fail(
                 "SDAI-LANGPACK-004",
@@ -189,12 +209,16 @@ def list_language_packs(project_root: Path) -> tuple[LanguagePack, ...]:
         [*directory.glob("*.yaml"), *directory.glob("*.yml")],
         key=lambda item: item.name.casefold(),
     ):
-        manifest = load_extension_manifest(root, path)
-        if manifest.kind is not ExtensionKind.PACK:
+        try:
+            manifest = load_extension_manifest(root, path)
+        except RuntimeError as exc:
+            raise _fail(
+                "SDAI-LANGPACK-001",
+                f"invalid extension manifest '{_portable(root, path)}': {exc}",
+            ) from exc
+        if manifest.kind is not ExtensionKind.PACK or manifest.spec.get("type") != "language":
             continue
-        if manifest.spec.get("type") != "language":
-            continue
-        result.append(load_language_pack(root, manifest.metadata.id))
+        result.append(load_language_pack(root, path.stem))
     return tuple(result)
 
 
