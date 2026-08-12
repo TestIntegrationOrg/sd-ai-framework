@@ -246,6 +246,9 @@ def check_constitution(project_root: Path, feature_id: str) -> tuple[Constitutio
 
     findings: list[ConstitutionFinding] = []
     for principle in constitution.principles:
+        has_deterministic_checks = bool(
+            principle.required_sections or principle.required_terms
+        )
         missing_sections = [
             section
             for section in principle.required_sections
@@ -259,10 +262,21 @@ def check_constitution(project_root: Path, feature_id: str) -> tuple[Constitutio
             + [f"term:{term}" for term in missing_terms]
         )
         evidence = tuple(
-            [f"section:{section}" for section in principle.required_sections if section not in missing_sections]
-            + [f"term:{term}" for term in principle.required_terms if term not in missing_terms]
+            [
+                f"section:{section}"
+                for section in principle.required_sections
+                if section not in missing_sections
+            ]
+            + [
+                f"term:{term}"
+                for term in principle.required_terms
+                if term not in missing_terms
+            ]
         )
-        status = "pass" if not missing else "fail"
+        if not has_deterministic_checks:
+            status = "review"
+        else:
+            status = "pass" if not missing else "fail"
         findings.append(
             ConstitutionFinding(
                 principle_id=principle.id,
@@ -288,6 +302,7 @@ def write_constitution_evidence(project_root: Path, feature_id: str) -> Path:
         "constitution_path": ".sdai/constitution.md",
         "review_owner": "requirements-analyst",
         "approval_status": "pending",
+        "implementation_self_approval": "forbidden",
         "findings": [
             {
                 "principle_id": finding.principle_id,
