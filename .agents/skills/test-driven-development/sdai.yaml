@@ -7,5 +7,5 @@ selection:
   auto: true
   roles: []
   capabilities: [coding, testing]
-  task_keywords: [implement, implementation, feature, fix, refactor, change]
+  task_keywords: [implement, implementation, feature, fix, bug, refactor, change]
   domains: []
