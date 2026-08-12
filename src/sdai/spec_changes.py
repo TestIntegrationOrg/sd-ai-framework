@@ -51,13 +51,17 @@ def _fail(code: str, message: str) -> SpecChangeError:
 def _validate_identifier(value: object, *, label: str, pattern: re.Pattern[str]) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _fail("SDAI-SPEC-001", f"{label} must be a non-empty string")
-    normalized = value.strip()
-    if not pattern.fullmatch(normalized) or ".." in normalized:
+    if value != value.strip():
         raise _fail(
             "SDAI-SPEC-001",
-            f"{label} '{normalized}' is not a safe portable identifier",
+            f"{label} must not contain leading or trailing whitespace",
         )
-    return normalized
+    if not pattern.fullmatch(value) or ".." in value:
+        raise _fail(
+            "SDAI-SPEC-001",
+            f"{label} '{value}' is not a safe portable identifier",
+        )
+    return value
 
 
 def validate_domain_id(value: object) -> str:
@@ -127,21 +131,31 @@ def _read_text(project_root: Path, path: Path, label: str) -> str:
     root = project_root.resolve()
     safe = ensure_within_project(root, path, label=label)
     if not safe.is_file():
-        raise _fail("SDAI-SPEC-002", f"{label} does not exist or is not a file: {_portable_source(root, safe)}")
+        raise _fail(
+            "SDAI-SPEC-002",
+            f"{label} does not exist or is not a file: {_portable_source(root, safe)}",
+        )
     try:
         return read_utf8_text(safe)
     except TextEncodingError as exc:
         raise _fail("SDAI-SPEC-002", str(exc)) from exc
 
 
-def _load_yaml_mapping(project_root: Path, path: Path, label: str) -> tuple[dict[object, object], str, Path]:
+def _load_yaml_mapping(
+    project_root: Path,
+    path: Path,
+    label: str,
+) -> tuple[dict[object, object], str, Path]:
     root = project_root.resolve()
     safe = ensure_within_project(root, path, label=label)
     text = _read_text(root, safe, label)
     try:
         raw = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
-        raise _fail("SDAI-SPEC-002", f"invalid YAML in {_portable_source(root, safe)}: {exc}") from exc
+        raise _fail(
+            "SDAI-SPEC-002",
+            f"invalid YAML in {_portable_source(root, safe)}: {exc}",
+        ) from exc
     if not isinstance(raw, dict):
         raise _fail("SDAI-SPEC-003", f"{label} must contain a YAML mapping")
     return raw, text, safe
@@ -271,7 +285,10 @@ def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
     raw, text, safe = _load_yaml_mapping(root, path, f"change metadata '{feature}'")
     unknown = _unknown_keys(raw, _CHANGE_KEYS)
     if unknown:
-        raise _fail("SDAI-SPEC-003", f"change metadata contains unknown field(s): {', '.join(unknown)}")
+        raise _fail(
+            "SDAI-SPEC-003",
+            f"change metadata contains unknown field(s): {', '.join(unknown)}",
+        )
     if raw.get("version") != 1:
         raise _fail("SDAI-SPEC-003", "change metadata version must be 1")
     declared_feature = validate_change_feature_id(raw.get("feature_id"))
@@ -285,7 +302,10 @@ def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
     try:
         status = ChangeStatus(str(raw.get("status") or ""))
     except ValueError as exc:
-        raise _fail("SDAI-SPEC-003", "change.status must be 'draft' or 'proposed'") from exc
+        raise _fail(
+            "SDAI-SPEC-003",
+            "change.status must be 'draft' or 'proposed'",
+        ) from exc
     domains_raw = raw.get("domains")
     if not isinstance(domains_raw, list) or not domains_raw:
         raise _fail("SDAI-SPEC-003", "change.domains must be a non-empty list")
@@ -295,7 +315,10 @@ def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
     domains = tuple(sorted(domains_list))
     baselines_raw = raw.get("baselines")
     if not isinstance(baselines_raw, dict):
-        raise _fail("SDAI-SPEC-003", "change.baselines must be a mapping keyed by domain")
+        raise _fail(
+            "SDAI-SPEC-003",
+            "change.baselines must be a mapping keyed by domain",
+        )
     baseline_keys = {validate_domain_id(key) for key in baselines_raw}
     if baseline_keys != set(domains):
         missing = sorted(set(domains) - baseline_keys)
@@ -311,7 +334,11 @@ def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
             + (f" ({'; '.join(details)})" if details else ""),
         )
     baselines = {
-        domain: _parse_hash(baselines_raw[domain], f"change.baselines.{domain}", allow_none=True)
+        domain: _parse_hash(
+            baselines_raw[domain],
+            f"change.baselines.{domain}",
+            allow_none=True,
+        )
         for domain in domains
     }
     return ChangeMetadata(
@@ -337,7 +364,12 @@ def _operation_kind(value: object, index: int) -> DeltaOperationKind:
         ) from exc
 
 
-def _forbid(raw: dict[object, object], fields: tuple[str, ...], index: int, kind: DeltaOperationKind) -> None:
+def _forbid(
+    raw: dict[object, object],
+    fields: tuple[str, ...],
+    index: int,
+    kind: DeltaOperationKind,
+) -> None:
     present = [field for field in fields if field in raw and raw.get(field) is not None]
     if present:
         raise _fail(
@@ -365,17 +397,32 @@ def _parse_operation(raw: object, index: int) -> DeltaOperation:
 
     if kind is DeltaOperationKind.ADDED:
         _forbid(raw, ("previous_hash", "new_requirement_id"), index, kind)
-        definition = _nonempty_string(raw.get("definition"), f"operations[{index}].definition")
+        definition = _nonempty_string(
+            raw.get("definition"),
+            f"operations[{index}].definition",
+        )
     elif kind is DeltaOperationKind.MODIFIED:
         _forbid(raw, ("new_requirement_id",), index, kind)
-        previous_hash = _parse_hash(raw.get("previous_hash"), f"operations[{index}].previous_hash")
-        definition = _nonempty_string(raw.get("definition"), f"operations[{index}].definition")
+        previous_hash = _parse_hash(
+            raw.get("previous_hash"),
+            f"operations[{index}].previous_hash",
+        )
+        definition = _nonempty_string(
+            raw.get("definition"),
+            f"operations[{index}].definition",
+        )
     elif kind is DeltaOperationKind.REMOVED:
         _forbid(raw, ("new_requirement_id", "definition"), index, kind)
-        previous_hash = _parse_hash(raw.get("previous_hash"), f"operations[{index}].previous_hash")
+        previous_hash = _parse_hash(
+            raw.get("previous_hash"),
+            f"operations[{index}].previous_hash",
+        )
     else:
         _forbid(raw, ("definition",), index, kind)
-        previous_hash = _parse_hash(raw.get("previous_hash"), f"operations[{index}].previous_hash")
+        previous_hash = _parse_hash(
+            raw.get("previous_hash"),
+            f"operations[{index}].previous_hash",
+        )
         new_requirement_id = validate_requirement_id(
             raw.get("new_requirement_id"),
             label=f"operations[{index}].new_requirement_id",
@@ -401,12 +448,18 @@ def load_delta_document(project_root: Path, path: Path) -> DeltaDocument:
     raw, text, safe = _load_yaml_mapping(root, path, "delta document")
     unknown = _unknown_keys(raw, _DELTA_KEYS)
     if unknown:
-        raise _fail("SDAI-SPEC-003", f"delta document contains unknown field(s): {', '.join(unknown)}")
+        raise _fail(
+            "SDAI-SPEC-003",
+            f"delta document contains unknown field(s): {', '.join(unknown)}",
+        )
     if raw.get("version") != 1:
         raise _fail("SDAI-SPEC-003", "delta document version must be 1")
     domain = validate_domain_id(raw.get("domain"))
     if "baseline_spec_sha256" not in raw:
-        raise _fail("SDAI-SPEC-003", "delta document must declare baseline_spec_sha256 (use null for a new domain)")
+        raise _fail(
+            "SDAI-SPEC-003",
+            "delta document must declare baseline_spec_sha256 (use null for a new domain)",
+        )
     baseline = _parse_hash(
         raw.get("baseline_spec_sha256"),
         "delta.baseline_spec_sha256",
@@ -454,8 +507,19 @@ def load_spec_change(project_root: Path, feature_id: str) -> SpecChangeBundle:
         key=lambda item: item.name.casefold(),
     )
     if not paths:
-        raise _fail("SDAI-SPEC-002", f"no delta documents found for change '{metadata.feature_id}'")
-    deltas = tuple(load_delta_document(root, path) for path in paths)
+        raise _fail(
+            "SDAI-SPEC-002",
+            f"no delta documents found for change '{metadata.feature_id}'",
+        )
+    contained_paths = tuple(
+        ensure_within_project(
+            delta_root,
+            path,
+            label=f"delta document '{metadata.feature_id}'",
+        )
+        for path in paths
+    )
+    deltas = tuple(load_delta_document(root, path) for path in contained_paths)
     by_domain: dict[str, DeltaDocument] = {}
     for delta in deltas:
         if delta.domain not in metadata.domains:
