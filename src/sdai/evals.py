@@ -76,8 +76,8 @@ class ScenarioResult:
     description: str
     required: bool
     scenario_sha256: str
-    baseline_output: str
-    candidate_output: str
+    baseline_output_sha256: str
+    candidate_output_sha256: str
     baseline_assertions: tuple[AssertionResult, ...]
     candidate_assertions: tuple[AssertionResult, ...]
     baseline_score: float
@@ -100,9 +100,13 @@ class EvalReport:
     delta: float
     required_failures: tuple[str, ...]
     regressions: tuple[str, ...]
+    require_improvement: bool
+    improvement_satisfied: bool
     passed: bool
 
     def as_dict(self) -> dict[str, object]:
+        """Return CI-safe evidence without embedding raw model responses."""
+
         return {
             "version": 1,
             "target_type": self.target_type,
@@ -115,6 +119,8 @@ class EvalReport:
             "delta": self.delta,
             "required_failures": list(self.required_failures),
             "regressions": list(self.regressions),
+            "require_improvement": self.require_improvement,
+            "improvement_satisfied": self.improvement_satisfied,
             "passed": self.passed,
             "scenarios": [
                 {
@@ -122,8 +128,8 @@ class EvalReport:
                     "description": result.description,
                     "required": result.required,
                     "scenario_sha256": result.scenario_sha256,
-                    "baseline_output": result.baseline_output,
-                    "candidate_output": result.candidate_output,
+                    "baseline_output_sha256": result.baseline_output_sha256,
+                    "candidate_output_sha256": result.candidate_output_sha256,
                     "baseline_score": result.baseline_score,
                     "candidate_score": result.candidate_score,
                     "delta": result.delta,
@@ -158,7 +164,11 @@ class EvalReport:
 
 _ASSERTION_ID = re.compile(r"^[A-Z][A-Z0-9_-]{2,63}$")
 _SCENARIO_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
-_ALLOWED_MODES = frozenset({"must", "must_not"})
+_ASSERTION_KEYS = frozenset({"id", "contains", "regex", "case_sensitive"})
+_SCENARIO_KEYS = frozenset(
+    {"version", "id", "description", "required", "prompt", "assertions", "mock"}
+)
+_MOCK_KEYS = frozenset({"baseline", "candidate"})
 
 
 class MockEvalExecutor:
@@ -208,21 +218,42 @@ def _string(value: object, label: str) -> str:
     return value.strip()
 
 
+def _unknown_keys(raw: dict[object, object], allowed: frozenset[str]) -> list[str]:
+    return sorted(str(key) for key in raw if key not in allowed)
+
+
 def _load_assertions(raw: object, scenario_id: str) -> tuple[EvalAssertion, ...]:
     if not isinstance(raw, dict):
         raise EvalError(f"Scenario '{scenario_id}' assertions must be a mapping")
+    unknown_modes = sorted(set(raw) - {"must", "must_not"})
+    if unknown_modes:
+        raise EvalError(
+            f"Scenario '{scenario_id}' assertions contains unknown field(s): "
+            f"{', '.join(str(value) for value in unknown_modes)}"
+        )
     assertions: list[EvalAssertion] = []
     seen: set[str] = set()
     for mode in ("must", "must_not"):
         values = raw.get(mode, [])
         if not isinstance(values, list):
-            raise EvalError(f"Scenario '{scenario_id}' assertions.{mode} must be a list")
+            raise EvalError(
+                f"Scenario '{scenario_id}' assertions.{mode} must be a list"
+            )
         for index, item in enumerate(values, start=1):
             if not isinstance(item, dict):
                 raise EvalError(
                     f"Scenario '{scenario_id}' {mode} assertion #{index} must be a mapping"
                 )
-            assertion_id = _string(item.get("id"), f"{scenario_id}.{mode}[{index}].id")
+            unknown = _unknown_keys(item, _ASSERTION_KEYS)
+            if unknown:
+                raise EvalError(
+                    f"Scenario '{scenario_id}' {mode} assertion #{index} contains "
+                    f"unknown field(s): {', '.join(unknown)}"
+                )
+            assertion_id = _string(
+                item.get("id"),
+                f"{scenario_id}.{mode}[{index}].id",
+            )
             if not _ASSERTION_ID.fullmatch(assertion_id):
                 raise EvalError(
                     f"Assertion id '{assertion_id}' must use uppercase letters, numbers, "
@@ -230,7 +261,8 @@ def _load_assertions(raw: object, scenario_id: str) -> tuple[EvalAssertion, ...]
                 )
             if assertion_id in seen:
                 raise EvalError(
-                    f"Scenario '{scenario_id}' contains duplicate assertion id '{assertion_id}'"
+                    f"Scenario '{scenario_id}' contains duplicate assertion id "
+                    f"'{assertion_id}'"
                 )
             seen.add(assertion_id)
             contains = item.get("contains")
@@ -282,7 +314,7 @@ def load_eval_scenario(project_root: Path, path: Path) -> EvalScenario:
         raise EvalError(f"Invalid eval YAML in '{safe}': {exc}") from exc
     if not isinstance(raw, dict):
         raise EvalError(f"Eval scenario '{safe}' must be a mapping")
-    unknown = sorted(set(raw) - {"version", "id", "description", "required", "prompt", "assertions", "mock"})
+    unknown = _unknown_keys(raw, _SCENARIO_KEYS)
     if unknown:
         raise EvalError(
             f"Eval scenario '{safe}' contains unknown field(s): {', '.join(unknown)}"
@@ -303,10 +335,11 @@ def load_eval_scenario(project_root: Path, path: Path) -> EvalScenario:
     mock = raw.get("mock", {})
     if not isinstance(mock, dict):
         raise EvalError(f"Scenario '{scenario_id}' mock must be a mapping")
-    mock_unknown = sorted(set(mock) - {"baseline", "candidate"})
+    mock_unknown = _unknown_keys(mock, _MOCK_KEYS)
     if mock_unknown:
         raise EvalError(
-            f"Scenario '{scenario_id}' mock contains unknown field(s): {', '.join(mock_unknown)}"
+            f"Scenario '{scenario_id}' mock contains unknown field(s): "
+            f"{', '.join(mock_unknown)}"
         )
     mock_baseline = mock.get("baseline")
     mock_candidate = mock.get("candidate")
@@ -342,13 +375,16 @@ def load_eval_scenarios(
         key=lambda path: path.name.casefold(),
     )
     if not paths:
-        raise EvalError(f"No eval scenarios found for {target_type} '{target_name}'")
+        raise EvalError(
+            f"No eval scenarios found for {target_type} '{target_name}'"
+        )
     scenarios = tuple(load_eval_scenario(project_root, path) for path in paths)
     seen: set[str] = set()
     for scenario in scenarios:
         if scenario.id in seen:
             raise EvalError(
-                f"Duplicate eval scenario id '{scenario.id}' for {target_type} '{target_name}'"
+                f"Duplicate eval scenario id '{scenario.id}' for "
+                f"{target_type} '{target_name}'"
             )
         seen.add(scenario.id)
     return scenarios
@@ -360,7 +396,11 @@ def _assertion_result(assertion: EvalAssertion, output: str) -> AssertionResult:
         matched = re.search(assertion.pattern, output, flags=flags) is not None
     else:
         haystack = output if assertion.case_sensitive else output.casefold()
-        needle = assertion.pattern if assertion.case_sensitive else assertion.pattern.casefold()
+        needle = (
+            assertion.pattern
+            if assertion.case_sensitive
+            else assertion.pattern.casefold()
+        )
         matched = needle in haystack
     passed = matched if assertion.mode == "must" else not matched
     return AssertionResult(
@@ -372,10 +412,27 @@ def _assertion_result(assertion: EvalAssertion, output: str) -> AssertionResult:
 
 
 def _score(assertions: tuple[AssertionResult, ...]) -> float:
-    if not assertions:
-        return 100.0
     passed = sum(1 for assertion in assertions if assertion.passed)
     return round((passed / len(assertions)) * 100.0, 2)
+
+
+def _validate_execution(
+    execution: EvalExecution,
+    scenario_id: str,
+    phase: str,
+) -> None:
+    if not isinstance(execution.provider, str) or not execution.provider.strip():
+        raise EvalError(
+            f"Scenario '{scenario_id}' {phase} execution returned no provider identity"
+        )
+    if not isinstance(execution.model, str) or not execution.model.strip():
+        raise EvalError(
+            f"Scenario '{scenario_id}' {phase} execution returned no model identity"
+        )
+    if not isinstance(execution.output, str):
+        raise EvalError(
+            f"Scenario '{scenario_id}' {phase} execution output must be a string"
+        )
 
 
 def run_behavioral_eval(
@@ -419,6 +476,8 @@ def run_behavioral_eval(
                 scenario=scenario,
             )
         )
+        _validate_execution(baseline, scenario.id, "baseline")
+        _validate_execution(candidate, scenario.id, "candidate")
         providers.update((baseline.provider, candidate.provider))
         models.update((baseline.model, candidate.model))
         if baseline.provider != candidate.provider or baseline.model != candidate.model:
@@ -451,8 +510,12 @@ def run_behavioral_eval(
                 description=scenario.description,
                 required=scenario.required,
                 scenario_sha256=scenario.sha256,
-                baseline_output=baseline.output,
-                candidate_output=candidate.output,
+                baseline_output_sha256=sha256(
+                    baseline.output.encode("utf-8")
+                ).hexdigest(),
+                candidate_output_sha256=sha256(
+                    candidate.output.encode("utf-8")
+                ).hexdigest(),
                 baseline_assertions=baseline_assertions,
                 candidate_assertions=candidate_assertions,
                 baseline_score=baseline_score,
@@ -479,9 +542,8 @@ def run_behavioral_eval(
         2,
     )
     delta = round(candidate_score - baseline_score, 2)
-    passed = not required_failures and not regressions
-    if require_improvement and delta <= 0:
-        passed = False
+    improvement_satisfied = not require_improvement or delta > 0
+    passed = not required_failures and not regressions and improvement_satisfied
     return EvalReport(
         target_type=target_type,
         target_name=target_name,
@@ -494,5 +556,7 @@ def run_behavioral_eval(
         delta=delta,
         required_failures=tuple(required_failures),
         regressions=tuple(regressions),
+        require_improvement=require_improvement,
+        improvement_satisfied=improvement_satisfied,
         passed=passed,
     )
