@@ -121,6 +121,8 @@ def constitution_path(project_root: Path) -> Path:
 
 def init_constitution(project_root: Path, *, force: bool = False) -> Path:
     path = constitution_path(project_root)
+    if path.exists() and not force:
+        raise FileExistsError(f"engineering constitution already exists: {path}")
     return write_text(path, DEFAULT_CONSTITUTION, overwrite=force)
 
 
