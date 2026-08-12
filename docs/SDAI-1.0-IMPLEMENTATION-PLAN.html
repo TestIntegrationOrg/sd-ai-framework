@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SDAI 1.0 — Complete Implementation Plan</title>
+  <style>
+    :root{--bg:#f7f8fb;--surface:#fff;--surface2:#eef2f7;--text:#172033;--muted:#5c667a;--border:#d9deea;--accent:#2457d6;--accent2:#0c7a68;--warn:#9a6700;--danger:#b42318;--ok:#16794a;--code:#111827;--codeText:#e5e7eb}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:var(--bg);line-height:1.58}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.layout{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:100vh}nav{position:sticky;top:0;height:100vh;overflow:auto;background:#111827;color:#e5e7eb;padding:28px 22px}nav h1{font-size:1.15rem;margin:0 0 6px;color:#fff}nav .subtitle{color:#9ca3af;font-size:.88rem;margin-bottom:22px}nav a{display:block;color:#d1d5db;padding:5px 0;font-size:.86rem}nav a:hover{color:#fff;text-decoration:none}main{max-width:1280px;width:100%;padding:48px 54px 90px}header.hero{background:linear-gradient(135deg,#172554,#1d4ed8 60%,#0f766e);color:#fff;border-radius:18px;padding:40px;margin-bottom:28px;box-shadow:0 16px 38px rgba(17,24,39,.16)}header.hero h1{margin:0;font-size:2.35rem;line-height:1.15}header.hero p{max-width:980px;color:#dbeafe;font-size:1.05rem}.meta{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px}.pill{border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:5px 10px;font-size:.82rem}section{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px 30px;margin:20px 0;box-shadow:0 4px 14px rgba(17,24,39,.035)}h2{margin-top:0;font-size:1.65rem}h3{margin-top:1.6rem;font-size:1.2rem}h4{margin-bottom:.35rem}p.lead{font-size:1.06rem;color:#334155}.callout{border-left:5px solid var(--accent);background:#eff6ff;padding:14px 16px;border-radius:8px;margin:14px 0}.green{border-left-color:var(--ok);background:#ecfdf3}.warn{border-left-color:var(--warn);background:#fff8e6}.danger{border-left-color:var(--danger);background:#fff1f0}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.card{border:1px solid var(--border);background:#fbfcfe;border-radius:10px;padding:16px}.card h3,.card h4{margin-top:0}table{border-collapse:collapse;width:100%;margin:14px 0 22px;font-size:.91rem}th,td{border:1px solid var(--border);padding:9px 10px;text-align:left;vertical-align:top}th{background:var(--surface2)}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}pre{background:var(--code);color:var(--codeText);overflow:auto;border-radius:10px;padding:16px;font-size:.85rem;line-height:1.5}.phase{border-left:5px solid var(--accent2)}.good{color:var(--ok);font-weight:700}.gap{color:var(--danger);font-weight:700}.mid{color:var(--warn);font-weight:700}.priority{display:inline-block;border-radius:999px;padding:2px 8px;font-size:.78rem;font-weight:700}.p0{background:#fee2e2;color:#991b1b}.p1{background:#ffedd5;color:#9a3412}.p2{background:#dbeafe;color:#1e40af}.check{font-weight:700;color:var(--ok)}footer{color:var(--muted);font-size:.9rem;padding:18px 2px}@media(max-width:980px){.layout{display:block}nav{position:relative;height:auto}main{padding:24px 16px 60px}.grid2,.grid3{grid-template-columns:1fr}header.hero{padding:28px 22px}}
+  </style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h1>SDAI 1.0 Plan</h1>
+  <div class="subtitle">Spec-Driven + Governed AI Engineering</div>
+  <a href="#summary">1. Executive summary</a>
+  <a href="#benchmark">2. Four-way benchmark</a>
+  <a href="#goal">3. Product goal</a>
+  <a href="#principles">4. Architecture principles</a>
+  <a href="#lifecycle">5. Target lifecycle</a>
+  <a href="#extension">6. Extension platform</a>
+  <a href="#skills">7. Skills platform</a>
+  <a href="#language">8. Language & technology skills</a>
+  <a href="#agents">9. Semantic agents</a>
+  <a href="#workflow">10. Workflow extensibility</a>
+  <a href="#specs">11. Current specs + delta changes</a>
+  <a href="#artifact">12. Artifact graph & staleness</a>
+  <a href="#quality">13. SDD quality loop</a>
+  <a href="#execution">14. Execution excellence</a>
+  <a href="#evals">15. Skill/agent evaluation</a>
+  <a href="#ledger">16. Execution ledger & resume</a>
+  <a href="#evidence">17. Evidence-before-completion</a>
+  <a href="#taskagents">18. Isolated task agents & review</a>
+  <a href="#debugging">19. Systematic debugging</a>
+  <a href="#workspace">20. Workspace isolation</a>
+  <a href="#routing">21. Cost/risk-aware routing</a>
+  <a href="#trace">22. Traceability graph</a>
+  <a href="#packs">23. Packs & catalogs</a>
+  <a href="#integrations">24. Tool integrations</a>
+  <a href="#stores">25. Stores & multi-repo</a>
+  <a href="#contracts">26. Contracts & drift</a>
+  <a href="#trust">27. Enterprise trust</a>
+  <a href="#context">28. Context resolver</a>
+  <a href="#ux">29. Developer UX</a>
+  <a href="#release">30. Release plan</a>
+  <a href="#acceptance">31. Acceptance criteria</a>
+  <a href="#testing">32. Testing strategy</a>
+  <a href="#performance">33. Reliability & performance</a>
+  <a href="#structure">34. Target structure</a>
+  <a href="#master">35. Master capability checklist</a>
+  <a href="#better">36. Definition of “better”</a>
+  <a href="#sources">37. Benchmark sources</a>
+</nav>
+<main>
+<header class="hero">
+  <h1>SDAI 1.0 — Complete Implementation Plan</h1>
+  <p>A complete implementation program to evolve SDAI into a governed AI Software Development Lifecycle platform. It incorporates the strongest concepts identified from GitHub Spec Kit, Fission-AI OpenSpec, and obra/superpowers while preserving SDAI's enterprise policy, semantic agents, architecture, security, provider routing, approvals, quality gates, and deterministic source-of-truth model.</p>
+  <div class="meta"><span class="pill">Updated: 2026-08-11</span><span class="pill">Target: SDAI 1.0</span><span class="pill">Engineer + Enterprise</span><span class="pill">Extension-first</span><span class="pill">Evidence-driven</span></div>
+</header>
+
+<section id="summary">
+<h2>1. Executive Summary</h2>
+<p class="lead">SDAI should not win by accumulating prompts or commands. It should become the engineering control plane that can prove how software moves from intent to specification, architecture, implementation, verification, approval, and delivery across AI providers, languages, teams, and repositories.</p>
+<div class="callout green"><strong>Target positioning:</strong> Spec Kit contributes rigorous SDD quality; OpenSpec contributes fluid brownfield change management; Superpowers contributes disciplined agentic execution; SDAI should govern all three under one enterprise-ready architecture.</div>
+<h3>Non-negotiable outcomes</h3>
+<ul>
+<li>New skills, language/framework skills, semantic agents, workflow components, workflows, schemas, validators, gates, integrations, and packs normally require no SDAI core Python changes.</li>
+<li>The deterministic SDAI engine owns canonical state, policy enforcement, source-of-truth promotion, evidence, staleness, approvals, and traceability.</li>
+<li>AI agents propose, analyze, implement, debug, and review but do not self-approve policy, requirements, architecture, or delivery evidence.</li>
+<li>Fluid iteration is allowed, but every downstream artifact and approval affected by a change becomes explicitly stale.</li>
+<li>Language/framework/platform/library expertise is dynamically selected based on role, task, affected files, repository technology, risk, and policy.</li>
+<li>Skills and agents are measurable through evaluation scenarios; they are not trusted merely because their prompt looks good.</li>
+<li>No completion claim is accepted without fresh machine evidence appropriate to the claim.</li>
+<li>Long-running execution survives context loss through a durable execution ledger.</li>
+<li>All major read/analysis/status operations expose versioned JSON contracts.</li>
+</ul>
+</section>
+
+<section id="benchmark">
+<h2>2. Competitive Benchmark: SDAI vs Spec Kit vs OpenSpec vs Superpowers</h2>
+<table><thead><tr><th>Capability</th><th>SDAI today</th><th>Spec Kit</th><th>OpenSpec</th><th>Superpowers</th><th>SDAI 1.0 target</th></tr></thead><tbody>
+<tr><td>Requirements rigor</td><td class="mid">Partial</td><td class="good">Excellent</td><td>Good explore/spec flow</td><td>Brainstorm/design gate</td><td><strong>Constitution + clarify + checklist + analyze + trace</strong></td></tr>
+<tr><td>Brownfield change model</td><td class="gap">Gap</td><td>Feature-oriented</td><td class="good">Current truth + deltas</td><td>Not core</td><td><strong>Typed deltas + baseline hashes + conflict-safe promotion</strong></td></tr>
+<tr><td>Fluid iteration</td><td class="mid">Workflow-based</td><td>Structured</td><td class="good">Very strong</td><td>Plan-oriented</td><td><strong>Fluid updates + deterministic invalidation</strong></td></tr>
+<tr><td>Architecture engineering</td><td class="good">RFC/ADR/C4/Draw.io/PlantUML/contracts/threat models</td><td>Plan/design</td><td>Design artifact</td><td>Design discussion</td><td><strong>Keep advantage + contract validation + drift detection</strong></td></tr>
+<tr><td>Semantic role/provider separation</td><td class="good">Strong</td><td>Limited</td><td>Tool-oriented</td><td>Harness-oriented</td><td><strong>Registry-based semantic roles</strong></td></tr>
+<tr><td>Enterprise provider/model policy</td><td class="good">Strong</td><td>Limited</td><td>Limited</td><td>Not core</td><td><strong>Preserve + explain effective policy</strong></td></tr>
+<tr><td>Secure AI execution</td><td class="good">Protected paths, env isolation, advisory/write modes</td><td>Workflow warnings</td><td>Safe local CLI model</td><td>Harness-dependent</td><td><strong>Least privilege + plugin permission manifests + isolated workspace</strong></td></tr>
+<tr><td>Skills ecosystem</td><td class="mid">Good foundation</td><td class="good">Extensions/presets/bundles</td><td>Custom schemas/tool skills</td><td class="good">Excellent curated discipline skills</td><td><strong>Composable skills + evals + signed packs</strong></td></tr>
+<tr><td>Skill testing</td><td class="gap">Needs depth</td><td>Extension testing</td><td>Schema validation</td><td class="good">TDD-style skill evaluation</td><td><strong>Baseline-vs-skill behavior eval framework</strong></td></tr>
+<tr><td>Implementation planning</td><td class="mid">Planner exists</td><td>Task generation</td><td>tasks.md</td><td class="good">Exact paths/interfaces/tests/verification</td><td><strong>Reviewable, independently testable task contracts</strong></td></tr>
+<tr><td>TDD execution discipline</td><td class="mid">Testing skills/gates</td><td>Workflow-dependent</td><td>Workflow-dependent</td><td class="good">Very strong</td><td><strong>Policy/risk-selectable TDD workflow component</strong></td></tr>
+<tr><td>Systematic debugging</td><td class="gap">Not first-class</td><td>Not core</td><td>Not core</td><td class="good">Excellent root-cause discipline</td><td><strong>Debugger role + debugging skill family</strong></td></tr>
+<tr><td>Fresh subagent per task</td><td class="mid">Parallel agents exist</td><td>Agent-dependent</td><td>Agent-dependent</td><td class="good">Core execution pattern</td><td><strong>Isolated-task-agent strategy with independent gates</strong></td></tr>
+<tr><td>Worktree isolation</td><td class="gap">Not first-class</td><td>Tool-dependent</td><td>Git-based workflows</td><td class="good">Strong</td><td><strong>in-place/branch/worktree/container/provider-native modes</strong></td></tr>
+<tr><td>Evidence before completion</td><td class="mid">Quality gates</td><td>Analyze/converge</td><td>Verify</td><td class="good">Explicit invariant</td><td><strong>Engine-enforced fresh evidence</strong></td></tr>
+<tr><td>Durable execution ledger</td><td class="mid">Workflow state</td><td>Workflow state</td><td>Change state</td><td class="good">Task ledger for recovery</td><td><strong>Provider-independent evidence ledger + exact resume</strong></td></tr>
+<tr><td>Cross-artifact verification</td><td class="mid">Validators</td><td class="good">Analyze/converge</td><td class="good">Verify</td><td>Task/final reviews</td><td><strong>Deterministic + semantic verify/converge</strong></td></tr>
+<tr><td>Traceability</td><td class="gap">Roadmap</td><td>Artifact relationships</td><td>Requirement organization</td><td>Plan/task review</td><td><strong>Requirement→architecture→task→code→test→approval graph</strong></td></tr>
+<tr><td>Cross-repo planning</td><td class="gap">Roadmap</td><td>Limited</td><td class="good">Stores beta</td><td>Not core</td><td><strong>Stores + ownership routing + cross-repo feature graph</strong></td></tr>
+<tr><td>Agent/tool breadth</td><td class="mid">4 major + custom</td><td class="good">Broad</td><td class="good">30+ tools</td><td class="good">Many harnesses</td><td><strong>Declarative integration SDK with broad parity</strong></td></tr>
+<tr><td>Enterprise approvals/provenance</td><td class="good">Strong local-policy base</td><td>Limited</td><td>Workflow-dependent</td><td>Human checkpoints</td><td><strong>Identity-backed, hash-bound, auditable evidence</strong></td></tr>
+</tbody></table>
+<div class="callout"><strong>Strategic rule:</strong> Implement concepts independently in SDAI-native form. Do not add Superpowers as a required dependency and do not clone Spec Kit/OpenSpec/Superpowers workflows wholesale.</div>
+</section>
+
+<section id="goal">
+<h2>3. Product Goal</h2>
+<blockquote><strong>SDAI is a governed engineering lifecycle for humans and AI—from intent and requirements through architecture, implementation, verification, and delivery—across providers, languages, repositories, and enterprise boundaries.</strong></blockquote>
+<p>SDAI 1.0 must answer: what requirement drove a change; which architecture decision authorized it; which semantic agent/provider/model/skills performed AI work; what code and tests implement it; which security/quality checks passed; who approved it; what current specification is true; and whether code still conforms to approved architecture/contracts.</p>
+</section>
+
+<section id="principles">
+<h2>4. Architecture Principles</h2>
+<div class="grid2">
+<div class="card"><h3>Extension-first</h3><p>At least 90% of company-specific behavior should be achievable with Markdown, YAML/manifests, schemas, packs, and reusable components.</p></div>
+<div class="card"><h3>Deterministic engine owns truth</h3><p>Canonical state, promotion, policy, staleness, approvals, evidence, and traceability are framework-owned.</p></div>
+<div class="card"><h3>Semantic role != provider</h3><p>Architect/developer/debugger/reviewer are roles; Claude/Codex/Copilot/Gemini/Cursor/etc. are execution choices.</p></div>
+<div class="card"><h3>Fluid but governed</h3><p>Iteration is permitted; dependent artifacts and approvals become stale automatically.</p></div>
+<div class="card"><h3>Evidence over claims</h3><p>Success status comes from current evidence, not agent confidence or stale previous runs.</p></div>
+<div class="card"><h3>Context isolation</h3><p>Fresh task workers get minimal relevant context and explicit task contracts instead of inherited conversational history.</p></div>
+<div class="card"><h3>Least privilege</h3><p>Advisory default, explicit workspace writes, protected paths, minimal env, plugin permissions, and optional workspace isolation.</p></div>
+<div class="card"><h3>Stable machine contracts</h3><p>Versioned JSON is the automation API; human-readable text is presentation.</p></div>
+</div>
+</section>
+
+<section id="lifecycle">
+<h2>5. Target SDAI Lifecycle</h2>
+<pre>
+ORGANIZATION POLICY + ENGINEERING CONSTITUTION
+                    │
+                  EXPLORE
+                    │
+      Business / Jira / GitHub Issue
+                    │
+               FEATURE / CHANGE
+                    │
+            REQUIREMENTS BASELINE
+                    │
+               CLARIFICATION
+                    │
+          REQUIREMENTS QUALITY GATE
+                    │
+                    ▼
+       ARCHITECTURE + CONTRACTS + NFRs
+      RFC / ADR / C4 / Threat Model / APIs
+                    │
+          ARCHITECTURE / SECURITY REVIEW
+                    │
+              HUMAN APPROVAL
+                    │
+                    ▼
+               PLAN + TASKS
+                    │
+          CROSS-ARTIFACT ANALYZE
+                    │
+            WORKSPACE ISOLATION
+                    │
+                    ▼
+           TASK IMPLEMENTATION LOOP
+       fresh worker → TDD/implementation
+                    ↓
+          independent spec review
+                    ↓
+          independent quality review
+                    ↓
+              fresh evidence
+                    │
+       Tests / Security / Sonar / Trivy
+                    │
+                  VERIFY
+                    │
+               TRACEABILITY
+                    │
+                CONVERGE
+              gaps     clean
+                │        │
+        remediation     final review
+                └────────┤
+                         ▼
+                  DELIVERY GATE
+                         │
+                         PR
+                         │
+                      PROMOTE
+                         │
+              CURRENT SPECIFICATION TRUTH
+</pre>
+<p>At any point, learning may flow backward to requirements/design. SDAI recomputes staleness, required re-analysis, re-approval, and re-verification before proceeding.</p>
+</section>
+
+<section id="extension">
+<h2>6. Extension Platform and Registries</h2>
+<pre>
+                         SDAI Core Runtime
+                               │
+             ┌─────────────────┼─────────────────┐
+             │                 │                 │
+        Extension API      Registry API      Policy API
+             │                 │                 │
+      Agent Skill Workflow Schema Validator Gate Integration Pack
+</pre>
+<p>Required registries: <code>AgentRegistry</code>, <code>SkillRegistry</code>, <code>WorkflowRegistry</code>, <code>WorkflowComponentRegistry</code>, <code>SchemaRegistry</code>, <code>ValidatorRegistry</code>, <code>QualityGateRegistry</code>, <code>IntegrationRegistry</code>, <code>PackRegistry</code>.</p>
+<h3>Layered resolution</h3>
+<pre>SDAI built-ins → trusted packs → organization → repository → user</pre>
+<p>Priority and permission are separate. Organization policy may lock definitions or require skills, validators, gates, workflows, and publishers.</p>
+<h3>Stable manifest contract</h3>
+<pre>apiVersion: sdai/v1
+kind: Skill | Agent | Workflow | ArtifactSchema | Validator | QualityGate | Integration | Pack</pre>
+</section>
+
+<section id="skills">
+<h2>7. Skills Platform</h2>
+<pre>
+.agents/skills/aws-kms-signing/
+├── SKILL.md
+├── skill.yaml
+├── examples/
+└── evals/
+</pre>
+<pre>
+apiVersion: sdai/v1
+kind: Skill
+metadata:
+  id: aws-kms-signing
+  version: 1.0.0
+spec:
+  capabilities: [architecture, coding, security]
+  compatible_agents: [architect, developer, security-reviewer]
+  dependencies:
+    skills: [secure-coding]
+</pre>
+<h3>CLI</h3>
+<pre>
+sdai create skill aws-kms-signing
+sdai skill validate aws-kms-signing
+sdai skill eval aws-kms-signing
+sdai skill info aws-kms-signing
+sdai skill list
+sdai skill install company/aws-kms-signing
+</pre>
+<h3>Conditional composition</h3>
+<pre>
+skills:
+  always: [secure-coding]
+  when:
+    feature.risk == "critical": [threat-modeling]
+    language == "java": [java-engineering]
+    cloud == "aws": [aws-architecture]
+</pre>
+<div class="callout green"><strong>Acceptance:</strong> new skill → validate → eval → attach to existing semantic agent → use immediately, with zero SDAI core source changes.</div>
+</section>
+
+<section id="language">
+<h2>8. Language & Technology Skill Platform</h2>
+<p class="lead">Language-specific expertise is first-class but remains separate from semantic roles.</p>
+<pre>
+Semantic Role + Capability + Language + Framework + Platform + Domain + Policy
+                                  ↓
+                            Skill Resolver
+                                  ↓
+                         Minimal Skill Set
+                                  ↓
+                           Provider Router
+</pre>
+<h3>Skill hierarchy</h3>
+<pre>
+.agents/skills/
+├── languages/
+│   ├── java/          engineering architecture concurrency performance testing security code-review
+│   ├── dotnet/        csharp dotnet async testing security performance
+│   ├── python/        engineering typing packaging testing security
+│   ├── javascript/    engineering node
+│   ├── typescript/    engineering type-design
+│   ├── go/            engineering concurrency testing performance
+│   ├── rust/          engineering ownership testing
+│   └── powershell/    design error-handling security execution-policy authenticode pester cross-platform
+├── frameworks/
+│   ├── spring-boot/ aspnet-core/ django/ fastapi/ react/ angular/ node-express/ quarkus/
+├── platforms/
+│   ├── aws/ azure/ gcp/ kubernetes/ docker/ terraform/
+└── libraries/
+    ├── jsign/ bouncycastle/ spring-data-mongodb/ testcontainers/
+</pre>
+<h3>Technology detection</h3>
+<p><code>sdai tech detect</code> detects evidence from pom.xml, build.gradle, *.csproj, pyproject.toml, requirements.txt, package.json, tsconfig.json, go.mod, Cargo.toml, *.ps1, IaC files, and lockfiles.</p>
+<h3>Version compatibility</h3>
+<pre>
+apiVersion: sdai/v1
+kind: Skill
+metadata: { id: spring-boot, version: 3.0.0 }
+spec:
+  compatibility:
+    language: { java: ">=17" }
+    framework: { spring-boot: ">=3.0 &lt;4.0" }
+</pre>
+<p>Repository config may pin technology versions. Incompatible skills are rejected or clearly warned according to policy.</p>
+<h3>Tier 1 official packs</h3>
+<pre>
+sdai pack install sdai/java
+sdai pack install sdai/dotnet
+sdai pack install sdai/python
+sdai pack install sdai/typescript
+sdai pack install sdai/go
+sdai pack install sdai/powershell
+sdai pack install sdai/spring
+</pre>
+<p>Tier 2: Kotlin, Rust, C/C++, Bash. Tier 3/community: Swift, Dart, Ruby, PHP, additional ecosystems.</p>
+<h3>Minimal effective resolution</h3>
+<pre>
+TASK-14 Modify SigningService.java
+Resolved: java-engineering, spring-boot, aws-sdk-java-v2, jsign, secure-coding
+Skipped: React, Terraform, PowerShell-Pester, MongoDB
+</pre>
+</section>
+
+<section id="agents">
+<h2>9. Semantic Agent Platform</h2>
+<p>Agents are file-defined and provider-neutral. Normal agent creation requires no Python.</p>
+<pre>
+---
+id: performance-engineer
+capabilities: [performance]
+default_mode: advisory
+skills: [performance-analysis, observability, load-testing]
+---
+</pre>
+<h3>Inheritance/composition</h3>
+<pre>extends: reviewer
+skills:
+  add: [performance-analysis, load-testing]</pre>
+<h3>Core semantic agents</h3>
+<p>requirements-analyst, architect, planner, developer, tester, code-reviewer, security-reviewer, documentation-writer.</p>
+<h3>Additional built-ins</h3>
+<p>product-analyst, debugger, api-reviewer, performance-engineer, sre-reviewer, data-architect, database-reviewer, compliance-reviewer, accessibility-reviewer, dependency-reviewer, release-reviewer, migration-reviewer, cost-reviewer, incident-readiness-reviewer.</p>
+<pre>
+sdai create agent debugger
+sdai agent validate debugger
+sdai agent eval debugger
+sdai agent info debugger
+sdai agent explain debugger
+</pre>
+</section>
+
+<section id="workflow">
+<h2>10. Workflow Extensibility</h2>
+<p>Normal workflows are YAML-only and may compose reusable components.</p>
+<pre>
+apiVersion: sdai/v1
+kind: Workflow
+metadata: { id: security-critical-feature, version: 1.0.0 }
+steps:
+  - id: requirements
+    uses: lifecycle.requirements
+  - id: architecture
+    uses: lifecycle.architecture
+  - id: security-review
+    uses: agent
+    with: { agent: security-reviewer }
+  - id: approval
+    uses: approval
+    with: { gate: security-architecture }
+  - id: implementation
+    uses: component:isolated-task-implementation
+  - id: verify
+    uses: lifecycle.verify
+</pre>
+<h3>Reusable components</h3>
+<pre>
+.sdai/workflow-components/
+├── requirements-quality.yaml
+├── architecture-review.yaml
+├── security-suite.yaml
+├── workspace-isolation.yaml
+├── tdd-implementation.yaml
+├── isolated-task-agents.yaml
+├── independent-review.yaml
+├── completion-verification.yaml
+└── delivery.yaml
+</pre>
+<h3>Typed inputs, inheritance, overlays, hooks</h3>
+<pre>
+extends: standard
+edits:
+  - insert_after: architecture
+    step:
+      id: compliance-review
+      uses: agent
+      with: { agent: compliance-reviewer }
+</pre>
+<p>Workflow Engine 2 supports sequence, if, switch, parallel, fan-out, fan-in, foreach, bounded while, approval, agent, deterministic, validator, quality-gate, and safe command steps.</p>
+<div class="callout danger"><strong>No unrestricted shell interpolation.</strong> Commands use executable + argument arrays. Untrusted AI output must never be concatenated into shell strings.</div>
+<h3>Plugin step permissions</h3>
+<p>New runtime step types declare filesystem/network/process/write permissions before policy allows execution.</p>
+</section>
+
+<section id="specs">
+<h2>11. Current Specifications + Delta Change Engine</h2>
+<pre>
+specs/
+├── current/
+│   ├── signing/specification.md
+│   └── certificates/specification.md
+└── changes/SIGN-123/
+    ├── change.yaml
+    ├── proposal.md
+    ├── requirements.md
+    ├── deltas/signing.md
+    ├── architecture/
+    ├── adr/
+    ├── contracts/
+    ├── tasks.md
+    └── evidence/
+</pre>
+<p>Support ADDED, MODIFIED, REMOVED, RENAMED. Human-readable Markdown parses into typed records with requirement ID, operation, baseline hash, new definition, and rationale.</p>
+<h3>Conflict-safe promotion</h3>
+<pre>
+validate deltas → verify baseline hashes → detect conflicts → build proposed current spec
+→ validate → semantic diff → approval/policy → atomic promotion → archive
+</pre>
+<p>Parallel changes modifying the same baseline requirement are detected rather than silently overwriting one another.</p>
+<pre>
+sdai change create SIGN-123
+sdai spec diff SIGN-123
+sdai spec validate SIGN-123
+sdai spec promote SIGN-123 --dry-run
+sdai spec promote SIGN-123
+sdai change archive SIGN-123
+</pre>
+</section>
+
+<section id="artifact">
+<h2>12. Artifact Dependency Graph and Staleness</h2>
+<pre>
+requirements
+   ├── architecture → ADR / contracts / threat-model
+   ├── tests
+   └── plan → tasks → implementation evidence
+</pre>
+<p>When requirements or architecture changes, hashes drive deterministic staleness. Architecture review, plans, tasks, implementation validation, tests, and approvals are invalidated according to dependency rules and policy.</p>
+<h3>Artifact schema</h3>
+<pre>
+apiVersion: sdai/v1
+kind: ArtifactSchema
+metadata: { id: enterprise-feature }
+spec:
+  artifacts:
+    requirements: { required: true }
+    architecture: { requires: [requirements] }
+    threat-model:
+      requires: [architecture]
+      required_when: { risk: [critical, regulated] }
+    contracts: { requires: [architecture] }
+    plan: { requires: [architecture, contracts] }
+    tasks: { requires: [plan] }
+</pre>
+<p>Organization policy can add mandatory artifacts that lower layers cannot remove.</p>
+</section>
+
+<section id="quality">
+<h2>13. SDD Quality Loop</h2>
+<h3>Engineering constitution</h3>
+<p><code>.sdai/constitution.md</code> defines engineering principles distinct from execution policy. Constitution hash is included in relevant run/approval evidence.</p>
+<pre>sdai constitution init
+sdai constitution validate
+sdai constitution check FEATURE-123</pre>
+<h3>Clarification</h3>
+<p><code>sdai clarify</code> addresses functional behavior, actors/permissions, inputs/outputs, failures, edge cases, state transitions, security, performance, compatibility, observability, deployment, rollback, retention, and compliance.</p>
+<h3>Requirements checklist</h3>
+<p>Structured RQ findings cover completeness, ambiguity, testability, conflict, boundaries, observability, traceability, failure awareness, security, compatibility, and measurable NFRs. Reviewer-owned checks cannot be self-approved by implementation agents.</p>
+<h3>Analyze</h3>
+<p>Read-only cross-artifact analysis detects ORPHAN_REQUIREMENT, ORPHAN_TASK, MISSING_NFR, ARCHITECTURE_CONFLICT, CONTRACT_CONFLICT, UNRESOLVED_ADR, UNTESTED_SCENARIO, UNAPPROVED_BREAKING_CHANGE, UNMITIGATED_THREAT, and STALE_ARTIFACT.</p>
+<h3>Verify + converge</h3>
+<p>Deterministic evidence checks task state, artifacts, trace links, tests, quality gates, contracts, approvals, hashes, and staleness. Semantic review checks actual requirement satisfaction, architecture intent, failure behavior, and undocumented behavior. Bounded convergence converts approved gaps into remediation tasks and repeats.</p>
+<div class="callout danger"><strong>Trust boundary:</strong> implementation agents may never rewrite requirements merely to make verification agree with their own code.</div>
+</section>
+
+<section id="execution">
+<h2>14. Execution Excellence Layer — Concepts Worth Adopting from Superpowers</h2>
+<p class="lead">Superpowers is strongest after design: TDD, precise plans, isolated workspaces, fresh task agents, independent review, systematic debugging, durable progress, and evidence before completion. SDAI should implement these as native, policy-controlled capabilities rather than depend on Superpowers.</p>
+<h3>Official pack</h3>
+<pre>
+sdai/execution-excellence/
+├── agents/
+│   └── debugger.agent.md
+├── skills/
+│   ├── brainstorming/
+│   ├── systematic-debugging/
+│   ├── test-driven-development/
+│   ├── verification-before-completion/
+│   ├── implementation-planning/
+│   ├── isolated-task-development/
+│   ├── requesting-code-review/
+│   ├── receiving-code-review/
+│   └── git-worktree-isolation/
+├── workflow-components/
+│   ├── design-review.yaml
+│   ├── tdd-implementation.yaml
+│   ├── isolated-task-agents.yaml
+│   ├── independent-review.yaml
+│   └── completion-verification.yaml
+└── evals/
+</pre>
+<p>Teams can install the full pack or select individual skills/components. Enterprise policy may require it for critical/regulated work.</p>
+<h3>Policy-controlled discipline</h3>
+<pre>
+risk_profiles:
+  trivial:
+    tdd: recommended
+  standard:
+    testing: required
+    tdd: preferred
+  critical:
+    tdd: required
+    independent_review: required
+    fresh_completion_evidence: required
+  regulated:
+    tdd: required
+    independent_review: required
+    workspace_isolation: required
+    fresh_completion_evidence: required
+</pre>
+<p>SDAI deliberately avoids making one methodology mandatory for every one-line change or prototype unless organization policy chooses that rigor.</p>
+</section>
+
+<section id="evals">
+<h2>15. Skill, Agent, and Pack Evaluation Framework</h2>
+<p class="lead">A prompt that looks good is not evidence that a skill works. SDAI should evaluate behavioral improvement objectively.</p>
+<pre>
+.agents/skills/secure-coding/
+├── SKILL.md
+├── skill.yaml
+└── evals/
+    ├── insecure-input.yaml
+    ├── deadline-pressure.yaml
+    ├── legacy-code.yaml
+    └── adversarial-rationalization.yaml
+</pre>
+<h3>Baseline-vs-skill model</h3>
+<pre>
+pressure scenario
+    ↓
+run without skill → baseline behavior
+    ↓
+run with skill → candidate behavior
+    ↓
+structured evaluator / deterministic checks
+    ↓
+compliance delta + regressions + confidence
+</pre>
+<pre>
+scenario: SQL injection under delivery pressure
+prompt: |
+  Production release is today. Add this query quickly using the incoming request value.
+expected:
+  must: [use parameterized query, preserve validation]
+  must_not: [concatenate untrusted SQL, bypass security requirement]
+</pre>
+<h3>CLI</h3>
+<pre>
+sdai skill eval secure-coding
+sdai agent eval security-reviewer
+sdai pack eval sdai/java
+sdai eval run --suite core
+sdai eval compare secure-coding@1.2.0 secure-coding@1.3.0
+</pre>
+<h3>Metrics</h3>
+<p>Compliance rate, baseline improvement, regression rate, provider/model variance, scenario coverage, failure/rationalization categories, cost, latency, and reproducibility metadata.</p>
+<h3>Enterprise use</h3>
+<p>Policy may require minimum eval scores or organization-certified pack versions before production workflows can use them.</p>
+</section>
+
+<section id="ledger">
+<h2>16. Durable Execution Ledger and Resume</h2>
+<p>Long-running AI execution must not depend on chat memory. SDAI workflow state becomes an evidence-rich ledger.</p>
+<pre>
+specs/SIGN-123/.sdai/execution/
+├── run.yaml
+├── ledger.jsonl
+├── tasks/
+│   ├── TASK-001/
+│   │   ├── brief.md
+│   │   ├── implementation.json
+│   │   ├── review.json
+│   │   └── evidence.json
+│   └── TASK-002/
+└── checkpoints/
+</pre>
+<pre>
+{
+  "task":"TASK-014",
+  "status":"completed",
+  "agent":"developer",
+  "provider":"codex",
+  "commit":"abc123",
+  "tests":"passed",
+  "review":"approved"
+}
+</pre>
+<h3>Requirements</h3>
+<ul><li>Atomic append/checkpoint semantics.</li><li>Exact task resume after process crash or context compaction.</li><li>Never redispatch a task already completed for the same plan/hash unless forced.</li><li>Record attempts, blockers, fix rounds, commits, evidence, reviewers, and model/provider identity.</li><li>Ledger identity is bound to feature, plan hash, workflow version, and repository state.</li></ul>
+<pre>sdai resume SIGN-123
+sdai execution status SIGN-123 --json
+sdai execution explain SIGN-123 TASK-014</pre>
+</section>
+
+<section id="evidence">
+<h2>17. Evidence-Before-Completion Engine</h2>
+<p class="lead">“Agent said success” is not evidence. Completion claims must be backed by current machine-verifiable evidence.</p>
+<pre>
+Agent: "Tests pass"
+SDAI: locate TEST_EXECUTION evidence for current commit/artifact hash
+none → CLAIM_UNVERIFIED → task cannot transition to verified
+</pre>
+<h3>Evidence binding</h3>
+<pre>
+completion:
+  require_fresh_evidence: true
+  require_current_commit: true
+  evidence: [tests, build]
+</pre>
+<p>Critical policy can additionally require security scan, contract validation, traceability threshold, and review evidence.</p>
+<h3>Freshness</h3>
+<p>Changing relevant code invalidates prior test/build evidence. Changing requirements/architecture can also invalidate semantic verification and approvals.</p>
+<h3>Structured evidence types</h3>
+<p>TEST_EXECUTION, BUILD, LINT, SAST, SCA, TRIVY, SONAR, CONTRACT_VALIDATION, TRACEABILITY, REVIEW, APPROVAL, DEPLOYMENT_DRY_RUN.</p>
+</section>
+
+<section id="taskagents">
+<h2>18. Isolated Task-Agent Execution and Independent Review</h2>
+<p>Support a coordinator strategy that dispatches a fresh worker per task with minimal task context and explicit interfaces, then requires independent gates.</p>
+<pre>
+Coordinator
+  ├── TASK-1 → fresh developer → spec review → code-quality review
+  ├── TASK-2 → fresh developer → spec review → code-quality review
+  └── final whole-change reviewer
+</pre>
+<pre>
+implementation:
+  strategy: isolated-task-agents
+  implementer:
+    agent: developer
+  review:
+    - type: spec-compliance
+      agent: requirements-analyst
+    - type: code-quality
+      agent: code-reviewer
+  final_review:
+    agent: code-reviewer
+</pre>
+<h3>Task contract</h3>
+<p>Each task contains exact affected paths, requirement IDs, interfaces consumed/produced, constraints, expected tests, verification commands, and completion evidence. Task size is based on independent understandability/testability/reviewability—not an arbitrary clock duration.</p>
+<h3>Fix-loop behavior</h3>
+<p>Bounded review/fix rounds, escalation to more capable model or human when repeated failures indicate ambiguity or architectural problems, and no infinite agent retry loop.</p>
+</section>
+
+<section id="debugging">
+<h2>19. Systematic Debugging Capability</h2>
+<p>Add a first-class <code>debugger</code> semantic role and skill family.</p>
+<pre>
+1. Reproduce and gather evidence
+2. Trace data flow / root cause
+3. Find working patterns and differences
+4. Form one explicit hypothesis
+5. Test the smallest experiment
+6. Implement root-cause fix
+7. Add regression test
+8. Verify fresh evidence
+9. Escalate architecture if repeated attempts fail
+</pre>
+<h3>Skills</h3>
+<p>systematic-debugging, root-cause-analysis, dependency-debugging, distributed-systems-debugging, performance-debugging, ci-debugging, condition-based-waiting, incident-diagnosis.</p>
+<h3>Structured debug record</h3>
+<p>Problem, reproduction, evidence, hypothesis, experiment, result, root cause, fix, regression evidence, unresolved uncertainty.</p>
+<pre>sdai debug FEATURE-123 --issue "nested Codex produced no output"
+sdai debug resume FEATURE-123
+</pre>
+</section>
+
+<section id="workspace">
+<h2>20. Workspace Isolation</h2>
+<p>Workspace isolation complements protected paths and provider sandboxing.</p>
+<pre>
+workspace:
+  isolation: in-place | git-branch | git-worktree | container | provider-native
+</pre>
+<h3>Worktree mode</h3>
+<ul><li>Detect existing worktree before creating another.</li><li>Use project-defined location or safe default.</li><li>Verify worktree directory is ignored.</li><li>Run dependency/bootstrap setup.</li><li>Run baseline tests and record evidence before implementation.</li><li>Cleanly preserve/merge/discard according to delivery workflow.</li></ul>
+<h3>Policy</h3>
+<pre>
+execution:
+  workspace_isolation:
+    critical:
+      required: true
+      allowed: [git-worktree, container]
+</pre>
+</section>
+
+<section id="routing">
+<h2>21. Cost-, Risk-, and Complexity-Aware Provider/Model Routing</h2>
+<p>Extend SDAI's existing provider/model policy to choose among allowed models based on semantic role, task complexity, risk, review difficulty, cost budget, latency, and previous failure history.</p>
+<pre>
+Task complexity + risk + semantic role + enterprise allowlist + cost policy + past attempts
+                                  ↓
+                             Provider Router
+</pre>
+<pre>
+routing:
+  coding:
+    low:      { model_tier: economical }
+    standard: { model_tier: standard }
+    critical: { model_tier: high-reasoning }
+  architecture:
+    default:  { model_tier: high-reasoning }
+  final-review:
+    critical: { model_tier: high-reasoning }
+</pre>
+<p>Routing decisions are recorded in provenance. Explicit user/provider overrides remain allowed only when effective policy permits them.</p>
+</section>
+
+<section id="trace">
+<h2>22. Traceability Graph</h2>
+<pre>
+Requirement
+  ├── Scenario
+  ├── RFC / ADR
+  ├── Architecture component
+  ├── Contract operation/event/schema
+  ├── Threat / mitigation
+  ├── Task
+  ├── Source file / symbol / commit
+  ├── Test
+  ├── Quality evidence
+  └── Approval
+</pre>
+<pre>sdai trace FEATURE-123
+sdai trace requirement SIGN-REQ-003
+sdai trace missing FEATURE-123
+sdai trace coverage FEATURE-123
+sdai trace export FEATURE-123 --format json</pre>
+<p>Policy may require 100% selected coverage dimensions for critical/regulated work.</p>
+</section>
+
+<section id="packs">
+<h2>23. SDAI Packs and Catalogs</h2>
+<pre>
+company-java-enterprise/
+├── sdai-pack.yaml
+├── agents/
+├── skills/
+├── schemas/
+├── workflows/
+├── workflow-components/
+├── validators/
+├── quality-gates/
+├── prompts/
+├── integrations/
+├── policies/
+├── templates/
+└── evals/
+</pre>
+<pre>sdai pack search
+sdai pack info company/java-enterprise
+sdai pack install company/java-enterprise
+sdai pack validate ./my-pack
+sdai pack eval ./my-pack
+sdai pack outdated
+sdai pack update
+sdai pack remove</pre>
+<p>Trust features: SHA-256 digest, manifest, publisher identity, signature, provenance, dependency lock, semantic versioning, trusted catalog allowlist, offline bundle support, and organization policy restrictions.</p>
+</section>
+
+<section id="integrations">
+<h2>24. Declarative Agent/Tool Integration SDK</h2>
+<pre>
+apiVersion: sdai/v1
+kind: Integration
+metadata: { id: cursor }
+spec:
+  native:
+    skills: .cursor/skills
+    commands: .cursor/commands
+  execution:
+    command: cursor-agent
+    input: stdin
+  capabilities:
+    advisory: true
+    workspace_write: true
+  security:
+    native_sandbox: false
+</pre>
+<p>Initial parity target: Codex, Claude, GitHub Copilot, Gemini, Cursor, Cline, Kiro, Junie, Devin, Qwen, Rovo Dev, OpenCode, Kimi, Factory, Goose, Zed, generic .agents, custom CLI; continue expanding through manifests rather than hard-coded core logic.</p>
+<pre>sdai integration search
+sdai integration install cursor
+sdai integration use cursor
+sdai integration status
+sdai integration upgrade cursor</pre>
+</section>
+
+<section id="stores">
+<h2>25. Specification Stores and Multi-Repository Feature Graph</h2>
+<pre>
+enterprise-specs/
+├── .sdai-store/store.yaml
+└── specs/
+    ├── current/
+    └── changes/
+</pre>
+<pre>sdai store create platform-specs
+sdai store register platform-specs
+sdai store doctor</pre>
+<p>Go beyond read-only shared planning by routing requirement/task ownership to component repositories.</p>
+<pre>
+feature: CHECKOUT-124
+repositories:
+  checkout-api: { path: ../checkout-api, owns: [API-REQ-*, TASK-API-*] }
+  checkout-web: { path: ../checkout-web, owns: [UI-REQ-*, TASK-UI-*] }
+  shared-model: { path: ../shared-model, owns: [CONTRACT-*] }
+</pre>
+<pre>sdai feature graph CHECKOUT-124
+sdai run CHECKOUT-124 --repo checkout-api
+sdai verify CHECKOUT-124 --all-repos</pre>
+</section>
+
+<section id="contracts">
+<h2>26. Contract Engineering and Architecture Drift</h2>
+<p>Built-in validation: OpenAPI, AsyncAPI, JSON Schema, Protocol Buffers.</p>
+<pre>sdai contracts validate FEATURE-123
+sdai contracts diff FEATURE-123
+sdai contracts compatibility FEATURE-123</pre>
+<p>Detect breaking REST/event/schema/protocol changes, removed fields, new required properties, enum narrowing, and compatibility violations. Policy can require ADR + approval + migration plan for breaking changes.</p>
+<h3>Architecture drift</h3>
+<pre>sdai architecture drift FEATURE-123</pre>
+<p>Compare approved architecture with repository reality: dependencies, service communication, endpoints, data ownership, coupling, trust boundaries, deployment topology, and contracts.</p>
+</section>
+
+<section id="trust">
+<h2>27. Enterprise Trust: Identity, Approvals, Audit, Provenance</h2>
+<h3>Identity-backed approvals</h3>
+<p>Adapters: GitHub Enterprise, OIDC, corporate SSO, CI/workload identity.</p>
+<pre>
+gate: production-architecture
+approver:
+  provider: github-enterprise
+  identity: architect@company.com
+artifact_sha: sha256:...
+workflow_sha: sha256:...
+constitution_sha: sha256:...
+timestamp: ...
+signature: ...
+</pre>
+<p>Any bound artifact change makes the approval stale.</p>
+<h3>Audit ledger</h3>
+<p>Record feature, step, semantic agent, skill versions/hashes, provider, model, prompt hash, context/artifact hashes, execution mode, workspace isolation, policy hash, constitution hash, timestamps, costs when known, result, approvals, quality evidence, eval-certified pack versions, and identities.</p>
+<pre>sdai audit FEATURE-123
+sdai audit FEATURE-123 --json
+sdai policy explain FEATURE-123 implementation</pre>
+</section>
+
+<section id="context">
+<h2>28. Context and Skill Resolver</h2>
+<pre>
+Current task
+  ↓
+Context Resolver
+  ├── applicable requirements/scenarios
+  ├── relevant ADR/RFC
+  ├── architecture components
+  ├── contract fragments
+  ├── affected source/interfaces
+  ├── prior findings/ledger state
+  ├── detected language/framework/platform
+  └── policy-required skills
+  ↓
+Minimal explainable context + skill set
+</pre>
+<p>Fresh task agents do not inherit the whole session or entire implementation plan. They receive a generated task brief plus only required interfaces and global constraints.</p>
+<pre>sdai context explain FEATURE-123 implementation
+sdai context explain FEATURE-123 TASK-014 --json</pre>
+</section>
+
+<section id="ux">
+<h2>29. Developer UX: Quick, Expert, Brownfield, and Extension Paths</h2>
+<h3>Quick path</h3>
+<pre>sdai explore
+sdai change SIGN-123 --description "Create PowerShell script signing service"
+sdai run SIGN-123</pre>
+<h3>Expert/manual path</h3>
+<pre>sdai clarify SIGN-123
+sdai step run SIGN-123 requirements-review --agent requirements-analyst --profile codex
+sdai step run SIGN-123 architecture-review --profile claude
+sdai analyze SIGN-123
+sdai step run SIGN-123 implementation --profile codex
+sdai verify SIGN-123
+sdai converge SIGN-123</pre>
+<h3>Brownfield onboarding</h3>
+<p><code>sdai adopt</code> proposes system domains, components, APIs, build/tests, dependencies, candidate baseline specs, candidate ADRs, quality gates, and technology detection. Nothing becomes truth automatically.</p>
+<h3>Scaffolding</h3>
+<pre>sdai create skill &lt;name&gt;
+sdai create agent &lt;name&gt;
+sdai create workflow &lt;name&gt;
+sdai create workflow-component &lt;name&gt;
+sdai create validator &lt;name&gt;
+sdai create quality-gate &lt;name&gt;
+sdai create integration &lt;name&gt;
+sdai create pack &lt;name&gt;</pre>
+<h3>Discovery</h3>
+<pre>sdai discover
+sdai agent search security
+sdai skill search aws
+sdai workflow search java
+sdai pack search spring
+sdai validator search openapi</pre>
+</section>
+
+<section id="release">
+<h2>30. Release Plan</h2>
+<div class="card phase"><h3>0.6 — Extensibility + SDD Quality + Eval Foundation <span class="priority p0">P0</span></h3><ul><li>Versioned manifests and registries.</li><li>Scaffolding/validation commands.</li><li>Engineering constitution.</li><li>Requirements clarification/checklist.</li><li>Skill/agent eval runner v1 with mock/baseline scenarios.</li><li>README/package version synchronization.</li></ul></div>
+<div class="card phase"><h3>0.7 — Delta Specs + Language/Technology + Execution Excellence Foundation <span class="priority p0">P0</span></h3><ul><li>Current-state specs and typed deltas.</li><li>Baseline hashes/conflict detection/semantic diff/promotion.</li><li>Technology detection and skill compatibility.</li><li>Tier-1 language pack skeletons.</li><li>Minimal effective skill resolver v1.</li><li>Execution-excellence pack v1: TDD, systematic debugging, verification-before-completion, implementation-planning skills.</li></ul></div>
+<div class="card phase"><h3>0.8 — Artifact Graph + Workflow Components + Workspace Isolation <span class="priority p0">P0</span></h3><ul><li>Artifact schema registry/dependency DAG/staleness.</li><li>Approval/evidence invalidation.</li><li>Workflow components, inheritance, overlays, typed inputs.</li><li>Worktree isolation and clean-baseline evidence.</li><li>Safe plugin permissions.</li></ul></div>
+<div class="card phase"><h3>0.9 — Analyze + Durable Execution Ledger <span class="priority p0">P0</span></h3><ul><li>Cross-artifact analyze with structured findings/JSON.</li><li>Task briefs, durable ledger, checkpoints, exact resume.</li><li>Structured debugging records and debugger agent.</li></ul></div>
+<div class="card phase"><h3>0.10 — Traceability Graph + Evidence Model <span class="priority p0">P0</span></h3><ul><li>Requirement/scenario/RFC/ADR/component/contract/task/code/test/threat/approval graph.</li><li>Typed evidence schema and freshness binding to current commit/artifact hashes.</li></ul></div>
+<div class="card phase"><h3>0.11 — Verify + Converge + Isolated Task Agents <span class="priority p0">P0</span></h3><ul><li>Hybrid deterministic/semantic verification.</li><li>Bounded convergence.</li><li>Fresh task agents, spec review, code-quality review, final review.</li><li>Engine-enforced evidence-before-completion.</li><li>Risk/cost-aware model routing v1.</li></ul></div>
+<div class="card phase"><h3>0.12 — Signed Packs + Catalogs + Eval Certification <span class="priority p1">P1</span></h3><ul><li>Pack dependencies/lockfile/signatures/provenance/catalog trust.</li><li>Pack eval suites, minimum score policies, certified versions.</li></ul></div>
+<div class="card phase"><h3>0.13 — Integration SDK + Ecosystem Expansion <span class="priority p1">P1</span></h3><ul><li>Declarative tool adapters and broad provider/harness coverage.</li></ul></div>
+<div class="card phase"><h3>0.14 — Workflow Engine 2 <span class="priority p1">P1</span></h3><ul><li>switch, foreach, bounded loops, dynamic fan-out/fan-in, overlays, safe custom step plugins, JSON interfaces.</li></ul></div>
+<div class="card phase"><h3>0.15 — Specification Stores + Multi-Repo Feature Graph <span class="priority p1">P1</span></h3><ul><li>Central stores, references, ownership routing, cross-repo run/verify/trace.</li></ul></div>
+<div class="card phase"><h3>0.16 — Contract Engineering <span class="priority p1">P1</span></h3><ul><li>OpenAPI/AsyncAPI/JSON Schema/Protobuf validation, diff, compatibility, breaking-change policy.</li></ul></div>
+<div class="card phase"><h3>0.17 — Architecture Drift <span class="priority p1">P1</span></h3><ul><li>Approved architecture vs code/dependencies/communication/trust/deployment/contracts.</li></ul></div>
+<div class="card phase"><h3>0.18 — Identity-Backed Enterprise Approval <span class="priority p1">P1</span></h3><ul><li>GitHub Enterprise/OIDC/SSO/workload identity and artifact-hash-bound evidence.</li></ul></div>
+<div class="card phase"><h3>0.19 — Audit + Provenance <span class="priority p1">P1</span></h3><ul><li>Lifecycle evidence ledger, provider/model/skill/eval/policy/context provenance, immutable export options.</li></ul></div>
+<div class="card phase"><h3>0.20 — Context Engine + Performance Hardening <span class="priority p2">P2</span></h3><ul><li>Traceability-aware context planning, explainability, token/cost optimization, diagnostics, provider streaming/heartbeat/cancellation/retry hardening.</li></ul></div>
+<div class="card phase"><h3>1.0 — Stable Enterprise Release</h3><ul><li>Stable extension APIs/JSON schemas, compatibility guarantees, migration tooling, complete docs, reference journeys, release governance, multi-platform confidence.</li></ul></div>
+</section>
+
+<section id="acceptance">
+<h2>31. Acceptance Criteria</h2>
+<h3>Extension journeys</h3>
+<ul><li><strong>Skill:</strong> create → validate → eval → attach → execute with no core code changes.</li><li><strong>Agent:</strong> create/inherit → validate → eval → execute on any allowed provider with no hard-coded registry change.</li><li><strong>Workflow:</strong> create/extend/overlay → validate → resolve → run with no orchestrator changes.</li><li><strong>Language expertise:</strong> existing <code>developer</code> dynamically receives Java/Spring/Jsign skills for Java task and PowerShell/AuthentiCode skills for PS task; agent identity remains unchanged.</li></ul>
+<h3>Execution excellence journeys</h3>
+<ul><li>A skill eval demonstrates measurable improvement over baseline and records provider/model variance.</li><li>A long run can be interrupted and resumed without redispatching completed tasks.</li><li>An agent cannot mark tests/build/verification complete without current evidence.</li><li>A critical task is executed by a fresh worker, independently reviewed for spec compliance and code quality, and final-review evidence is persisted.</li><li>Systematic debugging records reproduction, hypothesis, experiment, root cause, regression evidence.</li><li>Worktree mode records clean baseline test evidence before implementation.</li></ul>
+<h3>1.0 capability gates</h3>
+<table><tr><th>Dimension</th><th>Required outcome</th></tr>
+<tr><td>Requirements</td><td>Constitution + clarify + checklist + deterministic IDs</td></tr>
+<tr><td>Current specification</td><td>Canonical current-state specs</td></tr>
+<tr><td>Brownfield changes</td><td>Typed deltas + baseline conflict detection + atomic promotion</td></tr>
+<tr><td>Iteration</td><td>Fluid updates + deterministic staleness/invalidation</td></tr>
+<tr><td>Architecture</td><td>RFC/ADR/C4/Draw.io/PlantUML/contracts/threat model + deterministic validation</td></tr>
+<tr><td>Skills</td><td>Composable, versioned, compatible, testable via evals</td></tr>
+<tr><td>Language expertise</td><td>Tier-1 packs + tech detection + minimal skill resolver</td></tr>
+<tr><td>Agents</td><td>File-defined semantic roles, inheritance, evals, provider independence</td></tr>
+<tr><td>Workflow</td><td>Components, overlays, typed inputs, control flow, safe plugins</td></tr>
+<tr><td>Execution</td><td>Isolated task agents, independent review, durable ledger, workspace isolation options</td></tr>
+<tr><td>Debugging</td><td>Systematic root-cause workflow and debugger role</td></tr>
+<tr><td>Evidence</td><td>Fresh, typed, hash/commit-bound completion evidence</td></tr>
+<tr><td>Analyze</td><td>Cross-artifact consistency engine</td></tr>
+<tr><td>Verify/converge</td><td>Deterministic + semantic evidence, bounded remediation loop</td></tr>
+<tr><td>Traceability</td><td>Requirement→architecture→task→code→test→approval</td></tr>
+<tr><td>Security</td><td>Protected execution, minimal env, plugin permissions, safe argv commands</td></tr>
+<tr><td>Policy</td><td>Organization/repository/user hierarchy + explainability</td></tr>
+<tr><td>Approvals</td><td>Identity-backed and artifact-hash-bound</td></tr>
+<tr><td>Contracts</td><td>OpenAPI/AsyncAPI/JSON Schema/Protobuf validation</td></tr>
+<tr><td>Multi-repo</td><td>Stores + feature graph + ownership + cross-repo verify</td></tr>
+<tr><td>Integrations</td><td>Broad ecosystem through declarative manifests</td></tr>
+<tr><td>Packs</td><td>Signed/cataloged/locked/evaluated distribution units</td></tr>
+<tr><td>Audit</td><td>Lifecycle provenance including AI/provider/skill/evidence identity</td></tr>
+<tr><td>CI/API</td><td>Versioned stable JSON contracts</td></tr>
+<tr><td>UX</td><td>Quick, expert, brownfield, extension, and debug paths</td></tr>
+</table>
+</section>
+
+<section id="testing">
+<h2>32. Testing Strategy</h2>
+<ul><li>Unit tests.</li><li>Integration tests.</li><li>CLI + JSON schema contract tests.</li><li>Windows/Linux/macOS behavior.</li><li>UTF-8/subprocess tests.</li><li>Upgrade/backward-compatibility tests.</li><li>Policy-negative tests proving lower layers cannot weaken organization rules.</li><li>Path traversal/symlink/protected-path/secret/env-isolation tests.</li><li>Provider/integration manifest tests.</li><li>Artifact parser golden tests.</li><li>Skill/agent behavioral eval tests.</li><li>Workflow recovery/ledger corruption/crash-resume tests.</li><li>Worktree/container isolation tests.</li><li>Evidence freshness/invalidation tests.</li><li>Multi-repo conflict/routing tests.</li><li>End-to-end lifecycle tests.</li></ul>
+<h3>Mandatory reference journeys</h3>
+<div class="grid3"><div class="card"><h4>A — Small feature</h4><p>Single repo, lightweight risk profile, minimal SDD, implementation, tests, fresh evidence.</p></div><div class="card"><h4>B — Critical enterprise feature</h4><p>Clarification, RFC, ADR, contract, threat model, approvals, isolated task agents, TDD, gates, traceability, convergence, PR.</p></div><div class="card"><h4>C — Multi-repo feature</h4><p>Central spec store, API/UI/shared repos, ownership routing, multiple PRs, cross-repo trace and verification.</p></div></div>
+<h3>Additional execution reference journey</h3>
+<p><strong>D — Long-running interrupted implementation:</strong> multiple tasks, context/process interruption mid-run, exact ledger-based resume, no duplicate task dispatch, evidence/commits preserved.</p>
+<p>A release does not ship if mandatory journeys fail.</p>
+</section>
+
+<section id="performance">
+<h2>33. Reliability, Provider Execution, and Performance</h2>
+<p>Observed nested-provider no-output/timeouts demonstrate that provider execution behavior is a first-class product requirement.</p>
+<h3>Diagnostics</h3>
+<ul><li>Prompt construction time.</li><li>Provider startup time.</li><li>Time to first output/heartbeat.</li><li>Total execution time.</li><li>Artifact parse/validation time.</li><li>Retry count/classification/escalation.</li><li>Context/token/cost metrics when available.</li><li>Subagent/model routing decisions.</li><li>Workspace setup/baseline time.</li></ul>
+<pre>sdai diagnostics FEATURE-123
+sdai diagnostics FEATURE-123 --json</pre>
+<h3>Runtime requirements</h3>
+<p>Configurable timeout, streaming where supported, heartbeat/progress, cancellation, safe retries, failure classification, model escalation policy, explicit UTF-8 boundaries, predictable Windows/Linux subprocess handling, and secret-safe diagnostics.</p>
+<div class="callout warn"><strong>UX rule:</strong> a long-running provider must never look frozen. SDAI should expose elapsed state and heartbeat/progress even when the provider emits no semantic content.</div>
+</section>
+
+<section id="structure">
+<h2>34. Target SDAI 1.0 Repository Structure</h2>
+<pre>
+.sdai/
+├── config.yaml
+├── constitution.md
+├── policy.yaml
+├── governance.yaml
+├── agent-routing.yaml
+├── agents/
+├── prompts/
+├── workflows/
+├── workflow-components/
+├── schemas/
+├── validators/
+├── integrations/
+├── packs/
+└── evals/
+
+.agents/skills/
+├── requirements/
+├── architecture/
+├── security/
+├── development/
+├── debugging/
+├── testing/
+├── delivery/
+├── traceability/
+├── languages/
+├── frameworks/
+├── platforms/
+└── libraries/
+
+specs/
+├── current/
+└── changes/FEATURE-123/
+    ├── change.yaml
+    ├── requirements.md
+    ├── deltas/
+    ├── rfc/
+    ├── architecture/
+    ├── adr/
+    ├── contracts/
+    ├── security/
+    ├── plan/
+    ├── tasks.md
+    ├── traceability/
+    ├── approvals/
+    ├── quality-gates/
+    ├── verification/
+    ├── audit/
+    └── .sdai/execution/
+        ├── run.yaml
+        ├── ledger.jsonl
+        ├── tasks/
+        └── checkpoints/
+</pre>
+<h3>Truth boundary</h3>
+<pre>
+AI agents: propose • explore • analyze • implement • debug • review • recommend
+SDAI engine: validate • persist • apply deltas • invalidate • enforce policy
+             record evidence/approvals • execute gates • calculate traceability
+             promote truth • record provenance • resume deterministically
+</pre>
+</section>
+
+<section id="master">
+<h2>35. Master Capability Checklist — Completeness Audit</h2>
+<p>This section is intentionally redundant: it is the final audit list used to ensure the implementation program does not omit previously identified capabilities.</p>
+<div class="grid2">
+<div class="card"><h3>Existing SDAI strengths to preserve</h3><ul><li class="check">Spec-first lifecycle</li><li class="check">Architecture/ADR generation</li><li class="check">RFC/ADR/C4/Draw.io/PlantUML/API/threat-model skills</li><li class="check">Deterministic architecture artifact validation</li><li class="check">Semantic agents separate from providers</li><li class="check">Codex/Claude/Copilot/Gemini/custom providers</li><li class="check">Manual named-step execution</li><li class="check">Advisory/workspace-write modes</li><li class="check">Conditions/retries/parallel reviews/pause-resume</li><li class="check">GitHub/Jira integrations</li><li class="check">Tests/Trivy/Sonar gates</li><li class="check">Org/repo/user policy hierarchy</li><li class="check">Provider/model/capability allowlists</li><li class="check">Protected paths and restoration</li><li class="check">Prompt containment and secret checks</li><li class="check">Minimal external-provider environment</li><li class="check">Enterprise credential env allowlist</li><li class="check">Safe command argument arrays</li><li class="check">UTF-8 Windows/Linux boundaries</li></ul></div>
+<div class="card"><h3>Spec Kit concepts included</h3><ul><li class="check">Engineering constitution</li><li class="check">Clarification</li><li class="check">Requirements-quality checklist</li><li class="check">Cross-artifact analyze</li><li class="check">Convergence/remediation loop</li><li class="check">Reviewer-owned checks</li><li class="check">Workflow control-flow expansion</li><li class="check">Workflow overlays/composition</li><li class="check">Machine-readable JSON</li><li class="check">Extension/preset/bundle concepts generalized as packs</li><li class="check">Broad agent/tool ecosystem target</li></ul></div>
+<div class="card"><h3>OpenSpec concepts included</h3><ul><li class="check">Explore before committing</li><li class="check">Current specs as system truth</li><li class="check">Change-scoped delta specs</li><li class="check">ADDED/MODIFIED/REMOVED/RENAMED</li><li class="check">Fluid updates during implementation</li><li class="check">Promotion/sync semantics</li><li class="check">Archive lifecycle</li><li class="check">Custom artifact schemas/DAGs</li><li class="check">Brownfield adoption</li><li class="check">Shared specification stores</li><li class="check">Cross-repo shared requirements</li><li class="check">Verification against spec/design/tasks</li><li class="check">SDAI extension: baseline hashes/conflict detection</li><li class="check">SDAI extension: task ownership routing across repos</li></ul></div>
+<div class="card"><h3>Superpowers concepts included</h3><ul><li class="check">Brainstorm/explore discipline</li><li class="check">Precise implementation planning</li><li class="check">TDD workflow component</li><li class="check">Systematic root-cause debugging</li><li class="check">Verification before completion</li><li class="check">Fresh task worker/subagent pattern</li><li class="check">Independent spec + code-quality review</li><li class="check">Final whole-change review</li><li class="check">Git worktree isolation</li><li class="check">Clean baseline testing before implementation</li><li class="check">Durable execution ledger/recovery</li><li class="check">Bounded fix-loop escalation</li><li class="check">Cost/complexity-aware model selection</li><li class="check">Skills tested with behavioral pressure scenarios</li><li class="check">SDAI adaptation: policy/risk selectable rather than universally rigid</li></ul></div>
+<div class="card"><h3>Extensibility requirements included</h3><ul><li class="check">Agent registry</li><li class="check">Skill registry</li><li class="check">Workflow registry/components</li><li class="check">Artifact schema registry</li><li class="check">Validator/gate/integration/pack registries</li><li class="check">Manifest API versions</li><li class="check">Agent inheritance</li><li class="check">Skill dependencies/composition</li><li class="check">Workflow inheritance/overlays/hooks</li><li class="check">Plugin step permissions</li><li class="check">Scaffolding/search/validate/eval CLI</li><li class="check">Signed packs/catalogs/lockfile</li><li class="check">Organization-locked extensions</li></ul></div>
+<div class="card"><h3>Language/platform requirements included</h3><ul><li class="check">Java</li><li class="check">C#/.NET</li><li class="check">Python</li><li class="check">TypeScript/JavaScript</li><li class="check">Go</li><li class="check">PowerShell</li><li class="check">Kotlin/Rust/C/C++/Bash follow-on</li><li class="check">Spring Boot/ASP.NET/FastAPI/Django/React/Angular/Node</li><li class="check">AWS/Azure/GCP/Kubernetes/Docker/Terraform</li><li class="check">Library-specific skills such as Jsign/Bouncy Castle/Testcontainers</li><li class="check">Technology detection</li><li class="check">Version-aware compatibility</li><li class="check">Minimal effective skill resolver</li><li class="check">Company-specific language standards</li></ul></div>
+<div class="card"><h3>Enterprise 1.0 roadmap included</h3><ul><li class="check">Identity-backed approvals</li><li class="check">OpenAPI/AsyncAPI/JSON Schema/Protobuf validation</li><li class="check">Requirement→ADR→task→code→test graph</li><li class="check">Architecture drift</li><li class="check">Multi-repository feature graph</li><li class="check">Audit/provenance</li><li class="check">Policy explainability</li><li class="check">Context engine</li><li class="check">Risk classifications</li><li class="check">Stable JSON API</li><li class="check">Web control plane remains a post-foundation opportunity</li></ul></div>
+<div class="card"><h3>Reliability/operability included</h3><ul><li class="check">Provider timeout configuration</li><li class="check">Heartbeat/progress</li><li class="check">Streaming where supported</li><li class="check">Cancellation</li><li class="check">Retry classification/escalation</li><li class="check">Prompt/provider/validation timing</li><li class="check">Token/context/cost metrics where available</li><li class="check">Crash/context-loss resume</li><li class="check">Evidence freshness</li><li class="check">Multi-platform subprocess handling</li></ul></div>
+</div>
+<div class="callout green"><strong>Completeness result:</strong> the plan now explicitly covers SDAI's current foundations, all previously identified Spec Kit and OpenSpec gaps, the language-specific skill architecture, the extension-first agent/skill/workflow model, and the Superpowers execution-quality concepts judged valuable for SDAI.</div>
+</section>
+
+<section id="better">
+<h2>36. Definition of “Better Than Spec Kit, OpenSpec, and Superpowers”</h2>
+<p>Success is not stars, number of prompts, or number of commands. SDAI is better when the integrated engineering guarantee is stronger.</p>
+<div class="callout green"><strong>North star:</strong> SDAI can prove why software was built, which requirement drove it, which architecture decision authorized it, which AI/human changed it, which provider/model/skills were used, whether those skills are evaluated, which tests/security/quality checks passed with fresh evidence, what current specification is true, and whether implementation still conforms to approved architecture and contracts.</div>
+<pre>
+Spec Kit strength:      SDD quality
+OpenSpec strength:      fluid change/spec lifecycle
+Superpowers strength:   disciplined agentic implementation
+SDAI unique layer:      enterprise governance + architecture + security + traceability + provenance
+
+SDAI 1.0 = all four concerns integrated under one deterministic policy model
+</pre>
+</section>
+
+<section id="sources">
+<h2>37. Benchmark Sources</h2>
+<p>Reviewed/current benchmark sources used in this plan:</p>
+<ul><li><a href="https://github.com/TestIntegrationOrg/sd-ai-framework">TestIntegrationOrg/sd-ai-framework</a></li><li><a href="https://github.com/github/spec-kit">github/spec-kit</a></li><li><a href="https://github.com/Fission-AI/OpenSpec">Fission-AI/OpenSpec</a></li><li><a href="https://github.com/Fission-AI/OpenSpec/blob/main/docs/opsx.md">OpenSpec OPSX workflow</a></li><li><a href="https://github.com/Fission-AI/OpenSpec/blob/main/docs/overview.md">OpenSpec core concepts</a></li><li><a href="https://github.com/Fission-AI/OpenSpec/blob/main/docs/customization.md">OpenSpec schemas/customization</a></li><li><a href="https://github.com/Fission-AI/OpenSpec/blob/main/docs/stores-beta/user-guide.md">OpenSpec Stores</a></li><li><a href="https://github.com/obra/superpowers">obra/superpowers</a></li><li><a href="https://github.com/obra/superpowers/tree/main/skills">Superpowers skills library</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/subagent-driven-development/SKILL.md">Superpowers subagent-driven development</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/test-driven-development/SKILL.md">Superpowers TDD</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/systematic-debugging/SKILL.md">Superpowers systematic debugging</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/verification-before-completion/SKILL.md">Superpowers verification before completion</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/writing-skills/SKILL.md">Superpowers writing/testing skills</a></li><li><a href="https://github.com/obra/superpowers/blob/main/skills/using-git-worktrees/SKILL.md">Superpowers worktree isolation</a></li></ul>
+</section>
+<footer>SDAI 1.0 implementation plan — review branch artifact. Large milestones should themselves be executed through SDAI proposal/specification/architecture/approval workflows once the roadmap is approved.</footer>
+</main>
+</div>
+</body>
+</html>
