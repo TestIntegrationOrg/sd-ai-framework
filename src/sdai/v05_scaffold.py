@@ -395,6 +395,8 @@ def _write_missing(path: Path, content: str, created: list[Path]) -> None:
 def _upgrade_stock_text(path: Path, old: str, new: str, created: list[Path]) -> bool:
     if not path.exists():
         return False
+    if old.strip() == new.strip():
+        return False
     if read_utf8_text(path).strip() != old.strip():
         return False
     created.append(write_text(path, new, overwrite=True))
