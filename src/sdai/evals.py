@@ -208,7 +208,11 @@ def _target_content(project_root: Path, target_type: str, target_name: str) -> s
         return skill.instructions
     if target_type == "agent":
         agent = load_agent_definition(project_root, target_name)
-        return agent.instructions
+        sections = [f"## Agent Instructions\n{agent.instructions}"]
+        for skill_name in dict.fromkeys(agent.skills):
+            skill = load_skill(project_root, skill_name)
+            sections.append(f"## Skill: {skill.name}\n{skill.instructions}")
+        return "\n\n".join(sections)
     raise EvalError(f"Unsupported eval target type '{target_type}'")
 
 
