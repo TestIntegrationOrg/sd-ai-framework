@@ -20,6 +20,12 @@ from sdai.workflow_components import (
     WorkflowComponentError,
     compose_workflow,
 )
+from sdai.workflow_overlays import (
+    LifecycleHookProvenance,
+    WorkflowOverlayError,
+    WorkflowOverlayProvenance,
+    resolve_workflow_data,
+)
 
 
 class WorkflowConfigError(RuntimeError):
@@ -97,6 +103,10 @@ class WorkflowDefinition:
     input_definitions: tuple[TypedInputDefinition, ...] = ()
     resolved_inputs: tuple[tuple[str, object], ...] = ()
     components: tuple[ComponentUseProvenance, ...] = ()
+    inheritance: tuple[str, ...] = ()
+    overlays: tuple[WorkflowOverlayProvenance, ...] = ()
+    lifecycle_hooks: tuple[LifecycleHookProvenance, ...] = ()
+    mandatory_steps: tuple[str, ...] = ()
 
     @property
     def input_values(self) -> dict[str, object]:
@@ -300,10 +310,14 @@ def load_workflow(
     name: str,
     *,
     input_values: Mapping[str, object] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> WorkflowDefinition:
     name = _safe_name(name, "workflow name")
-    path = project_root / ".sdai" / "workflows" / f"{name}.yaml"
-    data = load_yaml(path)
+    try:
+        resolution = resolve_workflow_data(project_root, name, environ=environ)
+    except WorkflowOverlayError as exc:
+        raise WorkflowConfigError(str(exc)) from exc
+    data = resolution.data
     raw_steps = data.get("steps") or []
     if not isinstance(raw_steps, list) or not raw_steps:
         raise WorkflowConfigError(f"Workflow '{name}' must define at least one step")
@@ -337,11 +351,23 @@ def load_workflow(
         input_definitions=composition.workflow_inputs,
         resolved_inputs=tuple(sorted(composition.resolved_workflow_inputs.items())),
         components=composition.components,
+        inheritance=resolution.inheritance,
+        overlays=resolution.overlays,
+        lifecycle_hooks=resolution.hooks,
+        mandatory_steps=resolution.mandatory_steps,
     )
     all_ids = [step.id for step, _ in definition.iter_steps()]
     if len(all_ids) != len(set(all_ids)):
         raise WorkflowConfigError(
             f"Workflow '{name}' contains duplicate step ids across top-level, component-expanded, and parallel child steps"
+        )
+    missing_mandatory = sorted(
+        step_id for step_id in definition.mandatory_steps if step_id not in set(all_ids)
+    )
+    if missing_mandatory:
+        raise WorkflowConfigError(
+            "SDAI-WFOVER-004: organization-mandated workflow step(s) are missing after component expansion: "
+            + ", ".join(missing_mandatory)
         )
     return definition
 

@@ -57,6 +57,10 @@ def _definition_payload(definition) -> dict[str, object]:
         "inputs": [item.as_dict() for item in definition.input_definitions],
         "resolved_inputs": definition.input_values,
         "components": [item.as_dict() for item in definition.components],
+        "inheritance": list(definition.inheritance),
+        "overlays": [item.as_dict() for item in definition.overlays],
+        "lifecycle_hooks": [item.as_dict() for item in definition.lifecycle_hooks],
+        "mandatory_steps": list(definition.mandatory_steps),
         "steps": [
             {
                 "id": step.id,
@@ -84,7 +88,8 @@ def run_workflow_command(root: Path, args: argparse.Namespace) -> int:
     if args.workflow_action == "validate":
         print(
             f"Validated workflow '{definition.name}' version={definition.workflow_version or '-'} "
-            f"steps={len(tuple(definition.iter_steps()))} components={len(definition.components)}"
+            f"steps={len(tuple(definition.iter_steps()))} components={len(definition.components)} "
+            f"overlays={len(definition.overlays)} hooks={len(definition.lifecycle_hooks)}"
         )
         return 0
 
@@ -92,6 +97,8 @@ def run_workflow_command(root: Path, args: argparse.Namespace) -> int:
         f"Workflow {definition.name} version={definition.workflow_version or '-'} "
         f"validation={definition.validation_mode.value}"
     )
+    if definition.inheritance:
+        print("  inheritance: " + " -> ".join(definition.inheritance))
     if definition.input_definitions:
         print("  inputs:")
         for item in definition.input_definitions:
@@ -107,6 +114,22 @@ def run_workflow_command(root: Path, args: argparse.Namespace) -> int:
                 f"    {item.component_id}@{item.version} source={item.source} "
                 f"steps={','.join(item.expanded_step_ids)}"
             )
+    if definition.overlays:
+        print("  overlays:")
+        for item in definition.overlays:
+            print(
+                f"    {item.layer.value}:{item.overlay_id} target={item.target} "
+                f"source={item.source}"
+            )
+    if definition.lifecycle_hooks:
+        print("  lifecycle hooks:")
+        for item in definition.lifecycle_hooks:
+            print(
+                f"    {item.point} anchor={item.anchor_step} "
+                f"layer={item.layer.value} steps={','.join(item.step_ids)}"
+            )
+    if definition.mandatory_steps:
+        print("  mandatory steps: " + ",".join(definition.mandatory_steps))
     print("  steps:")
     for step, parent in definition.iter_steps():
         parent_text = f" parent={parent}" if parent else ""
