@@ -33,11 +33,14 @@ An unrelated DAG branch remains fresh when none of its own content, dependencies
 
 Text artifact types are read through SDAI's strict UTF-8 boundary and normalized to LF before SHA-256 calculation. This makes CRLF/LF checkout differences equivalent.
 
+Directory artifacts use length-prefixed canonical framing for every relative path/content pair before SHA-256 calculation. This prevents ambiguous concatenation layouts from producing the same preimage representation.
+
 Each state record binds:
 
 ```yaml
 version: 1
 artifact_id: architecture
+domain: null
 artifact_path: specs/changes/SIGN-123/architecture.md
 definition_sha256: sha256:...
 artifact_sha256: sha256:...
@@ -56,6 +59,14 @@ Records live under the protected feature workspace:
 specs/changes/<FEATURE>/.sdai/artifact-state/<artifact-id>.yaml
 ```
 
+Artifacts whose schema paths contain `{domain}` use a separate record key for each materialized domain:
+
+```text
+specs/changes/<FEATURE>/.sdai/artifact-state/<artifact-id>--<domain>.yaml
+```
+
+The record also stores the expected domain value. Recording `signing` can therefore never overwrite or satisfy the freshness record for `certificates`.
+
 The effective artifact-definition hash covers lifecycle semantics such as path, type, required state, dependencies, risk applicability, and organization mandates. Changing schema semantics therefore invalidates old artifact evidence even if the artifact file bytes did not change.
 
 ## Evidence invalidation
@@ -68,6 +79,8 @@ State records may bind existing deterministic evidence files using these evidenc
 - `evidence`
 
 The state engine does not decide whether an approval or validation passed. The producer of that evidence must make the decision first. Once bound, SDAI invalidates that evidence when its source file is missing or its normalized SHA-256 changes.
+
+Evidence sources must be portable repository-relative POSIX paths. Absolute paths, drive-letter paths, backslashes, parent/dot segments, empty segments, Windows-invalid filename characters, reserved DOS device names, and control characters fail closed both when a binding is created and when a persisted state record is parsed.
 
 An evidence change stales the owning artifact and propagates staleness downstream through the DAG.
 
@@ -100,7 +113,7 @@ trivial | standard | critical | regulated
 
 Artifacts whose `applies_to` includes the selected risk are active. Their dependency closure is also included even when a dependency has a narrower applicability declaration, because an explicit dependency edge remains a prerequisite of the active artifact.
 
-Schemas using `{domain}` require `--domain <domain>` for state evaluation.
+Schemas using `{domain}` require `--domain <domain>` for state evaluation. Domain-scoped state records are isolated by domain as described above.
 
 ## Fail-closed behavior
 
@@ -112,6 +125,8 @@ State/evidence parsing rejects malformed or unsafe input with stable error famil
 | `SDAI-STATE-002` | malformed artifact-state record |
 | `SDAI-STATE-003` | unsafe/unreadable artifact or evidence content |
 | `SDAI-STATE-004` | invalid attempt to record/bind state evidence |
+
+`dependency_sha256` must be an actual mapping even for dependency-free artifacts; falsy lists/strings/booleans are not silently coerced to an empty mapping.
 
 Symlinked artifact/state/evidence files are rejected. State JSON is deterministic and provider/model independent.
 
