@@ -164,6 +164,12 @@ def requirement_sha256(requirement_id: str, definition: str) -> str:
     return "sha256:" + sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def spec_change_bundle_sha256(bundle: SpecChangeBundle) -> str:
+    """Hash the complete deterministic change bundle, including every delta."""
+
+    return "sha256:" + sha256(bundle.to_json().encode("utf-8")).hexdigest()
+
+
 def _is_requirement_section(heading: str) -> bool:
     folded = heading.casefold()
     return "requirement" in folded or folded == "acceptance criteria"
@@ -410,7 +416,7 @@ def validate_spec_change(project_root: Path, feature_id: str) -> DeltaValidation
     )
     return DeltaValidationReport(
         feature_id=bundle.metadata.feature_id,
-        change_sha256=bundle.metadata.source_sha256,
+        change_sha256=spec_change_bundle_sha256(bundle),
         current_spec_sha256=current_hashes,
         findings=ordered_findings,
     )
