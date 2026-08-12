@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 import re
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import yaml
 
@@ -14,6 +14,12 @@ from sdai.artifacts import write_text
 from sdai.config import load_yaml
 from sdai.governance import evaluate_approval, record_approval
 from sdai.models import FeatureContext, LifecycleMode
+from sdai.workflow_components import (
+    ComponentUseProvenance,
+    TypedInputDefinition,
+    WorkflowComponentError,
+    compose_workflow,
+)
 
 
 class WorkflowConfigError(RuntimeError):
@@ -87,6 +93,14 @@ class WorkflowDefinition:
     name: str
     validation_mode: LifecycleMode
     steps: tuple[WorkflowStep, ...]
+    workflow_version: int | None = None
+    input_definitions: tuple[TypedInputDefinition, ...] = ()
+    resolved_inputs: tuple[tuple[str, object], ...] = ()
+    components: tuple[ComponentUseProvenance, ...] = ()
+
+    @property
+    def input_values(self) -> dict[str, object]:
+        return dict(self.resolved_inputs)
 
     def iter_steps(self) -> Iterator[tuple[WorkflowStep, str | None]]:
         for item in self.steps:
@@ -217,7 +231,11 @@ def _parse_step(raw: object, index: int) -> WorkflowStep:
             str(raw["save_as"]) if raw.get("save_as") else f"ai/{step_id}.md",
             f"save_as for step '{step_id}'",
         )
-        agent_name = _safe_name(str(raw["agent"]), f"semantic agent for step '{step_id}'") if raw.get("agent") else None
+        agent_name = (
+            _safe_name(str(raw["agent"]), f"semantic agent for step '{step_id}'")
+            if raw.get("agent")
+            else None
+        )
         return WorkflowStep(
             id=step_id,
             kind=kind,
@@ -260,13 +278,51 @@ def _parse_step(raw: object, index: int) -> WorkflowStep:
     return WorkflowStep(id=step_id, kind=StepKind.VALIDATE, **common)
 
 
-def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
+def _workflow_version(data: Mapping[str, object], *, uses_v6_features: bool) -> int | None:
+    raw = data.get("version")
+    if raw is None:
+        if uses_v6_features:
+            raise WorkflowConfigError(
+                "Workflow components/typed inputs require explicit workflow version: 6"
+            )
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise WorkflowConfigError("Workflow version must be an integer")
+    if uses_v6_features and raw < 6:
+        raise WorkflowConfigError(
+            "Workflow components/typed inputs require workflow version 6 or newer"
+        )
+    return raw
+
+
+def load_workflow(
+    project_root: Path,
+    name: str,
+    *,
+    input_values: Mapping[str, object] | None = None,
+) -> WorkflowDefinition:
     name = _safe_name(name, "workflow name")
     path = project_root / ".sdai" / "workflows" / f"{name}.yaml"
     data = load_yaml(path)
     raw_steps = data.get("steps") or []
     if not isinstance(raw_steps, list) or not raw_steps:
         raise WorkflowConfigError(f"Workflow '{name}' must define at least one step")
+
+    uses_components = any(isinstance(item, Mapping) and "uses" in item for item in raw_steps)
+    uses_typed_inputs = "inputs" in data or "input_values" in data or bool(input_values)
+    version = _workflow_version(
+        data,
+        uses_v6_features=uses_components or uses_typed_inputs,
+    )
+    try:
+        composition = compose_workflow(
+            project_root,
+            data,
+            input_values=input_values,
+        )
+    except WorkflowComponentError as exc:
+        raise WorkflowConfigError(str(exc)) from exc
+
     try:
         validation_mode = LifecycleMode(str(data.get("validation_mode") or name))
     except ValueError as exc:
@@ -276,12 +332,16 @@ def load_workflow(project_root: Path, name: str) -> WorkflowDefinition:
     definition = WorkflowDefinition(
         name=_safe_name(str(data.get("name") or name), "workflow definition name"),
         validation_mode=validation_mode,
-        steps=tuple(_parse_step(raw, index) for index, raw in enumerate(raw_steps)),
+        steps=tuple(_parse_step(raw, index) for index, raw in enumerate(composition.steps)),
+        workflow_version=version,
+        input_definitions=composition.workflow_inputs,
+        resolved_inputs=tuple(sorted(composition.resolved_workflow_inputs.items())),
+        components=composition.components,
     )
     all_ids = [step.id for step, _ in definition.iter_steps()]
     if len(all_ids) != len(set(all_ids)):
         raise WorkflowConfigError(
-            f"Workflow '{name}' contains duplicate step ids across top-level and parallel child steps"
+            f"Workflow '{name}' contains duplicate step ids across top-level, component-expanded, and parallel child steps"
         )
     return definition
 
