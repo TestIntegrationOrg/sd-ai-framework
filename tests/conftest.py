@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -41,3 +42,17 @@ def _initialized_spec_promotion_governance(request: pytest.FixtureRequest) -> No
         ),
         encoding="utf-8",
     )
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Expose CI assertion text through GitHub check annotations.
+
+    GitHub Actions logs are archived by the API, while check annotations are
+    queryable. Keep this CI-only and limited to pytest failure representations.
+    """
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or report.when != "call" or not report.failed:
+        return
+    message = str(report.longrepr)
+    message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title=pytest {report.nodeid}::{message}")
