@@ -3,10 +3,10 @@ from pathlib import Path
 import yaml
 
 from sdai.agent_platform.context import collect_feature_context
-from sdai.architecture_skills import ARCHITECT_V051, ARCHITECT_V052, ARCHITECT_V053, SKILLS as ARCHITECTURE_SKILLS
+from sdai.architecture_skills import ARCHITECT_V051, ARCHITECT_V052, SKILLS as ARCHITECTURE_SKILLS
 from sdai.models import FeatureContext
 from sdai.scaffold import init_project
-from sdai.v05_scaffold import install_v05_scaffold
+from sdai.v05_scaffold import AGENTS, install_v05_scaffold
 
 
 SPECIALIZED = {
@@ -48,6 +48,7 @@ def test_v05_installer_adds_architecture_skill_pack_and_enhanced_architect(tmp_p
     architect = (tmp_path / ".sdai" / "agents" / "architect.agent.md").read_text(encoding="utf-8")
     for name in SPECIALIZED:
         assert name in architect
+    assert "engineering-judgment" in architect
     assert "profile: claude" in architect
     assert "execution_mode: advisory" in architect
 
@@ -70,12 +71,11 @@ def test_upgrade_only_rewrites_exact_stock_v051_architect(tmp_path: Path):
     architect.write_text(ARCHITECT_V051, encoding="utf-8")
 
     install_v05_scaffold(tmp_path)
-    assert architect.read_text(encoding="utf-8").strip() == ARCHITECT_V053.strip()
+    assert architect.read_text(encoding="utf-8").strip() == AGENTS["architect"].strip()
 
     architect.write_text("---\nname: architect\n---\n# Team customized architect\n", encoding="utf-8")
     install_v05_scaffold(tmp_path)
     assert "Team customized architect" in architect.read_text(encoding="utf-8")
-
 
 
 def test_upgrade_rewrites_exact_stock_v052_architect(tmp_path: Path):
@@ -85,8 +85,10 @@ def test_upgrade_rewrites_exact_stock_v052_architect(tmp_path: Path):
     architect.write_text(ARCHITECT_V052, encoding="utf-8")
 
     install_v05_scaffold(tmp_path)
-    assert architect.read_text(encoding="utf-8").strip() == ARCHITECT_V053.strip()
+    assert architect.read_text(encoding="utf-8").strip() == AGENTS["architect"].strip()
     assert "architecture-validation.yaml" in architect.read_text(encoding="utf-8")
+    assert "engineering-judgment" in architect.read_text(encoding="utf-8")
+
 
 def test_existing_project_gets_new_skills_without_overwriting_custom_architect(tmp_path: Path):
     init_project(tmp_path)
