@@ -639,7 +639,8 @@ def _apply_operation(
     assert target is not None
     index = _find_step_index(steps, target)
     existing = steps[index]
-    if layer is not WorkflowOverlayLayer.ORG:
+    destructive = op in {"replace", "disable"}
+    if layer is not WorkflowOverlayLayer.ORG and destructive:
         if target in mandatory_steps:
             raise _fail(
                 "SDAI-WFOVER-004",
