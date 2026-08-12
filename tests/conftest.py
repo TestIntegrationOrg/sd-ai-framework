@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 import pytest
 import yaml
@@ -55,4 +56,5 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         return
     message = str(report.longrepr)
     message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print(f"::error title=pytest {report.nodeid}::{message}")
+    sys.__stdout__.write(f"::error title=pytest {report.nodeid}::{message}\n")
+    sys.__stdout__.flush()
