@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
+import tempfile
 
+from sdai.agent_platform.models import Capability
 from sdai.config import load_yaml
 from sdai.evals import load_eval_scenarios
 from sdai.extensions.manifests import ExtensionKind, load_extension_manifest
 from sdai.path_safety import ensure_within_project
 from sdai.skill_resolution import load_skill_metadata
+from sdai.workflows import load_workflow
 
 
 class ExecutionExcellenceError(RuntimeError):
@@ -37,6 +41,7 @@ _SPEC_KEYS = frozenset({"type", "skills", "workflow_examples", "policy_examples"
 _ALLOWED_SEMANTIC_AGENTS = frozenset(
     {"planner", "developer", "code-reviewer", "tester", "architect", "security-reviewer"}
 )
+_SUPPORTED_CAPABILITIES = frozenset(item.value for item in Capability)
 _EXPECTED_REQUIRED: dict[str, frozenset[str]] = {
     "planning": frozenset({"implementation-planning"}),
     "coding": frozenset({"test-driven-development", "verification-before-completion"}),
@@ -73,6 +78,23 @@ def _example_path(root: Path, value: str, *, label: str) -> Path:
     if not path.is_file():
         raise _fail("SDAI-EXEC-004", f"{label} does not exist: {value}")
     return path
+
+
+def _validate_with_workflow_engine(path: Path, source: str) -> None:
+    """Prove the example is consumable by the current public v5 workflow parser."""
+
+    with tempfile.TemporaryDirectory(prefix="sdai-execution-workflow-") as directory:
+        temp_root = Path(directory)
+        target = temp_root / ".sdai" / "workflows" / f"{path.stem}.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        try:
+            load_workflow(temp_root, path.stem)
+        except RuntimeError as exc:
+            raise _fail(
+                "SDAI-EXEC-004",
+                f"workflow example '{source}' is not valid for the current workflow engine: {exc}",
+            ) from exc
 
 
 def _validate_workflow_example(root: Path, source: str) -> None:
@@ -118,6 +140,7 @@ def _validate_workflow_example(root: Path, source: str) -> None:
             "SDAI-EXEC-004",
             f"workflow example '{source}' must end with deterministic validation",
         )
+    _validate_with_workflow_engine(path, source)
 
 
 def _validate_policy_example(root: Path, source: str) -> None:
@@ -146,9 +169,15 @@ def _validate_policy_example(root: Path, source: str) -> None:
                 "SDAI-EXEC-004",
                 f"policy example '{source}' contains an invalid capability key",
             )
-        normalized[capability.strip()] = _strings(
+        capability_name = capability.strip()
+        if capability_name not in _SUPPORTED_CAPABILITIES:
+            raise _fail(
+                "SDAI-EXEC-004",
+                f"policy example '{source}' uses unsupported capability '{capability_name}'",
+            )
+        normalized[capability_name] = _strings(
             values,
-            label=f"policy example '{source}' skills.required.{capability}",
+            label=f"policy example '{source}' skills.required.{capability_name}",
         )
 
     referenced = {name for values in normalized.values() for name in values}
