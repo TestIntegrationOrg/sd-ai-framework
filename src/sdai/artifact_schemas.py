@@ -428,9 +428,7 @@ def _layer_files(
     builtin = Path(__file__).resolve().parent / "builtin_schemas"
     result: list[tuple[ArtifactSchemaLayer, Path, str]] = []
     for path in sorted(builtin.glob("*.yaml"), key=lambda item: item.name.casefold()):
-        result.append(
-            (ArtifactSchemaLayer.BUILTIN, path, f"builtin:{path.name}")
-        )
+        result.append((ArtifactSchemaLayer.BUILTIN, path, path.name))
 
     for path in _external_paths(
         environ.get("SDAI_ORG_SCHEMA_PATH"),
