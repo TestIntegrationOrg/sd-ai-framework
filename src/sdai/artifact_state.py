@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Iterable, Mapping
 
@@ -38,6 +39,7 @@ _STATE_KEYS = frozenset(
     {
         "version",
         "artifact_id",
+        "domain",
         "artifact_path",
         "definition_sha256",
         "artifact_sha256",
@@ -60,6 +62,12 @@ _TEXT_TYPES = frozenset(
         "plantuml",
     }
 )
+_WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+_DOS_DEVICE = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
+    re.IGNORECASE,
+)
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:")
 
 
 @dataclass(frozen=True)
@@ -110,6 +118,7 @@ class ArtifactEvidenceState:
 @dataclass(frozen=True)
 class ArtifactStateRecord:
     artifact_id: str
+    domain: str | None
     artifact_path: str
     definition_sha256: str
     artifact_sha256: str
@@ -121,6 +130,7 @@ class ArtifactStateRecord:
         return {
             "version": 1,
             "artifact_id": self.artifact_id,
+            "domain": self.domain,
             "artifact_path": self.artifact_path,
             "definition_sha256": self.definition_sha256,
             "artifact_sha256": self.artifact_sha256,
@@ -242,6 +252,33 @@ def _validate_risk(risk: str) -> str:
     return normalized
 
 
+def _validate_repo_relative_path(value: object, *, code: str, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise _fail(code, f"{label} must be a non-empty repository-relative POSIX path")
+    source = value.strip()
+    if (
+        "\\" in source
+        or source.startswith("/")
+        or _DRIVE_PATH.match(source)
+    ):
+        raise _fail(code, f"{label} must be a repository-relative POSIX path")
+    parts = source.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise _fail(code, f"{label} contains an invalid path segment")
+    for part in parts:
+        if (
+            any(char in _WINDOWS_INVALID_CHARS for char in part)
+            or part.endswith((".", " "))
+            or any(ord(char) < 32 for char in part)
+            or _DOS_DEVICE.fullmatch(part)
+        ):
+            raise _fail(
+                code,
+                f"{label} contains a path segment that is not portable across Windows/Linux",
+            )
+    return source
+
+
 def _materialize_path(
     root: Path,
     definition: ArtifactDefinition,
@@ -258,20 +295,32 @@ def _materialize_path(
             )
         rendered = rendered.replace("{domain}", validate_domain_id(domain))
     candidate = root / Path(*rendered.split("/"))
-    return ensure_within_project(root, candidate, label=f"artifact '{definition.id}' path")
+    return ensure_within_project(
+        root,
+        candidate,
+        label=f"artifact '{definition.id}' path",
+    )
 
 
 def _hash_text_file(path: Path) -> str:
     try:
         return _sha256_text(read_utf8_text(path))
     except (TextEncodingError, OSError) as exc:
-        raise _fail("SDAI-STATE-003", f"unable to hash UTF-8 artifact '{path}': {exc}") from exc
+        raise _fail(
+            "SDAI-STATE-003",
+            f"unable to hash UTF-8 artifact '{path}': {exc}",
+        ) from exc
 
 
 def _hash_directory(path: Path) -> str:
-    entries: list[bytes] = []
+    """Hash directory contents using an unambiguous length-prefixed framing."""
+
+    digest = sha256()
     try:
-        for child in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+        for child in sorted(
+            path.rglob("*"),
+            key=lambda item: item.relative_to(path).as_posix(),
+        ):
             if child.is_symlink():
                 raise _fail(
                     "SDAI-STATE-003",
@@ -280,10 +329,17 @@ def _hash_directory(path: Path) -> str:
             if not child.is_file():
                 continue
             relative = child.relative_to(path).as_posix().encode("utf-8")
-            entries.append(relative + b"\0" + child.read_bytes())
+            content = child.read_bytes()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
     except OSError as exc:
-        raise _fail("SDAI-STATE-003", f"unable to hash directory artifact '{path}': {exc}") from exc
-    return _sha256_bytes(b"\n".join(entries))
+        raise _fail(
+            "SDAI-STATE-003",
+            f"unable to hash directory artifact '{path}': {exc}",
+        ) from exc
+    return "sha256:" + digest.hexdigest()
 
 
 def _artifact_hash(path: Path, definition: ArtifactDefinition) -> str | None:
@@ -320,9 +376,24 @@ def _state_dir(root: Path, feature_id: str) -> Path:
     return ensure_within_project(root, candidate, label="artifact state directory")
 
 
-def _record_path(root: Path, feature_id: str, artifact_id: str) -> Path:
-    candidate = _state_dir(root, feature_id) / f"{artifact_id}.yaml"
-    return ensure_within_project(root, candidate, label=f"artifact state record '{artifact_id}'")
+def _record_path(
+    root: Path,
+    feature_id: str,
+    artifact_id: str,
+    *,
+    domain: str | None,
+) -> Path:
+    suffix = "" if domain is None else f"--{validate_domain_id(domain)}"
+    candidate = _state_dir(root, feature_id) / f"{artifact_id}{suffix}.yaml"
+    return ensure_within_project(
+        root,
+        candidate,
+        label=f"artifact state record '{artifact_id}'",
+    )
+
+
+def _record_domain(definition: ArtifactDefinition, domain: str | None) -> str | None:
+    return domain if "{domain}" in definition.path else None
 
 
 def _validate_hash(value: object, *, label: str) -> str:
@@ -332,7 +403,10 @@ def _validate_hash(value: object, *, label: str) -> str:
         or len(value) != 71
         or any(char not in "0123456789abcdef" for char in value[7:])
     ):
-        raise _fail("SDAI-STATE-002", f"{label} must be a lowercase sha256: hash")
+        raise _fail(
+            "SDAI-STATE-002",
+            f"{label} must be a lowercase sha256: hash",
+        )
     return value
 
 
@@ -345,7 +419,10 @@ def _parse_evidence(raw: object, *, source: str) -> tuple[ArtifactEvidenceBindin
     seen: set[tuple[str, str]] = set()
     for index, item in enumerate(raw, start=1):
         if not isinstance(item, Mapping):
-            raise _fail("SDAI-STATE-002", f"{source} evidence #{index} must be a mapping")
+            raise _fail(
+                "SDAI-STATE-002",
+                f"{source} evidence #{index} must be a mapping",
+            )
         unknown = sorted(set(item) - _EVIDENCE_KEYS)
         if unknown:
             raise _fail(
@@ -354,25 +431,33 @@ def _parse_evidence(raw: object, *, source: str) -> tuple[ArtifactEvidenceBindin
             )
         kind = item.get("kind")
         evidence_id = item.get("id")
-        evidence_source = item.get("source")
         if not isinstance(kind, str) or kind not in _EVIDENCE_KINDS:
             raise _fail(
                 "SDAI-STATE-002",
                 f"{source} evidence #{index} kind must be one of: {', '.join(sorted(_EVIDENCE_KINDS))}",
             )
         if not isinstance(evidence_id, str) or not evidence_id.strip():
-            raise _fail("SDAI-STATE-002", f"{source} evidence #{index} id must be non-empty")
-        if not isinstance(evidence_source, str) or not evidence_source.strip():
-            raise _fail("SDAI-STATE-002", f"{source} evidence #{index} source must be non-empty")
+            raise _fail(
+                "SDAI-STATE-002",
+                f"{source} evidence #{index} id must be non-empty",
+            )
+        evidence_source = _validate_repo_relative_path(
+            item.get("source"),
+            code="SDAI-STATE-002",
+            label=f"{source} evidence #{index} source",
+        )
         key = (kind, evidence_id.strip())
         if key in seen:
-            raise _fail("SDAI-STATE-002", f"{source} contains duplicate evidence {kind}/{evidence_id}")
+            raise _fail(
+                "SDAI-STATE-002",
+                f"{source} contains duplicate evidence {kind}/{evidence_id}",
+            )
         seen.add(key)
         result.append(
             ArtifactEvidenceBinding(
                 kind=kind,
                 id=evidence_id.strip(),
-                source=evidence_source.strip(),
+                source=evidence_source,
                 source_sha256=_validate_hash(
                     item.get("source_sha256"),
                     label=f"{source} evidence #{index} source_sha256",
@@ -382,18 +467,39 @@ def _parse_evidence(raw: object, *, source: str) -> tuple[ArtifactEvidenceBindin
     return tuple(result)
 
 
-def _load_record(root: Path, feature_id: str, artifact_id: str) -> ArtifactStateRecord | None:
-    path = _record_path(root, feature_id, artifact_id)
+def _load_record(
+    root: Path,
+    feature_id: str,
+    definition: ArtifactDefinition,
+    *,
+    domain: str | None,
+) -> ArtifactStateRecord | None:
+    record_domain = _record_domain(definition, domain)
+    path = _record_path(
+        root,
+        feature_id,
+        definition.id,
+        domain=record_domain,
+    )
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():
-        raise _fail("SDAI-STATE-002", f"artifact state record must be a regular file: {_portable(root, path)}")
+        raise _fail(
+            "SDAI-STATE-002",
+            f"artifact state record must be a regular file: {_portable(root, path)}",
+        )
     try:
         raw = yaml.safe_load(read_utf8_text(path)) or {}
     except (TextEncodingError, OSError, yaml.YAMLError) as exc:
-        raise _fail("SDAI-STATE-002", f"unable to read artifact state record {_portable(root, path)}: {exc}") from exc
+        raise _fail(
+            "SDAI-STATE-002",
+            f"unable to read artifact state record {_portable(root, path)}: {exc}",
+        ) from exc
     if not isinstance(raw, Mapping):
-        raise _fail("SDAI-STATE-002", f"artifact state record {_portable(root, path)} must be a mapping")
+        raise _fail(
+            "SDAI-STATE-002",
+            f"artifact state record {_portable(root, path)} must be a mapping",
+        )
     unknown = sorted(set(raw) - _STATE_KEYS)
     if unknown:
         raise _fail(
@@ -401,42 +507,80 @@ def _load_record(root: Path, feature_id: str, artifact_id: str) -> ArtifactState
             f"artifact state record {_portable(root, path)} has unknown field(s): {', '.join(map(str, unknown))}",
         )
     if raw.get("version") != 1:
-        raise _fail("SDAI-STATE-002", f"artifact state record {_portable(root, path)} version must be 1")
-    record_artifact_id = raw.get("artifact_id")
-    artifact_path = raw.get("artifact_path")
-    if record_artifact_id != artifact_id:
         raise _fail(
             "SDAI-STATE-002",
-            f"artifact state record {_portable(root, path)} artifact_id must be '{artifact_id}'",
+            f"artifact state record {_portable(root, path)} version must be 1",
         )
-    if not isinstance(artifact_path, str) or not artifact_path.strip():
-        raise _fail("SDAI-STATE-002", f"artifact state record {_portable(root, path)} artifact_path must be non-empty")
-    dependencies = raw.get("dependency_sha256") or {}
+    if raw.get("artifact_id") != definition.id:
+        raise _fail(
+            "SDAI-STATE-002",
+            f"artifact state record {_portable(root, path)} artifact_id must be '{definition.id}'",
+        )
+    raw_domain = raw.get("domain")
+    if raw_domain != record_domain:
+        raise _fail(
+            "SDAI-STATE-002",
+            f"artifact state record {_portable(root, path)} domain must be {record_domain!r}",
+        )
+    artifact_path = _validate_repo_relative_path(
+        raw.get("artifact_path"),
+        code="SDAI-STATE-002",
+        label=f"artifact state record {_portable(root, path)} artifact_path",
+    )
+    dependencies = raw.get("dependency_sha256")
     if not isinstance(dependencies, Mapping) or not all(
         isinstance(key, str) and key.strip() for key in dependencies
     ):
-        raise _fail("SDAI-STATE-002", f"artifact state record {_portable(root, path)} dependency_sha256 must be a mapping")
+        raise _fail(
+            "SDAI-STATE-002",
+            f"artifact state record {_portable(root, path)} dependency_sha256 must be a mapping",
+        )
     dependency_hashes = {
-        str(key): _validate_hash(value, label=f"dependency_sha256.{key}")
+        str(key): _validate_hash(
+            value,
+            label=f"dependency_sha256.{key}",
+        )
         for key, value in dependencies.items()
     }
     return ArtifactStateRecord(
-        artifact_id=artifact_id,
-        artifact_path=artifact_path.strip(),
-        definition_sha256=_validate_hash(raw.get("definition_sha256"), label="definition_sha256"),
-        artifact_sha256=_validate_hash(raw.get("artifact_sha256"), label="artifact_sha256"),
+        artifact_id=definition.id,
+        domain=record_domain,
+        artifact_path=artifact_path,
+        definition_sha256=_validate_hash(
+            raw.get("definition_sha256"),
+            label="definition_sha256",
+        ),
+        artifact_sha256=_validate_hash(
+            raw.get("artifact_sha256"),
+            label="artifact_sha256",
+        ),
         dependency_sha256=dependency_hashes,
-        evidence=_parse_evidence(raw.get("evidence"), source=_portable(root, path)),
+        evidence=_parse_evidence(
+            raw.get("evidence"),
+            source=_portable(root, path),
+        ),
         source=_portable(root, path),
     )
 
 
 def _source_hash(root: Path, source: str) -> str | None:
-    candidate = ensure_within_project(root, root / Path(*source.split("/")), label="artifact evidence source")
+    validated = _validate_repo_relative_path(
+        source,
+        code="SDAI-STATE-003",
+        label="artifact evidence source",
+    )
+    candidate = ensure_within_project(
+        root,
+        root / Path(*validated.split("/")),
+        label="artifact evidence source",
+    )
     if not candidate.exists():
         return None
     if candidate.is_symlink() or not candidate.is_file():
-        raise _fail("SDAI-STATE-003", f"evidence source must be a regular file: {source}")
+        raise _fail(
+            "SDAI-STATE-003",
+            f"evidence source must be a regular file: {validated}",
+        )
     return _hash_text_file(candidate)
 
 
@@ -470,9 +614,14 @@ def _evaluate_evidence(
     return tuple(result)
 
 
-def _active_graph(graph: ArtifactSchemaGraph, risk: str) -> tuple[dict[str, ArtifactDefinition], tuple[str, ...]]:
+def _active_graph(
+    graph: ArtifactSchemaGraph,
+    risk: str,
+) -> tuple[dict[str, ArtifactDefinition], tuple[str, ...]]:
     all_artifacts = graph.by_id()
-    active_ids = {item.id for item in graph.artifacts if risk in item.applies_to}
+    active_ids = {
+        item.id for item in graph.artifacts if risk in item.applies_to
+    }
     queue = list(active_ids)
     while queue:
         artifact_id = queue.pop()
@@ -480,8 +629,15 @@ def _active_graph(graph: ArtifactSchemaGraph, risk: str) -> tuple[dict[str, Arti
             if dependency not in active_ids:
                 active_ids.add(dependency)
                 queue.append(dependency)
-    active = {artifact_id: all_artifacts[artifact_id] for artifact_id in active_ids}
-    order = tuple(artifact_id for artifact_id in graph.topological_order if artifact_id in active)
+    active = {
+        artifact_id: all_artifacts[artifact_id]
+        for artifact_id in active_ids
+    }
+    order = tuple(
+        artifact_id
+        for artifact_id in graph.topological_order
+        if artifact_id in active
+    )
     return active, order
 
 
@@ -510,7 +666,12 @@ def evaluate_artifact_states(
         paths[artifact_id] = _portable(root, path)
         definitions[artifact_id] = _definition_sha256(definition)
         current_hashes[artifact_id] = _artifact_hash(path, definition)
-        records[artifact_id] = _load_record(root, feature, artifact_id)
+        records[artifact_id] = _load_record(
+            root,
+            feature,
+            definition,
+            domain=domain_id,
+        )
 
     states_by_id: dict[str, ArtifactState] = {}
     states: list[ArtifactState] = []
@@ -549,9 +710,13 @@ def evaluate_artifact_states(
                 if record.artifact_path != paths[artifact_id]:
                     reasons.append("artifact path changed since state was recorded")
                 if record.definition_sha256 != definitions[artifact_id]:
-                    reasons.append("effective artifact definition changed since state was recorded")
+                    reasons.append(
+                        "effective artifact definition changed since state was recorded"
+                    )
                 if record.artifact_sha256 != current_hash:
-                    reasons.append("artifact content hash changed since state was recorded")
+                    reasons.append(
+                        "artifact content hash changed since state was recorded"
+                    )
                 expected_dependency_ids = tuple(sorted(definition.depends_on))
                 recorded_dependency_ids = tuple(sorted(record.dependency_sha256))
                 if recorded_dependency_ids != expected_dependency_ids:
@@ -560,21 +725,32 @@ def evaluate_artifact_states(
                     current_dependency_hash = current_hashes[dependency]
                     if (
                         current_dependency_hash is not None
-                        and record.dependency_sha256.get(dependency) != current_dependency_hash
+                        and record.dependency_sha256.get(dependency)
+                        != current_dependency_hash
                     ):
                         reasons.append(
                             f"dependency '{dependency}' content hash changed since state was recorded"
                         )
                 if stale_dependencies:
                     reasons.append(
-                        "dependency state is stale: " + ", ".join(stale_dependencies)
+                        "dependency state is stale: "
+                        + ", ".join(stale_dependencies)
                     )
-                stale_evidence = [f"{item.kind}/{item.id}" for item in evidence if not item.fresh]
+                stale_evidence = [
+                    f"{item.kind}/{item.id}"
+                    for item in evidence
+                    if not item.fresh
+                ]
                 if stale_evidence:
                     reasons.append(
-                        "bound evidence is stale: " + ", ".join(stale_evidence)
+                        "bound evidence is stale: "
+                        + ", ".join(stale_evidence)
                     )
-                freshness = ArtifactFreshness.STALE if reasons else ArtifactFreshness.FRESH
+                freshness = (
+                    ArtifactFreshness.STALE
+                    if reasons
+                    else ArtifactFreshness.FRESH
+                )
 
         state = ArtifactState(
             artifact_id=artifact_id,
@@ -582,9 +758,13 @@ def evaluate_artifact_states(
             required=definition.required or definition.organization_required,
             freshness=freshness,
             current_sha256=current_hash,
-            recorded_sha256=None if record is None else record.artifact_sha256,
+            recorded_sha256=(
+                None if record is None else record.artifact_sha256
+            ),
             definition_sha256=definitions[artifact_id],
-            recorded_definition_sha256=None if record is None else record.definition_sha256,
+            recorded_definition_sha256=(
+                None if record is None else record.definition_sha256
+            ),
             dependencies=definition.depends_on,
             reasons=tuple(reasons),
             evidence=evidence,
@@ -602,10 +782,11 @@ def evaluate_artifact_states(
     )
 
 
-def _normalize_evidence_input(value: ArtifactEvidenceInput) -> ArtifactEvidenceInput:
+def _normalize_evidence_input(
+    value: ArtifactEvidenceInput,
+) -> ArtifactEvidenceInput:
     kind = value.kind.strip().lower()
     evidence_id = value.id.strip()
-    source = value.source.strip().replace("\\", "/")
     if kind not in _EVIDENCE_KINDS:
         raise _fail(
             "SDAI-STATE-004",
@@ -613,8 +794,11 @@ def _normalize_evidence_input(value: ArtifactEvidenceInput) -> ArtifactEvidenceI
         )
     if not evidence_id:
         raise _fail("SDAI-STATE-004", "evidence id must be non-empty")
-    if not source or source.startswith("/") or ".." in Path(*source.split("/")).parts:
-        raise _fail("SDAI-STATE-004", "evidence source must be a repository-relative path")
+    source = _validate_repo_relative_path(
+        value.source,
+        code="SDAI-STATE-004",
+        label="evidence source",
+    )
     return ArtifactEvidenceInput(kind, evidence_id, source)
 
 
@@ -628,11 +812,17 @@ def _bind_evidence(
         value = _normalize_evidence_input(raw)
         key = (value.kind, value.id)
         if key in seen:
-            raise _fail("SDAI-STATE-004", f"duplicate evidence binding {value.kind}/{value.id}")
+            raise _fail(
+                "SDAI-STATE-004",
+                f"duplicate evidence binding {value.kind}/{value.id}",
+            )
         seen.add(key)
         source_hash = _source_hash(root, value.source)
         if source_hash is None:
-            raise _fail("SDAI-STATE-004", f"evidence source does not exist: {value.source}")
+            raise _fail(
+                "SDAI-STATE-004",
+                f"evidence source does not exist: {value.source}",
+            )
         result.append(
             ArtifactEvidenceBinding(
                 kind=value.kind,
@@ -641,7 +831,9 @@ def _bind_evidence(
                 source_sha256=source_hash,
             )
         )
-    return tuple(sorted(result, key=lambda item: (item.kind, item.id, item.source)))
+    return tuple(
+        sorted(result, key=lambda item: (item.kind, item.id, item.source))
+    )
 
 
 def _atomic_write_yaml(path: Path, payload: Mapping[str, object]) -> None:
@@ -695,7 +887,7 @@ def record_artifact_state(
     risk_profile = _validate_risk(risk)
     domain_id = validate_domain_id(domain) if domain is not None else None
     graph = load_artifact_schema_graph(root, environ=environ)
-    active, order = _active_graph(graph, risk_profile)
+    active, _ = _active_graph(graph, risk_profile)
     if artifact_id not in active:
         raise _fail(
             "SDAI-STATE-004",
@@ -705,7 +897,10 @@ def record_artifact_state(
     path = _materialize_path(root, definition, feature, domain_id)
     current_hash = _artifact_hash(path, definition)
     if current_hash is None:
-        raise _fail("SDAI-STATE-004", f"cannot record missing artifact '{artifact_id}'")
+        raise _fail(
+            "SDAI-STATE-004",
+            f"cannot record missing artifact '{artifact_id}'",
+        )
 
     existing_report = evaluate_artifact_states(
         root,
@@ -736,17 +931,24 @@ def record_artifact_state(
             f"cannot record artifact '{artifact_id}' with missing dependency content",
         )
     evidence_bindings = _bind_evidence(root, evidence)
+    record_domain = _record_domain(definition, domain_id)
+    record_path = _record_path(
+        root,
+        feature,
+        artifact_id,
+        domain=record_domain,
+    )
     record = ArtifactStateRecord(
         artifact_id=artifact_id,
+        domain=record_domain,
         artifact_path=_portable(root, path),
         definition_sha256=_definition_sha256(definition),
         artifact_sha256=current_hash,
-        dependency_sha256={key: str(value) for key, value in dependency_hashes.items()},
+        dependency_sha256={
+            key: str(value) for key, value in dependency_hashes.items()
+        },
         evidence=evidence_bindings,
-        source=_portable(root, _record_path(root, feature, artifact_id)),
+        source=_portable(root, record_path),
     )
-    _atomic_write_yaml(
-        _record_path(root, feature, artifact_id),
-        record.as_dict(),
-    )
+    _atomic_write_yaml(record_path, record.as_dict())
     return record
