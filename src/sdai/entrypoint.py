@@ -22,6 +22,7 @@ from sdai.requirements_quality import (
     write_clarifications,
     write_requirements_checklist,
 )
+from sdai.spec_cli import add_spec_parser, run_spec_command
 from sdai.text import read_utf8_text
 
 
@@ -124,6 +125,7 @@ def _managed_parser() -> argparse.ArgumentParser:
 
     _add_eval_parser(commands, "skill")
     _add_eval_parser(commands, "agent")
+    add_spec_parser(commands)
     return parser
 
 
@@ -252,6 +254,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "agent" and args.agent_action == "eval":
         return _run_eval(root, "agent", args)
 
+    if args.managed_command == "spec":
+        return run_spec_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -268,6 +273,11 @@ def _print_top_level_help() -> None:
         "\nBehavioral evaluation commands:\n"
         "  sdai skill eval <name> [--provider mock] [--require-improvement] [--json]\n"
         "  sdai agent eval <name> [--provider mock] [--require-improvement] [--json]\n"
+        "\nCurrent specification commands:\n"
+        "  sdai spec validate <feature> [--json]\n"
+        "  sdai spec diff <feature> [--json] [--include-content]\n"
+        "  sdai spec approve <feature> --by <identity> [--role ROLE] [--note NOTE]\n"
+        "  sdai spec promote <feature> [--dry-run] [--json] [--include-content]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -287,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         "requirements",
         "skill",
         "agent",
+        "spec",
     }:
         try:
             return _run_managed_command(effective)
