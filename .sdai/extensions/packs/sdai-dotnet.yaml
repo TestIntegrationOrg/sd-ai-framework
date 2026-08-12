@@ -1,0 +1,15 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-dotnet
+  version: 0.1.0
+  description: Tier-1 SDAI language pack for C# and .NET.
+spec:
+  type: language
+  languages:
+    - csharp
+  skills:
+    core:
+      - csharp-engineering
+    frameworks:
+      - aspnet-core

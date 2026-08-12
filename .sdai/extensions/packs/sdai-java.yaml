@@ -1,0 +1,15 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-java
+  version: 0.1.0
+  description: Tier-1 SDAI language pack for Java.
+spec:
+  type: language
+  languages:
+    - java
+  skills:
+    core:
+      - java-engineering
+    frameworks:
+      - spring-boot

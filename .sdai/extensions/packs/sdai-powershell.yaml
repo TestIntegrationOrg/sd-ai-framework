@@ -1,0 +1,14 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-powershell
+  version: 0.1.0
+  description: Tier-1 SDAI language pack for PowerShell.
+spec:
+  type: language
+  languages:
+    - powershell
+  skills:
+    core:
+      - powershell-engineering
+    frameworks: []

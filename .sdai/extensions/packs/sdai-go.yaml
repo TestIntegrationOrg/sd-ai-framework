@@ -1,0 +1,14 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-go
+  version: 0.1.0
+  description: Tier-1 SDAI language pack for Go.
+spec:
+  type: language
+  languages:
+    - go
+  skills:
+    core:
+      - go-engineering
+    frameworks: []
