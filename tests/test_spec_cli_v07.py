@@ -14,6 +14,22 @@ def _fixture(root: Path, feature: str = "SIGN-CLI") -> Path:
     config = root / ".sdai" / "config.yaml"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("version: 1\n", encoding="utf-8")
+    (root / ".sdai" / "approval-policies.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "gates": {
+                    "spec-promotion": {
+                        "min_approvals": 1,
+                        "required_roles": [],
+                        "allowed_approvers": [],
+                    }
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
 
     current_path = root / "specs" / "current" / "signing" / "specification.md"
     current_path.parent.mkdir(parents=True, exist_ok=True)
