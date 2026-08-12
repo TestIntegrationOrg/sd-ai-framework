@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import argparse
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -46,7 +44,10 @@ def _repo(tmp_path: Path, name: str = "Enterprise Repo Ω") -> Path:
     _git(root, "init")
     _git(root, "config", "user.email", "sdai-tests@example.invalid")
     _git(root, "config", "user.name", "SDAI Tests")
-    _git(root, "checkout", "-b", "main")
+    _git(root, "config", "core.autocrlf", "false")
+    current = (_git(root, "branch", "--show-current").stdout or "").strip()
+    if current != "main":
+        _git(root, "checkout", "-b", "main")
     sdai = root / ".sdai"
     sdai.mkdir()
     (sdai / "config.yaml").write_text("version: 1\n", encoding="utf-8")
@@ -86,6 +87,7 @@ def test_create_worktree_preserves_source_and_tracked_security_controls(tmp_path
     root = _repo(tmp_path)
     before_policy = (root / ".sdai" / "policy.yaml").read_bytes()
     before_commit = (_git(root, "rev-parse", "HEAD").stdout or "").strip()
+    before_tree = (_git(root, "rev-parse", "HEAD^{tree}").stdout or "").strip()
 
     session = create_worktree_session(root, "SIGN-123")
 
@@ -106,6 +108,11 @@ def test_create_worktree_preserves_source_and_tracked_security_controls(tmp_path
     assert not session.worktree_path.exists()
     assert not _branch_exists(root, session.worktree_branch)
     assert _status(root) == ""
+    completed = json.loads(session.evidence_path.read_text(encoding="utf-8"))
+    assert completed["worktree"]["exists"] is False
+    assert completed["worktree"]["head_commit"] == before_commit
+    assert completed["worktree"]["head_tree"] == before_tree
+    assert completed["worktree"]["dirty"] is False
 
 
 def test_dirty_tracked_or_untracked_baseline_is_refused(tmp_path: Path) -> None:
@@ -164,6 +171,7 @@ def test_git_environment_overrides_cannot_redirect_baseline_checks(
 def test_failed_clean_execution_auto_cleans_worktree_and_branch(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     session = create_worktree_session(root, "SIGN-126")
+    expected_commit = session.baseline.commit
 
     cleanup = session.finalize("failed", error="simulated failure")
 
@@ -173,6 +181,7 @@ def test_failed_clean_execution_auto_cleans_worktree_and_branch(tmp_path: Path) 
     payload = json.loads(session.evidence_path.read_text(encoding="utf-8"))
     assert payload["outcome"] == "failed"
     assert payload["worktree"]["cleanup"] == "removed-clean"
+    assert payload["worktree"]["head_commit"] == expected_commit
     assert "simulated failure" in payload["error"]
 
 
