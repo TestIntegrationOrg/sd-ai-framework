@@ -263,7 +263,7 @@ def test_workflow_validate_prepares_plugin_without_executor_or_side_effects(
     assert plan["plugin"]["executor"] == "sample-executor"
     assert plan["effective_permissions"]["workspace_write"] is False
     assert plan["input_keys"] == ["target"]
-    assert "target" not in json.dumps(plan)
+    assert "src" not in json.dumps(plan)
     assert not (tmp_path / "specs").exists()
 
 
@@ -372,6 +372,7 @@ def test_overlay_and_lifecycle_hook_cannot_inject_plugin_step(tmp_path: Path) ->
 def test_orchestrator_dry_run_does_not_require_registered_executor_or_write_evidence(
     tmp_path: Path,
 ) -> None:
+    _init(tmp_path)
     _plugin(tmp_path)
     _plugin_policy(tmp_path)
     _workflow(tmp_path, "dry-run")
@@ -387,6 +388,7 @@ def test_orchestrator_dry_run_does_not_require_registered_executor_or_write_evid
 def test_orchestrator_executes_registered_plugin_and_persists_structured_evidence(
     tmp_path: Path,
 ) -> None:
+    _init(tmp_path)
     _plugin(tmp_path)
     _plugin_policy(tmp_path)
     _workflow(tmp_path, "execute")
@@ -405,10 +407,11 @@ def test_orchestrator_executes_registered_plugin_and_persists_structured_evidenc
     assert payload["plan"]["input_sha256"].startswith("sha256:")
     assert payload["result"]["status"] == "passed"
     assert payload["result"]["data"]["step"] == "scan"
-    assert "target" not in json.dumps(payload["plan"]["plugin"])
+    assert "inputs" not in payload["plan"]
 
 
 def test_plugin_failed_result_retries_then_succeeds(tmp_path: Path) -> None:
+    _init(tmp_path)
     _plugin(tmp_path)
     _plugin_policy(tmp_path)
     _workflow(
@@ -435,6 +438,7 @@ def test_plugin_failed_result_retries_then_succeeds(tmp_path: Path) -> None:
 
 
 def test_plugin_on_failure_continue_allows_next_workflow_step(tmp_path: Path) -> None:
+    _init(tmp_path)
     _plugin(tmp_path)
     _plugin_policy(tmp_path)
     _workflow(
