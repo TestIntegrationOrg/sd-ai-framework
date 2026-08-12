@@ -89,6 +89,15 @@ def test_only_authoritative_layers_may_lock_definitions(layer: RegistryLayer) ->
     assert len(registry) == 0
 
 
+def test_invalid_registry_layer_is_rejected_with_actionable_error() -> None:
+    registry = ExtensionRegistry()
+
+    with pytest.raises(ExtensionRegistryError, match="SDAI-REG-004"):
+        registry.register(_manifest("example"), layer="remote" )  # type: ignore[arg-type]
+
+    assert len(registry) == 0
+
+
 def test_locked_org_definition_blocks_repo_and_user_overrides() -> None:
     registry = ExtensionRegistry()
     registry.register(_manifest("example", version="1.0.0"), layer=RegistryLayer.BUILTIN)
@@ -123,7 +132,7 @@ def test_locked_builtin_definition_blocks_all_later_layers() -> None:
     assert registry.resolve(ExtensionKind.SKILL, "example") == locked
 
 
-def test_lock_validation_is_independent_of_registration_order() -> None:
+def test_late_authoritative_lock_fails_without_mutating_existing_registry() -> None:
     registry = ExtensionRegistry()
     user = registry.register(
         _manifest("example", version="3.0.0"),
@@ -138,6 +147,9 @@ def test_lock_validation_is_independent_of_registration_order() -> None:
         )
 
     assert registry.resolve(ExtensionKind.SKILL, "example") == user
+    assert [entry.layer for entry in registry.history(ExtensionKind.SKILL, "example")] == [
+        RegistryLayer.USER
+    ]
 
 
 def test_same_id_for_different_extension_kinds_does_not_conflict() -> None:
