@@ -25,6 +25,7 @@ class ExtensionKind(StrEnum):
     WORKFLOW = "Workflow"
     WORKFLOW_COMPONENT = "WorkflowComponent"
     ARTIFACT_SCHEMA = "ArtifactSchema"
+    PLUGIN_STEP = "PluginStep"
     VALIDATOR = "Validator"
     QUALITY_GATE = "QualityGate"
     INTEGRATION = "Integration"
