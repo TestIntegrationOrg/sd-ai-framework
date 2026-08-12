@@ -56,12 +56,12 @@ class RegistryEntry:
 class ExtensionRegistry:
     """Resolve extension definitions across SDAI's layered configuration model.
 
-    Normal precedence is ``builtin < pack < org < repo < user``. Core and
+    Normal precedence is ``builtin < pack < org < repo < user``. Built-in and
     organization entries may be marked ``locked``; a locked entry prevents any
-    later, normally higher-precedence layer from replacing that definition.
+    normally higher-precedence layer from replacing that definition.
 
-    Callers should populate layers in precedence order. Duplicate definitions in
-    the same layer and attempts to override an already-registered lock fail closed.
+    Duplicate definitions in the same layer and attempted overrides of a locked
+    definition fail closed. Registration order does not affect the resolved result.
     """
 
     def __init__(self) -> None:
@@ -77,16 +77,22 @@ class ExtensionRegistry:
         locked: bool = False,
     ) -> RegistryEntry:
         if locked and layer not in _LOCKABLE_LAYERS:
-            allowed = ", ".join(item.value for item in sorted(_LOCKABLE_LAYERS, key=lambda x: x.priority))
+            allowed = ", ".join(
+                item.value
+                for item in sorted(_LOCKABLE_LAYERS, key=lambda item: item.priority)
+            )
             raise ExtensionRegistryError(
                 "SDAI-REG-002: locked definitions are only allowed in "
                 f"authoritative layers: {allowed}"
             )
 
+        provenance_source = source.strip() if source is not None else manifest.source
+        if not provenance_source:
+            provenance_source = manifest.source
         entry = RegistryEntry(
             manifest=manifest,
             layer=layer,
-            source=(source or manifest.source).strip() or manifest.source,
+            source=provenance_source,
             path=path,
             locked=locked,
         )
@@ -122,11 +128,7 @@ class ExtensionRegistry:
 
     def list_resolved(self, kind: ExtensionKind | None = None) -> tuple[RegistryEntry, ...]:
         keys = sorted(
-            (
-                key
-                for key in self._entries
-                if kind is None or key.kind == kind
-            ),
+            (key for key in self._entries if kind is None or key.kind == kind),
             key=lambda item: (item.kind.value, item.id),
         )
         return tuple(
