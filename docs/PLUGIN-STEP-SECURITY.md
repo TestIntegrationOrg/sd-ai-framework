@@ -9,7 +9,7 @@ The first #77 slice establishes the manifest, policy, trusted-executor, permissi
 ```text
 untrusted / repository-authored YAML manifest
                 ↓
-strict PluginStep parser
+strict sdai/v1 PluginStep parser
                 ↓
 organization → repository → user policy intersection
                 ↓
@@ -22,17 +22,9 @@ permission-checked framework services
 structured PluginResult
 ```
 
-A `PluginStep` manifest cannot:
+A `PluginStep` manifest cannot import a Python module, name a Python callable, contain a shell command string, select `shell=True`, bypass the registered-executor registry, write protected source-of-truth paths through framework services, or request network access in v1.
 
-- import a Python module
-- specify a Python callable
-- contain a shell command string
-- select `shell=True`
-- bypass the registered-executor registry
-- write SDAI protected source-of-truth paths through framework services
-- request network access in v1
-
-Executor implementations are trusted installed code. SDAI does not pretend that in-process trusted Python code is a hostile-code sandbox. The permission model governs manifests and the framework-mediated services supplied to trusted executors; installation/signature/trusted-publisher provenance is strengthened further by the signed-pack/catalog milestone.
+Executor implementations and administrator-approved external executables are trusted installed code/tools. SDAI does not claim that in-process trusted Python or an approved executable is hostile-code sandboxed. The permission model governs manifests and the framework-mediated services supplied to those trusted executors.
 
 ## Plugin manifest
 
@@ -42,7 +34,7 @@ Repository-native location:
 .sdai/plugin-steps/<id>.yaml
 ```
 
-The compatibility extension location is also reserved:
+Compatibility location:
 
 ```text
 .sdai/extensions/plugin-steps/<id>.yaml
@@ -50,15 +42,12 @@ The compatibility extension location is also reserved:
 
 If both locations define the same ID, loading fails closed.
 
-Example:
-
 ```yaml
 apiVersion: sdai/v1
 kind: PluginStep
 metadata:
   id: trivy-adapter
   version: 1.0.0
-  description: Trusted Trivy adapter
 spec:
   publisher: company-security
   executor: company-trivy
@@ -72,26 +61,11 @@ spec:
     workspace_write: false
 ```
 
-`publisher` and `executor` are IDs, not module/import paths.
+`PluginStep` is a first-class shared `sdai/v1` extension kind. `publisher` and `executor` are IDs, not module/import paths.
 
 ## Plugin policy
 
-Repository policy:
-
-```text
-.sdai/plugin-policy.yaml
-```
-
-Optional organization and user policy locations:
-
-```text
-SDAI_ORG_PLUGIN_POLICY_PATH
-SDAI_USER_PLUGIN_POLICY_PATH
-```
-
-Organization/user environment paths must be absolute regular non-symlink files.
-
-Example:
+Repository policy is `.sdai/plugin-policy.yaml`. Optional organization/user policy paths are supplied through `SDAI_ORG_PLUGIN_POLICY_PATH` and `SDAI_USER_PLUGIN_POLICY_PATH`; those paths must be absolute regular non-symlink files.
 
 ```yaml
 version: 1
@@ -108,39 +82,17 @@ permissions:
   workspace_write: false
 ```
 
-Resolution order is:
+Resolution is organization → repository → user. Denies union; declared allowlists intersect; workspace-write permission is logical AND. A lower layer can narrow but cannot restore a plugin, publisher, path, environment variable, command, or write capability denied by a higher layer.
 
-```text
-organization → repository → user
-```
-
-Security merge semantics are intentionally one-way:
-
-- `denied_plugins` = union
-- `allowed_plugins` = intersection where declared
-- `trusted_publishers` = intersection where declared
-- filesystem read/write allowlists = intersection where declared
-- environment allowlists = intersection where declared
-- command allowlists = intersection where declared
-- `workspace_write` = logical AND
-
-A lower layer can narrow permissions; it cannot restore a plugin, publisher, command, environment variable, filesystem scope, or write capability denied by organization policy.
-
-With no plugin-policy files, only publisher `sdai` is trusted and all external command/environment/filesystem-write permissions remain unavailable.
+With no policy files, only publisher `sdai` is trusted and external command/environment/filesystem-write permissions remain unavailable.
 
 ## Network permission
 
-`network: true` is rejected in v1.
-
-SDAI does not currently have one cross-platform OS network sandbox with equivalent Linux/Windows guarantees. Recording `network: false` in a manifest without a real enforcement boundary would be misleading if SDAI then allowed untrusted plugin code. Therefore v1 exposes **no network service** and refuses manifests that request network authority.
-
-A later execution backend may add enforceable network capability under an isolated container/sandbox contract. Until then SDAI fails closed.
+`network: true` is rejected in v1. SDAI does not currently have an equivalent enforceable Windows/Linux network sandbox, so it does not advertise a permission it cannot enforce.
 
 ## Filesystem services
 
-A trusted executor receives a `PluginExecutionServices` object instead of raw framework mutation APIs.
-
-Available operations include:
+Trusted executors receive `PluginExecutionServices` rather than unrestricted framework mutation APIs:
 
 ```python
 services.read_text("src/file.java")
@@ -149,11 +101,11 @@ services.getenv("MY_ALLOWED_VARIABLE")
 services.run_argv("trivy", ["fs", "."])
 ```
 
-Each operation must be declared by the manifest and allowed by effective policy.
+Paths are portable repository-relative POSIX paths. Absolute/drive paths, backslashes, traversal, Windows-invalid names, control characters, and DOS device names are rejected.
 
-Paths are portable repository-relative POSIX paths. SDAI rejects absolute paths, drive-letter paths, backslashes, parent/dot traversal, invalid Windows path names, control characters, and symlink write targets.
+For framework-mediated reads/writes, every existing path component is checked for symlinks. Writes additionally compare both the lexical path and resolved destination against protected paths, so an allowed path such as `generated/**` cannot be symlink-aliased into `specs/**` or another protected namespace.
 
-Framework-mediated writes additionally reject protected paths including:
+Protected-path comparison is case-insensitive on every platform, preventing Windows aliases such as `.GIT`/`.SDAI`. Protected writes include:
 
 ```text
 .git/**
@@ -166,65 +118,35 @@ Framework-mediated writes additionally reject protected paths including:
 .github/agents/**
 specs/**
 CODEOWNERS
+.github/CODEOWNERS
+docs/CODEOWNERS
 ```
 
-This prevents a plugin service call from rewriting canonical specifications, approvals/state, workflow/policy configuration, provider-native agent definitions, CI controls, or Git metadata.
+## Safe argv and trusted executable discovery
 
-## Safe argv
+`run_argv(executable, argv)` is not a shell API. The executable is a bare manifest+policy-approved name, argv is a literal string list, unsafe NUL/newline/template syntax is rejected, `shell=False` is unconditional, and stdout/stderr are captured.
 
-`run_argv(executable, argv)` is deliberately not a shell API.
+Command approval by name is **not** resolved through the ambient host `PATH`. Administrators must provide:
 
-Rules:
+```text
+SDAI_PLUGIN_TRUSTED_COMMAND_PATH
+```
 
-- executable is a bare policy-approved executable name
-- executable must be declared by the plugin manifest
-- argv is a list/tuple of literal strings
-- NUL/newline/runtime-template syntax is rejected
-- executable is resolved separately
-- the child environment contains only explicitly allowed variables plus Windows process essentials when required
-- `shell=False` is unconditional
-- stdout/stderr are captured
-- the framework does not concatenate a command string
+as an OS-path-separator-delimited list of absolute existing non-symlink directories. Workspace-controlled directories are rejected. SDAI calls executable lookup only against those trusted directories; when the setting is absent, command execution fails closed. The setting is framework configuration and is not copied into the plugin child environment.
 
-The executable itself is a trusted organization-approved tool. Command permission is not equivalent to sandboxing a malicious executable; trusted publisher/tool governance is a prerequisite.
+The child environment contains only manifest-requested variables retained by effective policy, plus Windows process essentials (`SYSTEMROOT`/`WINDIR`) when supplied by the host execution context.
 
-## Environment
+## JSON/evidence contract
 
-Executors cannot ask the framework for arbitrary inherited environment variables. `getenv(name)` succeeds only for a name requested by the manifest and retained by effective policy. The same filtered set is supplied to framework-mediated argv execution.
+Plugin inputs and structured result data must be JSON-compatible. Non-finite numbers (`NaN`, `Infinity`, `-Infinity`) are rejected, and JSON serialization uses `allow_nan=False`. Runtime-template syntax is not accepted as an input interpolation mechanism.
 
 ## Execution contract
 
-```python
-plan = prepare_plugin_step(...)
-plan, result = execute_plugin_step(...)
-```
+`prepare_plugin_step()` is deterministic and side-effect free. It validates manifest identity, publisher/executor IDs, requested permissions, effective allow/deny policy, trusted publisher, permission subsets, and JSON-compatible inputs.
 
-`prepare_plugin_step()` is deterministic and side-effect free. It validates:
+`execute_plugin_step(..., dry_run=True)` returns the validated plan without requiring a registered executor or producing side effects. Real execution requires the executor ID to already exist in `PluginExecutorRegistry`; YAML cannot register executable code.
 
-- manifest shape/version/identity
-- publisher/executor IDs
-- requested permissions
-- effective allow/deny policy
-- trusted publisher
-- workspace-write/filesystem/environment/command subsets
-- JSON-compatible inputs with no runtime template syntax
-
-`execute_plugin_step(..., dry_run=True)` returns the validated plan without requiring a registered executor and without side effects.
-
-Real execution requires the manifest's executor ID to be present in `PluginExecutorRegistry`. The manifest cannot register it.
-
-Executors return:
-
-```python
-PluginResult(
-    status="passed" | "failed",
-    summary="...",
-    findings=(PluginFinding(...),),
-    data={...},
-)
-```
-
-Invalid executor return types/statuses fail closed.
+Executors return `PluginResult(status="passed" | "failed", ...)`. Invalid return types/statuses or non-JSON result data fail closed.
 
 ## Error families
 
@@ -239,12 +161,4 @@ Invalid executor return types/statuses fail closed.
 
 ## Next #77 slice
 
-After this contract is merged, the next focused PR will:
-
-1. add `PluginStep` to the shared extension/scaffolding API,
-2. add workflow `type: plugin` parsing,
-3. validate/prepare plugin steps during workflow dry-run,
-4. execute only through this trusted registry/services boundary,
-5. persist structured result/provenance as framework evidence,
-6. prove org deny cannot be bypassed through workflow components/overlays,
-7. retain the no-shell/no-network/protected-path guarantees.
+After this SDK contract is merged, the next focused PR will add workflow `type: plugin` parsing/execution through this boundary, validate/prepare plugin steps during dry-run, persist structured result/provenance evidence, and prove organization deny cannot be bypassed through workflow composition or overlays. No generic shell primitive will be introduced.
