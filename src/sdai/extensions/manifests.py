@@ -24,6 +24,7 @@ class ExtensionKind(StrEnum):
     AGENT = "Agent"
     WORKFLOW = "Workflow"
     WORKFLOW_COMPONENT = "WorkflowComponent"
+    ARTIFACT_SCHEMA = "ArtifactSchema"
     VALIDATOR = "Validator"
     QUALITY_GATE = "QualityGate"
     INTEGRATION = "Integration"
@@ -102,13 +103,13 @@ def parse_extension_manifest(
     if api_version != API_VERSION:
         raise _error(
             "SDAI-EXT-003",
-            f"apiVersion must be '{API_VERSION}', got {api_version!r}",
+            f"unsupported apiVersion {api_version!r}; expected {API_VERSION!r}",
         )
 
     raw_kind = root.get("kind")
     try:
-        kind = ExtensionKind(str(raw_kind))
-    except ValueError as exc:
+        kind = ExtensionKind(raw_kind)
+    except (TypeError, ValueError) as exc:
         supported = ", ".join(item.value for item in ExtensionKind)
         raise _error(
             "SDAI-EXT-004",
@@ -116,38 +117,36 @@ def parse_extension_manifest(
         ) from exc
 
     metadata = _require_mapping(
-        root.get("metadata"), code="SDAI-EXT-005", label="metadata"
+        root.get("metadata"), code="SDAI-EXT-005", label="extension metadata"
     )
-    metadata_unknown = _unknown_keys(metadata, _METADATA_KEYS)
-    if metadata_unknown:
+    unknown_metadata = _unknown_keys(metadata, _METADATA_KEYS)
+    if unknown_metadata:
         raise _error(
             "SDAI-EXT-006",
-            f"metadata contains unknown field(s): {', '.join(metadata_unknown)}",
+            "extension metadata contains unknown field(s): "
+            + ", ".join(unknown_metadata),
         )
 
     extension_id = metadata.get("id")
     if not _valid_extension_id(extension_id):
         raise _error(
             "SDAI-EXT-007",
-            "metadata.id must start and end with a lowercase letter or number, use only "
-            "lowercase letters, numbers, dot, underscore, or hyphen, and must not contain "
-            "'..' (max 128 characters)",
+            "metadata.id must be a portable lowercase extension id using letters, "
+            "numbers, dots, underscores, or hyphens",
         )
 
     version = metadata.get("version")
     if not isinstance(version, str) or not _SEMVER.fullmatch(version):
         raise _error(
             "SDAI-EXT-008",
-            "metadata.version must be a semantic version such as '1.0.0' or '1.2.0-beta.1'",
+            "metadata.version must be semantic version text such as '1.2.3'",
         )
 
     description = metadata.get("description", "")
     if not isinstance(description, str):
         raise _error("SDAI-EXT-009", "metadata.description must be a string")
 
-    raw_spec = root.get("spec", {})
-    spec = _require_mapping(raw_spec, code="SDAI-EXT-010", label="spec")
-
+    spec = _require_mapping(root.get("spec", {}), code="SDAI-EXT-010", label="spec")
     return ExtensionManifest(
         api_version=API_VERSION,
         kind=kind,
@@ -161,40 +160,25 @@ def parse_extension_manifest(
     )
 
 
-def parse_extension_manifest_text(
-    text: str,
-    *,
-    source: str = "<memory>",
-) -> ExtensionManifest:
-    """Parse UTF-8 text containing one SDAI extension manifest."""
-
-    try:
-        raw = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise _error("SDAI-EXT-001", f"invalid YAML in {source}: {exc}") from exc
-    if raw is None:
-        raw = {}
-    return parse_extension_manifest(
-        _require_mapping(raw, code="SDAI-EXT-001", label="extension manifest"),
-        source=source,
-    )
-
-
 def load_extension_manifest(project_root: Path, path: Path) -> ExtensionManifest:
-    """Load an extension manifest from a path contained by ``project_root``.
-
-    Existing symlink components are resolved by ``ensure_within_project`` before
-    the file is read, matching SDAI's existing workspace containment model.
-    """
-
     root = project_root.resolve()
-    candidate = path if path.is_absolute() else root / path
-    safe_path = ensure_within_project(root, candidate, label="extension manifest path")
-    if not safe_path.exists():
-        raise _error("SDAI-EXT-011", f"extension manifest does not exist: {safe_path}")
-    if not safe_path.is_file():
-        raise _error("SDAI-EXT-011", f"extension manifest is not a file: {safe_path}")
-    return parse_extension_manifest_text(
-        read_utf8_text(safe_path),
-        source=str(safe_path),
-    )
+    supplied = path if path.is_absolute() else root / path
+    safe_path = ensure_within_project(root, supplied, label="extension manifest path")
+    try:
+        text = read_utf8_text(safe_path)
+    except OSError as exc:
+        raise _error(
+            "SDAI-EXT-011",
+            f"unable to read extension manifest {safe_path}: {exc}",
+        ) from exc
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise _error(
+            "SDAI-EXT-012",
+            f"invalid YAML in extension manifest {safe_path}: {exc}",
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise _error("SDAI-EXT-001", "extension manifest must be a mapping")
+    source = safe_path.relative_to(root).as_posix()
+    return parse_extension_manifest(raw, source=source)
