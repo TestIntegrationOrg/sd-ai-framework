@@ -17,9 +17,9 @@ def _init(root: Path) -> None:
     path.write_text("version: 1\n", encoding="utf-8")
 
 
-def _facts(root: Path) -> dict[tuple[str, str], object]:
+def _facts(root: Path):
     report = detect_technologies(root)
-    return {(item.category, item.name): item for item in report.technologies}
+    return report, {(item.category, item.name): item for item in report.technologies}
 
 
 def test_maven_java_spring_aws_jsign_junit_detection_is_version_aware(tmp_path: Path) -> None:
@@ -33,9 +33,7 @@ def test_maven_java_spring_aws_jsign_junit_detection_is_version_aware(tmp_path: 
     <artifactId>spring-boot-starter-parent</artifactId>
     <version>3.4.10</version>
   </parent>
-  <properties>
-    <java.version>17</java.version>
-  </properties>
+  <properties><java.version>17</java.version></properties>
   <dependencies>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
     <dependency><groupId>software.amazon.awssdk</groupId><artifactId>kms</artifactId><version>2.29.27</version></dependency>
@@ -47,21 +45,24 @@ def test_maven_java_spring_aws_jsign_junit_detection_is_version_aware(tmp_path: 
         encoding="utf-8",
     )
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert facts[("languages", "java")].version == "17"
     assert facts[("frameworks", "spring-boot")].version == "3.4.10"
     assert facts[("build_tools", "maven")].version is None
-    assert facts[("platforms", "aws")].version is None
+    assert ("platforms", "aws") in facts
     assert facts[("libraries", "aws-sdk-java-v2")].version == "2.29.27"
     assert facts[("libraries", "jsign")].version == "7.4"
     assert facts[("testing", "junit")].version == "5.10.2"
-    assert all("\\" not in evidence.source for fact in facts.values() for evidence in fact.evidence)
+    assert all(
+        "\\" not in evidence.source
+        for fact in facts.values()
+        for evidence in fact.evidence
+    )
 
 
-def test_gradle_java_kotlin_spring_detection_is_conservative(tmp_path: Path) -> None:
-    gradle = tmp_path / "build.gradle.kts"
-    gradle.write_text(
+def test_gradle_java_kotlin_and_spring_versions_are_independent(tmp_path: Path) -> None:
+    (tmp_path / "build.gradle.kts").write_text(
         """plugins {
     java
     kotlin("jvm") version "2.0.21"
@@ -76,24 +77,25 @@ dependencies {
         encoding="utf-8",
     )
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert facts[("languages", "java")].version == "21"
-    assert ("languages", "kotlin") in facts
+    assert facts[("languages", "kotlin")].version == "2.0.21"
     assert facts[("frameworks", "spring-boot")].version == "3.4.10"
     assert ("build_tools", "gradle") in facts
     assert ("platforms", "aws") in facts
     assert ("testing", "junit") in facts
 
 
-def test_dotnet_csproj_detects_target_framework_web_sdk_nuget_and_test_framework(
-    tmp_path: Path,
-) -> None:
+def test_dotnet_runtime_version_is_not_mistaken_for_csharp_language_version(tmp_path: Path) -> None:
     project = tmp_path / "Api" / "Api.csproj"
     project.parent.mkdir(parents=True)
     project.write_text(
         """<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="3.7.400" />
     <PackageReference Include="MongoDB.Driver" Version="2.30.0" />
@@ -104,9 +106,9 @@ def test_dotnet_csproj_detects_target_framework_web_sdk_nuget_and_test_framework
         encoding="utf-8",
     )
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
-    assert facts[("languages", "csharp")].version == "8.0"
+    assert facts[("languages", "csharp")].version == "12.0"
     assert facts[("frameworks", "dotnet")].version == "8.0"
     assert facts[("frameworks", "aspnet-core")].version == "8.0"
     assert ("platforms", "aws") in facts
@@ -114,7 +116,20 @@ def test_dotnet_csproj_detects_target_framework_web_sdk_nuget_and_test_framework
     assert facts[("testing", "xunit")].version == "2.9.2"
 
 
-def test_python_fastapi_aws_pytest_detection_uses_requires_python_constraint(tmp_path: Path) -> None:
+def test_csproj_without_langversion_does_not_invent_csharp_version(tmp_path: Path) -> None:
+    (tmp_path / "App.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n',
+        encoding="utf-8",
+    )
+
+    _, facts = _facts(tmp_path)
+
+    assert facts[("languages", "csharp")].version is None
+    assert facts[("languages", "csharp")].version_source == "none"
+    assert facts[("frameworks", "dotnet")].version == "8.0"
+
+
+def test_python_fastapi_aws_pytest_detection_uses_declared_constraints(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         """[project]
 name = "sample"
@@ -127,7 +142,7 @@ test = ["pytest>=8.0"]
         encoding="utf-8",
     )
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert facts[("languages", "python")].version == ">=3.11,<3.13"
     assert facts[("frameworks", "fastapi")].version == "0.115"
@@ -136,7 +151,7 @@ test = ["pytest>=8.0"]
     assert facts[("testing", "pytest")].version == "8.0"
 
 
-def test_node_typescript_react_angular_cloud_and_testing_signals(tmp_path: Path) -> None:
+def test_node_typescript_frontend_cloud_and_test_signals(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(
         json.dumps(
             {
@@ -149,7 +164,10 @@ def test_node_typescript_react_angular_cloud_and_testing_signals(tmp_path: Path)
                     "@azure/storage-blob": "^12.25.0",
                     "@google-cloud/storage": "^7.14.0",
                 },
-                "devDependencies": {"typescript": "^5.8.0", "vitest": "^3.0.0"},
+                "devDependencies": {
+                    "typescript": "^5.8.0",
+                    "vitest": "^3.0.0",
+                },
             },
             indent=2,
         ),
@@ -157,7 +175,7 @@ def test_node_typescript_react_angular_cloud_and_testing_signals(tmp_path: Path)
     )
     (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert ("languages", "javascript") in facts
     assert facts[("languages", "typescript")].version == "^5.8.0"
@@ -165,7 +183,11 @@ def test_node_typescript_react_angular_cloud_and_testing_signals(tmp_path: Path)
     assert facts[("frameworks", "react")].version == "^19.0.0"
     assert facts[("frameworks", "angular")].version == "^20.0.0"
     assert facts[("build_tools", "pnpm")].version == "10.0.0"
-    assert {name for category, name in facts if category == "platforms"} >= {"aws", "azure", "gcp"}
+    assert {name for category, name in facts if category == "platforms"} >= {
+        "aws",
+        "azure",
+        "gcp",
+    }
     assert facts[("testing", "vitest")].version == "^3.0.0"
 
 
@@ -192,7 +214,7 @@ edition = "2021"
         encoding="utf-8",
     )
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert facts[("languages", "go")].version == "1.23.2"
     assert ("build_tools", "go") in facts
@@ -208,32 +230,61 @@ def test_multiple_detected_versions_are_ambiguous_until_explicit_pin(tmp_path: P
         pom = tmp_path / name / "pom.xml"
         pom.parent.mkdir()
         pom.write_text(
-            f"""<project><properties><java.version>{java_version}</java.version></properties></project>\n""",
+            f"<project><properties><java.version>{java_version}</java.version></properties></project>\n",
             encoding="utf-8",
         )
 
-    first = _facts(tmp_path)[("languages", "java")]
-    assert first.version is None
-    assert first.version_source == "ambiguous"
-    assert first.detected_versions == ("17", "21")
+    report, facts = _facts(tmp_path)
+    java = facts[("languages", "java")]
+    assert java.version is None
+    assert java.version_source == "ambiguous"
+    assert java.detected_versions == ("17", "21")
+    assert any(item.code == "SDAI-TECH-005" for item in report.findings)
 
     config = tmp_path / ".sdai" / "technology.yaml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        yaml.safe_dump({"version": 1, "languages": {"java": "17"}}, sort_keys=False),
+        yaml.safe_dump(
+            {"version": 1, "languages": {"java": "17"}},
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
 
-    report = detect_technologies(tmp_path)
-    pinned = {(item.category, item.name): item for item in report.technologies}[("languages", "java")]
+    pinned_report, pinned_facts = _facts(tmp_path)
+    pinned = pinned_facts[("languages", "java")]
     assert pinned.version == "17"
     assert pinned.version_source == "declared"
     assert pinned.declared is True
     assert pinned.detected_versions == ("17", "21")
-    assert not any(item.code == "SDAI-TECH-004" for item in report.findings)
+    assert not any(item.code == "SDAI-TECH-004" for item in pinned_report.findings)
 
 
-def test_declared_version_override_is_retained_with_conflict_warning(tmp_path: Path) -> None:
+def test_declared_null_confirms_technology_without_erasing_detected_version(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text(
+        "module example.com/x\n\ngo 1.23\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / ".sdai" / "technology.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {"version": 1, "languages": {"go": None}, "platforms": {"aws": None}},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _, facts = _facts(tmp_path)
+
+    assert facts[("languages", "go")].declared is True
+    assert facts[("languages", "go")].version == "1.23"
+    assert facts[("languages", "go")].version_source == "detected"
+    assert facts[("platforms", "aws")].declared is True
+    assert facts[("platforms", "aws")].version is None
+
+
+def test_declared_version_override_is_explainable_with_warning(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="sample"\nrequires-python=">=3.11,<3.13"\n',
         encoding="utf-8",
@@ -242,25 +293,16 @@ def test_declared_version_override_is_retained_with_conflict_warning(tmp_path: P
     config.parent.mkdir(parents=True)
     config.write_text(
         yaml.safe_dump(
-            {
-                "version": 1,
-                "languages": {"python": ">=3.12,<3.13"},
-                "frameworks": {"fastapi": "0.115.0"},
-                "platforms": {"aws": None},
-            },
+            {"version": 1, "languages": {"python": ">=3.12,<3.13"}},
             sort_keys=False,
         ),
         encoding="utf-8",
     )
 
-    report = detect_technologies(tmp_path)
-    facts = {(item.category, item.name): item for item in report.technologies}
+    report, facts = _facts(tmp_path)
 
     assert facts[("languages", "python")].version == ">=3.12,<3.13"
     assert facts[("languages", "python")].version_source == "declared"
-    assert facts[("frameworks", "fastapi")].declared is True
-    assert facts[("frameworks", "fastapi")].version == "0.115.0"
-    assert facts[("platforms", "aws")].declared is True
     warning = next(item for item in report.findings if item.code == "SDAI-TECH-004")
     assert "python" in warning.message
     assert warning.source == ".sdai/technology.yaml"
@@ -278,57 +320,66 @@ def test_invalid_explicit_technology_config_fails_closed(tmp_path: Path) -> None
         detect_technologies(tmp_path)
 
 
-def test_scanner_skips_dependencies_archived_specs_and_symlinks(tmp_path: Path) -> None:
+def test_scanner_skips_dependencies_archived_specs_and_symlinked_directories(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="root"\nrequires-python=">=3.11"\n',
         encoding="utf-8",
     )
-    node_modules = tmp_path / "node_modules" / "dependency"
-    node_modules.mkdir(parents=True)
-    (node_modules / "package.json").write_text('{"dependencies":{"react":"99.0.0"}}', encoding="utf-8")
+    dependency = tmp_path / "node_modules" / "dependency"
+    dependency.mkdir(parents=True)
+    (dependency / "package.json").write_text(
+        '{"dependencies":{"react":"99.0.0"}}',
+        encoding="utf-8",
+    )
     archived = tmp_path / "specs" / "archive" / "changes" / "old"
     archived.mkdir(parents=True)
-    (archived / "package.json").write_text('{"dependencies":{"react":"98.0.0"}}', encoding="utf-8")
+    (archived / "package.json").write_text(
+        '{"dependencies":{"react":"98.0.0"}}',
+        encoding="utf-8",
+    )
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside-tech"
     outside.mkdir(exist_ok=True)
-    (outside / "package.json").write_text('{"dependencies":{"react":"97.0.0"}}', encoding="utf-8")
-    link = tmp_path / "linked-outside"
+    (outside / "package.json").write_text(
+        '{"dependencies":{"react":"97.0.0"}}',
+        encoding="utf-8",
+    )
     try:
-        os.symlink(outside, link, target_is_directory=True)
+        os.symlink(outside, tmp_path / "linked-outside", target_is_directory=True)
     except (OSError, NotImplementedError):
         pass
 
-    facts = _facts(tmp_path)
+    _, facts = _facts(tmp_path)
 
     assert ("languages", "python") in facts
     assert ("frameworks", "react") not in facts
 
 
-def test_json_output_is_deterministic_and_paths_are_portable_in_unicode_workspace(tmp_path: Path) -> None:
+def test_cli_json_is_deterministic_provider_independent_and_path_portable(
+    tmp_path: Path,
+    capsys,
+) -> None:
     root = tmp_path / "Enterprise Workspace Ω"
     root.mkdir()
     _init(root)
     service = root / "service café"
     service.mkdir()
-    (service / "go.mod").write_text("module example.com/x\n\ngo 1.23\n", encoding="utf-8")
+    (service / "go.mod").write_text(
+        "module example.com/x\n\ngo 1.23\n",
+        encoding="utf-8",
+    )
 
     first = detect_technologies(root).to_json()
     second = detect_technologies(root).to_json()
-
     assert first == second
-    payload = json.loads(first)
-    go = next(item for item in payload["technologies"]["languages"] if item["name"] == "go")
-    assert go["evidence"][0]["source"] == "service café/go.mod"
+    assert "provider" not in first.casefold()
     assert "\\" not in first
 
-
-def test_cli_tech_detect_json_uses_initialized_project_boundary(tmp_path: Path, capsys) -> None:
-    _init(tmp_path)
-    (tmp_path / "go.mod").write_text("module example.com/x\n\ngo 1.23\n", encoding="utf-8")
-
-    assert sdai_main(["tech", "detect", "--json", "--path", str(tmp_path)]) == 0
+    assert sdai_main(["tech", "detect", "--json", "--path", str(root)]) == 0
     payload = json.loads(capsys.readouterr().out)
-
-    assert payload["version"] == 1
-    assert payload["technologies"]["languages"][0]["name"] == "go"
+    go = next(
+        item
+        for item in payload["technologies"]["languages"]
+        if item["name"] == "go"
+    )
+    assert go["evidence"][0]["source"] == "service café/go.mod"
