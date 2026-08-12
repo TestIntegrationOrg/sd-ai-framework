@@ -77,6 +77,13 @@ def test_repository_reader_accepts_utf8_bom(tmp_path: Path):
     assert read_utf8_text(path) == UNICODE_TEXT
 
 
+def test_repository_reader_normalizes_windows_newlines(tmp_path: Path):
+    path = tmp_path / "architect.agent.md"
+    path.write_bytes(f"first\r\n{UNICODE_TEXT}\r\n".encode("utf-8"))
+
+    assert read_utf8_text(path) == f"first\n{UNICODE_TEXT}\n"
+
+
 def test_repository_reader_rejects_cp1252_with_actionable_diagnostic(tmp_path: Path):
     path = tmp_path / "specification.md"
     path.write_bytes(b"Retry payment \x96 maximum 3 attempts")
