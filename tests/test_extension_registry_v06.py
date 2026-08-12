@@ -6,6 +6,7 @@ import pytest
 
 from sdai.extensions import (
     ExtensionKind,
+    ExtensionManifest,
     ExtensionRegistry,
     ExtensionRegistryError,
     RegistryLayer,
@@ -19,7 +20,7 @@ def _manifest(
     kind: ExtensionKind = ExtensionKind.SKILL,
     version: str = "1.0.0",
     source: str | None = None,
-):
+) -> ExtensionManifest:
     return parse_extension_manifest(
         {
             "apiVersion": "sdai/v1",
@@ -93,7 +94,7 @@ def test_invalid_registry_layer_is_rejected_with_actionable_error() -> None:
     registry = ExtensionRegistry()
 
     with pytest.raises(ExtensionRegistryError, match="SDAI-REG-004"):
-        registry.register(_manifest("example"), layer="remote" )  # type: ignore[arg-type]
+        registry.register(_manifest("example"), layer="remote")  # type: ignore[arg-type]
 
     assert len(registry) == 0
 
