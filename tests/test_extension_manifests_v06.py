@@ -76,7 +76,19 @@ def test_manifest_rejects_unsupported_envelope_values(
         parse_extension_manifest(raw)
 
 
-@pytest.mark.parametrize("extension_id", ["Java-Agent", "bad id", "../escape", ""])
+@pytest.mark.parametrize(
+    "extension_id",
+    [
+        "Java-Agent",
+        "bad id",
+        "../escape",
+        "double..dot",
+        "trailing.",
+        "trailing-",
+        "trailing_",
+        "",
+    ],
+)
 def test_manifest_rejects_unsafe_extension_ids(extension_id: str) -> None:
     raw = _manifest()
     metadata = dict(raw["metadata"])  # type: ignore[arg-type]
