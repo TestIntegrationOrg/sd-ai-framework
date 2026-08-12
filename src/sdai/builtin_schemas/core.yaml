@@ -1,0 +1,71 @@
+apiVersion: sdai/v1
+kind: ArtifactSchema
+metadata:
+  id: core-lifecycle
+  version: 0.1.0
+  description: Built-in SDAI lifecycle artifact dependency graph.
+spec:
+  artifacts:
+    - id: requirements
+      path: specs/changes/{feature}/requirements.md
+      type: markdown
+      required: true
+      locked: false
+      depends_on: []
+      applies_to: [standard, critical, regulated]
+
+    - id: architecture
+      path: specs/changes/{feature}/architecture.md
+      type: markdown
+      required: false
+      locked: false
+      depends_on: [requirements]
+      applies_to: [standard, critical, regulated]
+
+    - id: adr
+      path: specs/changes/{feature}/adr.md
+      type: markdown
+      required: false
+      locked: false
+      depends_on: [requirements, architecture]
+      applies_to: [critical, regulated]
+
+    - id: security
+      path: specs/changes/{feature}/security.md
+      type: markdown
+      required: false
+      locked: false
+      depends_on: [requirements, architecture]
+      applies_to: [critical, regulated]
+
+    - id: plan
+      path: specs/changes/{feature}/plan.md
+      type: markdown
+      required: true
+      locked: false
+      depends_on: [requirements, architecture]
+      applies_to: [standard, critical, regulated]
+
+    - id: tasks
+      path: specs/changes/{feature}/tasks.md
+      type: markdown
+      required: true
+      locked: false
+      depends_on: [plan]
+      applies_to: [standard, critical, regulated]
+
+    - id: tests
+      path: specs/changes/{feature}/tests.md
+      type: markdown
+      required: false
+      locked: false
+      depends_on: [requirements, tasks]
+      applies_to: [standard, critical, regulated]
+
+    - id: verification
+      path: specs/changes/{feature}/verification.md
+      type: yaml
+      required: false
+      locked: false
+      depends_on: [requirements, tasks, tests]
+      applies_to: [standard, critical, regulated]
