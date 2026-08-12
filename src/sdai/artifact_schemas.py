@@ -131,6 +131,26 @@ class _ArtifactOverlay:
     fields: Mapping[str, object]
 
 
+@dataclass(frozen=True)
+class _OrganizationMandate:
+    required: bool = False
+    dependencies: tuple[str, ...] = ()
+
+    def merge(self, overlay: _ArtifactOverlay) -> _OrganizationMandate:
+        if overlay.layer is not ArtifactSchemaLayer.ORG:
+            return self
+        required = self.required or bool(overlay.fields.get("required", False))
+        dependencies = self.dependencies
+        if "depends_on" in overlay.fields:
+            dependencies = tuple(
+                sorted(
+                    set(dependencies)
+                    | set(tuple(overlay.fields.get("depends_on", ())))
+                )
+            )
+        return _OrganizationMandate(required, dependencies)
+
+
 _ARTIFACT_ID = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$")
 _ALLOWED_SPEC_KEYS = frozenset({"artifacts"})
 _ALLOWED_ARTIFACT_KEYS = frozenset(
@@ -167,6 +187,7 @@ _DOS_DEVICE = re.compile(
     r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
     re.IGNORECASE,
 )
+_WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
 
 
 def _fail(code: str, message: str) -> ArtifactSchemaError:
@@ -196,7 +217,10 @@ def _string_list(value: object, *, label: str) -> tuple[str, ...]:
 def _validate_portable_segment(segment: str, *, label: str) -> None:
     if not segment or segment in {".", ".."}:
         raise _fail("SDAI-SCHEMA-002", f"{label} contains an invalid path segment")
-    if ":" in segment or segment.endswith((".", " ")):
+    if (
+        any(char in _WINDOWS_INVALID_CHARS for char in segment)
+        or segment.endswith((".", " "))
+    ):
         raise _fail(
             "SDAI-SCHEMA-002",
             f"{label} contains a path segment that is not portable across Windows/Linux",
@@ -345,7 +369,7 @@ def _parse_manifest_overlays(
             )
         if "type" in fields:
             artifact_type = fields["type"]
-            if artifact_type not in _ARTIFACT_TYPES:
+            if not isinstance(artifact_type, str) or artifact_type not in _ARTIFACT_TYPES:
                 raise _fail(
                     "SDAI-SCHEMA-001",
                     f"artifact '{artifact_id}' has unsupported type {artifact_type!r}",
@@ -434,9 +458,7 @@ def _layer_files(
         environ.get("SDAI_ORG_SCHEMA_PATH"),
         label="SDAI_ORG_SCHEMA_PATH",
     ):
-        result.append(
-            (ArtifactSchemaLayer.ORG, path, _external_source(path))
-        )
+        result.append((ArtifactSchemaLayer.ORG, path, _external_source(path)))
 
     repo_dir = ensure_within_project(
         root,
@@ -458,17 +480,13 @@ def _layer_files(
                     "SDAI-SCHEMA-008",
                     f"repository schema must be a regular non-symlink file: {_portable(root, path)}",
                 )
-            result.append(
-                (ArtifactSchemaLayer.REPO, path, _portable(root, path))
-            )
+            result.append((ArtifactSchemaLayer.REPO, path, _portable(root, path)))
 
     for path in _external_paths(
         environ.get("SDAI_USER_SCHEMA_PATH"),
         label="SDAI_USER_SCHEMA_PATH",
     ):
-        result.append(
-            (ArtifactSchemaLayer.USER, path, _external_source(path))
-        )
+        result.append((ArtifactSchemaLayer.USER, path, _external_source(path)))
     return tuple(result)
 
 
@@ -485,16 +503,20 @@ def _contribution(overlay: _ArtifactOverlay) -> ArtifactSchemaContribution:
 def _merge_overlay(
     existing: ArtifactDefinition | None,
     overlay: _ArtifactOverlay,
+    *,
+    organization_mandate: _OrganizationMandate,
 ) -> ArtifactDefinition | None:
     fields = overlay.fields
     contribution = _contribution(overlay)
 
     if existing is None:
         if fields.get("disabled"):
-            raise _fail(
-                "SDAI-SCHEMA-004",
-                f"artifact '{overlay.id}' cannot be disabled before it is defined",
-            )
+            if organization_mandate.required:
+                raise _fail(
+                    "SDAI-SCHEMA-004",
+                    f"artifact '{overlay.id}' is required by organization schema and cannot be disabled",
+                )
+            return None
         if "path" not in fields or "type" not in fields:
             raise _fail(
                 "SDAI-SCHEMA-001",
@@ -502,7 +524,17 @@ def _merge_overlay(
             )
         dependencies = tuple(fields.get("depends_on", ()))
         required = bool(fields.get("required", False))
-        is_org = overlay.layer is ArtifactSchemaLayer.ORG
+        if organization_mandate.required and not required:
+            raise _fail(
+                "SDAI-SCHEMA-004",
+                f"artifact '{overlay.id}' is required by organization schema and cannot be made optional",
+            )
+        if not set(organization_mandate.dependencies).issubset(dependencies):
+            missing = sorted(set(organization_mandate.dependencies) - set(dependencies))
+            raise _fail(
+                "SDAI-SCHEMA-004",
+                f"artifact '{overlay.id}' cannot remove organization dependency/dependencies: {', '.join(missing)}",
+            )
         return ArtifactDefinition(
             id=overlay.id,
             path=str(fields["path"]),
@@ -520,8 +552,8 @@ def _merge_overlay(
             source_schema=overlay.schema_id,
             source=overlay.source,
             history=(contribution,),
-            organization_required=is_org and required,
-            organization_dependencies=(dependencies if is_org else ()),
+            organization_required=organization_mandate.required,
+            organization_dependencies=organization_mandate.dependencies,
         )
 
     if existing.locked:
@@ -532,68 +564,36 @@ def _merge_overlay(
         )
 
     if fields.get("disabled"):
-        if existing.organization_required:
+        if organization_mandate.required:
             raise _fail(
                 "SDAI-SCHEMA-004",
                 f"artifact '{overlay.id}' is required by organization schema and cannot be disabled",
             )
         return None
 
-    required = (
-        existing.required
-        if "required" not in fields
-        else bool(fields["required"])
-    )
-    if existing.organization_required and not required:
+    required = existing.required if "required" not in fields else bool(fields["required"])
+    if organization_mandate.required and not required:
         raise _fail(
             "SDAI-SCHEMA-004",
             f"artifact '{overlay.id}' is required by organization schema and cannot be made optional",
         )
 
     dependencies = (
-        existing.depends_on
-        if "depends_on" not in fields
-        else tuple(fields["depends_on"])
+        existing.depends_on if "depends_on" not in fields else tuple(fields["depends_on"])
     )
-    if not set(existing.organization_dependencies).issubset(dependencies):
-        missing = sorted(
-            set(existing.organization_dependencies) - set(dependencies)
-        )
+    if not set(organization_mandate.dependencies).issubset(dependencies):
+        missing = sorted(set(organization_mandate.dependencies) - set(dependencies))
         raise _fail(
             "SDAI-SCHEMA-004",
             f"artifact '{overlay.id}' cannot remove organization dependency/dependencies: {', '.join(missing)}",
         )
 
-    organization_required = existing.organization_required
-    organization_dependencies = existing.organization_dependencies
-    if overlay.layer is ArtifactSchemaLayer.ORG:
-        if bool(fields.get("required", False)):
-            organization_required = True
-        if "depends_on" in fields:
-            organization_dependencies = tuple(
-                sorted(
-                    set(organization_dependencies) | set(dependencies)
-                )
-            )
-
     return ArtifactDefinition(
         id=existing.id,
-        path=(
-            existing.path
-            if "path" not in fields
-            else str(fields["path"])
-        ),
-        type=(
-            existing.type
-            if "type" not in fields
-            else str(fields["type"])
-        ),
+        path=existing.path if "path" not in fields else str(fields["path"]),
+        type=existing.type if "type" not in fields else str(fields["type"]),
         required=required,
-        locked=(
-            existing.locked
-            if "locked" not in fields
-            else bool(fields["locked"])
-        ),
+        locked=existing.locked if "locked" not in fields else bool(fields["locked"]),
         depends_on=dependencies,
         applies_to=(
             existing.applies_to
@@ -604,8 +604,8 @@ def _merge_overlay(
         source_schema=overlay.schema_id,
         source=overlay.source,
         history=(*existing.history, contribution),
-        organization_required=organization_required,
-        organization_dependencies=organization_dependencies,
+        organization_required=organization_mandate.required,
+        organization_dependencies=organization_mandate.dependencies,
     )
 
 
@@ -653,6 +653,7 @@ def load_artifact_schema_graph(
     root = project_root.resolve()
     env = dict(os.environ if environ is None else environ)
     effective: dict[str, ArtifactDefinition] = {}
+    organization_mandates: dict[str, _OrganizationMandate] = {}
     seen_by_layer: dict[ArtifactSchemaLayer, dict[str, str]] = {
         layer: {} for layer in ArtifactSchemaLayer
     }
@@ -673,16 +674,24 @@ def load_artifact_schema_graph(
                     f"({previous_source}; {source})",
                 )
             seen_by_layer[layer][overlay.id] = source
-            merged = _merge_overlay(effective.get(overlay.id), overlay)
+
+            mandate = organization_mandates.get(overlay.id, _OrganizationMandate())
+            if layer is ArtifactSchemaLayer.ORG:
+                mandate = mandate.merge(overlay)
+                organization_mandates[overlay.id] = mandate
+
+            merged = _merge_overlay(
+                effective.get(overlay.id),
+                overlay,
+                organization_mandate=mandate,
+            )
             if merged is None:
                 effective.pop(overlay.id, None)
             else:
                 effective[overlay.id] = merged
 
     order = _topological_order(effective)
-    artifacts = tuple(
-        effective[artifact_id] for artifact_id in sorted(effective)
-    )
+    artifacts = tuple(effective[artifact_id] for artifact_id in sorted(effective))
     return ArtifactSchemaGraph(
         artifacts=artifacts,
         topological_order=order,
