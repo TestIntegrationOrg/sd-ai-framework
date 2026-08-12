@@ -416,17 +416,19 @@ def create_worktree_session(project_root: Path, feature_id: str) -> WorktreeSess
         created_at=created.isoformat(),
     )
     session._write_evidence(state="preparing", cleanup="not-created")
+    worktree_added = False
+    branch_created = False
     try:
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
         _git(
             baseline.repository_root,
             "worktree",
             "add",
-            "-b",
-            branch,
+            "--detach",
             str(worktree_path),
             baseline.commit,
         )
+        worktree_added = True
         worktree_commit = _output(worktree_path, "rev-parse", "HEAD")
         worktree_tree = _output(worktree_path, "rev-parse", "HEAD^{tree}")
         status = (
@@ -450,10 +452,20 @@ def create_worktree_session(project_root: Path, feature_id: str) -> WorktreeSess
             raise WorktreeIsolationError(
                 "SDAI-WORKTREE-006: isolated worktree is missing tracked SDAI configuration"
             )
+        _git(worktree_path, "checkout", "-b", branch, baseline.commit)
+        branch_created = True
+        if _output(worktree_path, "branch", "--show-current") != branch:
+            raise WorktreeIsolationError(
+                "SDAI-WORKTREE-006: isolated worktree branch identity does not match allocation"
+            )
+        if _output(worktree_path, "rev-parse", "HEAD") != baseline.commit:
+            raise WorktreeIsolationError(
+                "SDAI-WORKTREE-006: isolated branch moved away from the verified baseline"
+            )
         session._write_evidence(state="ready", cleanup="preserved-clean")
         return session
     except Exception as exc:
-        if worktree_path.exists():
+        if worktree_added or worktree_path.exists():
             _git(
                 baseline.repository_root,
                 "worktree",
@@ -462,13 +474,20 @@ def create_worktree_session(project_root: Path, feature_id: str) -> WorktreeSess
                 str(worktree_path),
                 check=False,
             )
-        _git(
-            baseline.repository_root,
-            "branch",
-            "-D",
-            branch,
-            check=False,
-        )
+            _git(
+                baseline.repository_root,
+                "worktree",
+                "prune",
+                check=False,
+            )
+        if branch_created:
+            _git(
+                baseline.repository_root,
+                "branch",
+                "-D",
+                branch,
+                check=False,
+            )
         session._write_evidence(
             state="failed-to-create",
             outcome="failed",
