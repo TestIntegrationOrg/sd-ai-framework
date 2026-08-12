@@ -51,6 +51,12 @@ def _extension_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _portable_relative(path: Path, root: Path) -> str:
+    """Render repository paths consistently across Windows, macOS, and Linux."""
+
+    return path.relative_to(root).as_posix()
+
+
 def _run_extension_command(argv: list[str]) -> int:
     args = _extension_parser().parse_args(argv)
     root = _root(args.path)
@@ -65,7 +71,7 @@ def _run_extension_command(argv: list[str]) -> int:
         )
         print(f"Created {result.kind.value} '{result.id}'")
         for path in result.paths:
-            print(f"  + {path.relative_to(root)}")
+            print(f"  + {_portable_relative(path, root)}")
         return 0
 
     if args.extension_command in {"extension", "extensions"}:
