@@ -43,7 +43,6 @@ spec:
 def test_builder_applies_unlocked_precedence_in_deterministic_layer_order(
     tmp_path: Path,
 ) -> None:
-    roots: dict[RegistryLayer, Path] = {}
     sources: list[ExtensionSource] = []
     for layer, version in [
         (RegistryLayer.USER, "5.0.0"),
@@ -53,7 +52,6 @@ def test_builder_applies_unlocked_precedence_in_deterministic_layer_order(
         (RegistryLayer.ORG, "3.0.0"),
     ]:
         root = tmp_path / layer.value
-        roots[layer] = root
         _write_manifest(root, "example.yaml", extension_id="example", version=version)
         sources.append(
             ExtensionSource(root=root, path=Path("example.yaml"), layer=layer)
