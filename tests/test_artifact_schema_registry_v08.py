@@ -51,7 +51,7 @@ def test_builtin_schema_is_packaged_file_driven_and_topologically_valid(tmp_path
     assert graph.topological_order.index("requirements") < graph.topological_order.index("architecture")
     assert graph.topological_order.index("plan") < graph.topological_order.index("tasks")
     assert by_id["requirements"].source_layer.value == "builtin"
-    assert by_id["requirements"].source == "builtin:core.yaml"
+    assert by_id["requirements"].source == "core.yaml"
 
     first = graph.to_json()
     second = load_artifact_schema_graph(tmp_path, environ={}).to_json()
