@@ -61,7 +61,10 @@ class ExtensionRegistry:
     normally higher-precedence layer from replacing that definition.
 
     Duplicate definitions in the same layer and attempted overrides of a locked
-    definition fail closed. Registration order does not affect the resolved result.
+    definition fail closed. Unlocked resolution is independent of registration
+    order. Registry builders must load authoritative locked layers before layers
+    they protect so a policy error aborts construction rather than leaving a
+    partially built registry usable by mistake.
     """
 
     def __init__(self) -> None:
@@ -76,6 +79,14 @@ class ExtensionRegistry:
         path: Path | None = None,
         locked: bool = False,
     ) -> RegistryEntry:
+        try:
+            layer = RegistryLayer(layer)
+        except ValueError as exc:
+            supported = ", ".join(item.value for item in RegistryLayer)
+            raise ExtensionRegistryError(
+                f"SDAI-REG-004: unknown registry layer {layer!r}; supported layers: {supported}"
+            ) from exc
+
         if locked and layer not in _LOCKABLE_LAYERS:
             allowed = ", ".join(
                 item.value
