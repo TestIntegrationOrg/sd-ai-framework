@@ -34,12 +34,15 @@ Legacy `.sdai/skills/` remains supported as a compatibility fallback, but canoni
 
 General lifecycle skills:
 
+- `engineering-judgment`
 - `requirements-analysis`
 - `implementation-planning`
 - `spec-traceability`
 - `secure-coding`
 - `test-design`
 - `documentation-quality`
+
+`engineering-judgment` is the shared enterprise reasoning contract. It requires lifecycle agents to distinguish **Known**, **Proposed**, **Assumption**, **Open question**, and **Blocker** so that agents make safe engineering progress without turning every unspecified detail into a blocker. See [SD-AI Enterprise Engineering Contract](ENGINEERING-CONTRACT.md).
 
 Architecture skill pack:
 
@@ -64,6 +67,7 @@ A semantic agent references skills by name:
 name: architect
 capabilities: [architecture, review]
 skills:
+  - engineering-judgment
   - architecture-design
   - architecture-review
   - rfc-authoring
@@ -125,6 +129,8 @@ Effective skill set
 ```
 
 A lower policy layer cannot remove an organization-mandated skill.
+
+For enterprise environments, an organization may require `engineering-judgment`, `spec-traceability`, or other controls across selected capabilities even when teams customize semantic agents.
 
 ## Provider-native synchronization
 
