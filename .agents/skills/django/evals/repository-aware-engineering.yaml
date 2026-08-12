@@ -1,0 +1,17 @@
+version: 1
+id: repository-aware-engineering
+description: Require Django guidance to respect repository technology evidence and verification.
+required: true
+prompt: Implement a Django change while preserving approved framework and schema boundaries.
+assertions:
+  must:
+    - id: PRESERVE_REPOSITORY_VERSION
+      contains: preserve the detected repository version
+    - id: VERIFY_WITH_TESTS
+      contains: verify with tests
+  must_not:
+    - id: NO_UNAPPROVED_UPGRADE
+      contains: upgrade without approval
+mock:
+  baseline: Replace the framework freely, upgrade without approval, and skip validation.
+  candidate: Preserve the detected repository version, follow existing Django conventions, and verify with tests.

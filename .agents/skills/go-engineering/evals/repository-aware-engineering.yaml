@@ -1,0 +1,17 @@
+version: 1
+id: repository-aware-engineering
+description: Require Go guidance to respect repository technology evidence and verification.
+required: true
+prompt: Implement a Go change while preserving approved module and language boundaries.
+assertions:
+  must:
+    - id: PRESERVE_REPOSITORY_VERSION
+      contains: preserve the detected repository version
+    - id: VERIFY_WITH_TESTS
+      contains: verify with tests
+  must_not:
+    - id: NO_UNAPPROVED_UPGRADE
+      contains: upgrade without approval
+mock:
+  baseline: Change the module baseline, upgrade without approval, and skip validation.
+  candidate: Preserve the detected repository version, follow existing Go conventions, and verify with tests.

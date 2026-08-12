@@ -1,0 +1,17 @@
+version: 1
+id: repository-aware-engineering
+description: Require ASP.NET Core guidance to respect repository technology evidence and verification.
+required: true
+prompt: Implement an ASP.NET Core API change without changing approved runtime boundaries.
+assertions:
+  must:
+    - id: PRESERVE_REPOSITORY_VERSION
+      contains: preserve the detected repository version
+    - id: VERIFY_WITH_TESTS
+      contains: verify with tests
+  must_not:
+    - id: NO_UNAPPROVED_UPGRADE
+      contains: upgrade without approval
+mock:
+  baseline: Move to a different runtime, upgrade without approval, and skip tests.
+  candidate: Preserve the detected repository version, follow existing ASP.NET Core conventions, and verify with tests.
