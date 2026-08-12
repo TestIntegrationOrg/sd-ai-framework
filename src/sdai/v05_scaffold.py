@@ -12,6 +12,7 @@ from sdai.architecture_skills import (
 )
 from sdai.artifacts import write_text
 from sdai.architecture_artifact_validator import scaffold_architecture_validation
+from sdai.text import read_utf8_text
 
 
 AGENT_ROUTING = """version: 1
@@ -228,7 +229,7 @@ def install_v05_scaffold(root: Path) -> list[Path]:
     for name, content in AGENTS.items():
         path = root / ".sdai" / "agents" / f"{name}.agent.md"
         if name == "architect" and path.exists():
-            existing = path.read_text(encoding="utf-8").strip()
+            existing = read_utf8_text(path).strip()
             if existing in {ARCHITECT_V051.strip(), ARCHITECT_V052.strip()}:
                 created.append(write_text(path, ARCHITECT_V053, overwrite=True))
                 continue

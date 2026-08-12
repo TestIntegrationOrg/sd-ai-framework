@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sdai.models import FeatureContext
 from sdai.path_safety import ensure_within_project
+from sdai.text import read_utf8_text
 
 
 _CONTEXT_ARTIFACTS = (
@@ -34,7 +35,7 @@ _ARCHITECTURE_CONTEXT_SUFFIXES = {
 
 def _read_bounded(path: Path, max_chars_per_file: int, *, root: Path) -> str:
     safe = ensure_within_project(root, path, label="agent context file")
-    text = safe.read_text(encoding="utf-8")
+    text = read_utf8_text(safe)
     if len(text) > max_chars_per_file:
         text = text[:max_chars_per_file] + "\n\n[truncated by SD-AI]"
     return text

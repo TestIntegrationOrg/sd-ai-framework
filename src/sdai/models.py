@@ -44,7 +44,9 @@ class FeatureContext:
 
     def artifact(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
-        if candidate.is_absolute() or ".." in candidate.parts:
+        # On Windows, a rooted path such as /tmp/secret has a root but no drive,
+        # so is_absolute() is false even though joining it can escape the feature.
+        if candidate.is_absolute() or candidate.anchor or ".." in candidate.parts:
             raise ValueError("artifact path must stay inside the feature workspace")
         path = self.feature_dir / candidate
         # Check both boundaries. The project-level check rejects a symlinked specs/
