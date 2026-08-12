@@ -68,8 +68,6 @@ def _kind(value: ScaffoldKind | str) -> ScaffoldKind:
 
 def _new_id(value: str, kind: ScaffoldKind) -> str:
     value = value.strip()
-    # Reuse the external manifest contract for new IDs so all newly-created
-    # extension names are portable even where legacy loaders permit more.
     parse_extension_manifest(
         {
             "apiVersion": API_VERSION,
@@ -125,7 +123,25 @@ Describe the engineering technique, constraints, decision points, and examples h
 """,
         force=force,
     )
-    _write(paths[1], "capabilities: []\n", force=force)
+    sidecar = {
+        "version": 1,
+        "capabilities": [],
+        "compatible_agents": [],
+        "requires": [],
+        "compatibility": {},
+        "selection": {
+            "auto": False,
+            "roles": [],
+            "capabilities": [],
+            "task_keywords": [],
+            "domains": [],
+        },
+    }
+    _write(
+        paths[1],
+        yaml.safe_dump(sidecar, sort_keys=False),
+        force=force,
+    )
     return paths
 
 
@@ -228,8 +244,6 @@ def create_extension_scaffold(
     else:
         paths = _manifest_scaffold(root, scaffold_kind, extension_id, force=force)
 
-    # A generated scaffold is not successful unless the same public validation
-    # path an extension author will use accepts it immediately.
     validate_extension_scaffold(root, scaffold_kind, extension_id)
     return ScaffoldResult(scaffold_kind, extension_id, paths)
 
