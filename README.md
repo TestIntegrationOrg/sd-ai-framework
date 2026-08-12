@@ -4,7 +4,8 @@
 
 SD-AI treats approved specification and architecture artifacts as source of truth. Semantic agent roles, provider profiles, reusable skills, declarative workflows, approvals, quality gates, and integrations operate around that source of truth.
 
-> Project status: **0.5.3 / architecture skill pack + deterministic architecture-artifact lifecycle validation**.
+<!-- sdai-release-version: 0.5.4 -->
+> Project status: **0.5.4 / 0.6 extensibility, SDD-quality, and behavioral-evaluation foundation in active development**.
 
 ## One framework, same capabilities
 
@@ -99,6 +100,7 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
 
+sdai --version
 sdai init
 sdai feature FEATURE-123 \
   --title "Add governed signing workflow" \
@@ -299,6 +301,7 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [Provider adapters](docs/PROVIDERS.md)
 - [Skills](docs/SKILLS.md)
 - [Prompts](docs/PROMPTS.md)
+- [Release/version workflow](docs/RELEASING.md)
 - [Security policy](SECURITY.md)
 
 ## Roadmap
@@ -321,6 +324,10 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [x] Protected source-of-truth workspace writes
 - [x] External provider environment isolation
 - [x] Enterprise architecture authoring skill pack
+- [x] Extension manifest/registry foundation
+- [x] Extension scaffolding and validation CLI
+- [x] Engineering constitution, clarification, and requirements-quality checks
+- [x] Behavioral skill/agent evaluation foundation
 - [ ] Identity-backed enterprise approvals
 - [ ] OpenAPI / AsyncAPI / JSON Schema contract validation
 - [ ] Requirement → ADR → task → code → test traceability graph
