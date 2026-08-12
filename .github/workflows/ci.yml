@@ -29,5 +29,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-${{ matrix.os }}-${{ matrix.python-version }}
-          path: pytest-results.xml
+          path: |
+            pytest-results.xml
+            src/sdai/spec_promotion.py
+            tests/test_spec_promotion_v07.py
           if-no-files-found: error
