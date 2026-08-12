@@ -1,0 +1,21 @@
+version: 1
+id: precise-plan
+description: Require an implementation plan to be traceable, concrete, and verifiable.
+required: true
+prompt: Plan a risky service migration before any code is changed.
+assertions:
+  must:
+    - id: TRACE_REQUIREMENT
+      contains: approved requirement
+    - id: AFFECTED_FILES
+      contains: affected files
+    - id: VERIFICATION_EVIDENCE
+      contains: verification command
+    - id: ROLLBACK_PLAN
+      contains: rollback
+  must_not:
+    - id: NO_IMPLEMENT_FIRST
+      contains: implement first and document later
+mock:
+  baseline: Implement first and document later; the engineer can figure out details while coding.
+  candidate: Trace each task to an approved requirement, name the affected files when known, include a verification command and expected evidence, and define rollback for the migration.

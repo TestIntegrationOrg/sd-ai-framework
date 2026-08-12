@@ -1,2 +1,11 @@
 version: 1
 capabilities: [planning]
+compatible_agents: []
+requires: []
+compatibility: {}
+selection:
+  auto: true
+  roles: []
+  capabilities: [planning]
+  task_keywords: [plan, planning, implementation, migration, refactor]
+  domains: []

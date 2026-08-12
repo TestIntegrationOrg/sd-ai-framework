@@ -1,0 +1,16 @@
+version: 1
+providers: {}
+capabilities: {}
+execution: {}
+skills:
+  required:
+    planning:
+      - implementation-planning
+    coding:
+      - test-driven-development
+      - verification-before-completion
+    review:
+      - verification-before-completion
+    testing:
+      - verification-before-completion
+architecture_validation: {}

@@ -1,0 +1,11 @@
+version: 1
+capabilities: [architecture, planning, coding, review, testing, security, documentation]
+compatible_agents: []
+requires: []
+compatibility: {}
+selection:
+  auto: true
+  roles: []
+  capabilities: [architecture, planning, coding, review, testing, security, documentation]
+  task_keywords: [verify, validation, complete, completion, ready, done, review]
+  domains: []

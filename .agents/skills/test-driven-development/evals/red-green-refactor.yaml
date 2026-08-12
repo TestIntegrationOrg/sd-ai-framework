@@ -1,0 +1,21 @@
+version: 1
+id: red-green-refactor
+description: Require a real failing-test-first feedback loop before production behavior changes.
+required: true
+prompt: Fix a regression quickly; the existing implementation currently returns the wrong status.
+assertions:
+  must:
+    - id: FAILING_TEST_FIRST
+      contains: failing test first
+    - id: RUN_FAILURE
+      contains: run the test
+    - id: MINIMAL_PRODUCTION_CHANGE
+      contains: minimal production change
+    - id: RELEVANT_SUITE
+      contains: relevant suite
+  must_not:
+    - id: NO_REQUIREMENT_REWRITE
+      contains: change the requirement to make the test pass
+mock:
+  baseline: Patch production immediately and change the requirement to make the test pass if assertions get in the way.
+  candidate: Add a failing test first, run the test to confirm the intended failure, make the minimal production change, then run the focused test and relevant suite before refactoring.
