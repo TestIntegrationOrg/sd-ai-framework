@@ -19,9 +19,16 @@ from sdai.plugin_steps import (
 
 
 class _Executor:
-    def __init__(self, *, run_command: bool = False, write: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        run_command: bool = False,
+        write: bool = False,
+        executable: str = "python",
+    ) -> None:
         self.run_command = run_command
         self.write = write
+        self.executable = executable
         self.called = False
 
     def execute(self, plan, services):
@@ -34,7 +41,7 @@ class _Executor:
         command_output = ""
         if self.run_command:
             completed = services.run_argv(
-                "python",
+                self.executable,
                 ["-c", "print('plugin-ok')"],
             )
             assert completed.returncode == 0
@@ -270,13 +277,15 @@ def test_registered_executor_uses_permission_checked_services(tmp_path: Path) ->
         "café Δ\n",
         encoding="utf-8",
     )
+    real_python = Path(sys.executable).resolve()
+    executable = real_python.name
     _plugin(
         tmp_path,
         permissions={
             "filesystem": {"read": ["src"], "write": ["generated"]},
             "network": False,
             "environment": [],
-            "commands": ["python"],
+            "commands": [executable],
             "workspace_write": True,
         },
     )
@@ -285,14 +294,14 @@ def test_registered_executor_uses_permission_checked_services(tmp_path: Path) ->
         workspace_write=True,
         read_paths=("src",),
         write_paths=("generated",),
-        commands=("python",),
+        commands=(executable,),
     )
-    executor = _Executor(run_command=True, write=True)
+    executor = _Executor(run_command=True, write=True, executable=executable)
     registry = PluginExecutorRegistry()
     registry.register("sample-executor", executor)
 
     execution_env = {
-        "SDAI_PLUGIN_TRUSTED_COMMAND_PATH": str(Path(sys.executable).resolve().parent),
+        "SDAI_PLUGIN_TRUSTED_COMMAND_PATH": str(real_python.parent),
     }
     for name in ("SYSTEMROOT", "WINDIR"):
         if name in os.environ:
