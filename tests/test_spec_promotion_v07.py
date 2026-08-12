@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 import sdai.spec_promotion as promotion_module
-from sdai.spec_changes import load_current_spec
+from sdai.spec_changes import CurrentSpecification, load_current_spec
 from sdai.spec_promotion import (
     SpecPromotionError,
     build_spec_diff,
@@ -60,6 +60,18 @@ def _write_current(
 def _requirement_hash(root: Path, domain: str, requirement_id: str) -> str:
     current = load_current_spec(root, domain)
     return parse_current_requirements(current).by_id()[requirement_id].sha256
+
+
+def _proposed_requirement_ids(domain: str, content: str) -> tuple[str, ...]:
+    proposed = CurrentSpecification(
+        domain=domain,
+        content=content,
+        sha256="sha256:" + "0" * 64,
+        source=f"specs/current/{domain}/specification.md",
+    )
+    return tuple(
+        item.requirement_id for item in parse_current_requirements(proposed).requirements
+    )
 
 
 def _write_change(
@@ -148,13 +160,15 @@ def test_semantic_diff_preserves_unrelated_markdown_and_applies_all_operations(
 
     report = build_spec_diff(tmp_path, "SIGN-300")
     domain = report.domains[0]
+    requirement_ids = _proposed_requirement_ids("signing", domain.proposed_content)
 
     assert domain.before_sha256 == load_current_spec(tmp_path, "signing").sha256
     assert domain.after_sha256 != domain.before_sha256
     assert "Introductory prose must survive promotion unchanged." in domain.proposed_content
     assert "Keep this note exactly." in domain.proposed_content
     assert "- FR-001: The service MUST sign a PowerShell file using an approved key." in domain.proposed_content
-    assert "FR-002:" not in domain.proposed_content
+    assert "FR-002" not in requirement_ids
+    assert "NFR-002" in requirement_ids
     assert "- NFR-002: Signing MUST complete within 2 seconds." in domain.proposed_content
     assert "- FR-003: The service MUST preserve café/Δ metadata." in domain.proposed_content
     assert [item.op for item in domain.changes] == [
@@ -191,12 +205,13 @@ def test_new_domain_diff_creates_deterministic_requirement_sections(tmp_path: Pa
 
     report = build_spec_diff(tmp_path, "SIGN-301")
     proposed = report.domains[0].proposed_content
+    requirement_ids = _proposed_requirement_ids("certificates", proposed)
 
     assert proposed.startswith("# certificates\n")
     assert "## Functional Requirements" in proposed
     assert "## Non-Functional Requirements" in proposed
-    assert proposed.count("FR-001") == 1
-    assert proposed.count("NFR-001") == 1
+    assert requirement_ids.count("FR-001") == 1
+    assert requirement_ids.count("NFR-001") == 1
 
 
 def test_invalid_change_cannot_generate_promotable_diff(tmp_path: Path) -> None:
