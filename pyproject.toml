@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sd-ai-framework"
-version = "0.5.4"
+dynamic = ["version"]
 description = "Spec-Driven AI Development Framework: one lifecycle for SDD and AI-DLC"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,10 @@ dependencies = ["PyYAML>=6.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-sdai = "sdai.entrypoint:main"
+sdai = "sdai.version_entrypoint:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "sdai.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
