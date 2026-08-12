@@ -6,6 +6,7 @@ import shutil
 import pytest
 import yaml
 
+from sdai.agent_platform.models import Capability
 from sdai.evals import MockEvalExecutor, run_behavioral_eval
 from sdai.execution_excellence import (
     EXECUTION_EXCELLENCE_SKILLS,
@@ -163,7 +164,7 @@ def test_policy_mandatory_skills_union_with_task_specific_auto_selection(tmp_pat
         task="debug failing regression",
     )
 
-    assert policy.required_skills("coding") == (
+    assert policy.required_skills(Capability.CODING) == (
         "test-driven-development",
         "verification-before-completion",
     )
