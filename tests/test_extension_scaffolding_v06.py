@@ -62,7 +62,11 @@ def test_create_workflow_is_immediately_loadable(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("kind", "extension_kind", "directory"),
     [
-        (ScaffoldKind.WORKFLOW_COMPONENT, ExtensionKind.WORKFLOW_COMPONENT, "workflow-components"),
+        (
+            ScaffoldKind.WORKFLOW_COMPONENT,
+            ExtensionKind.WORKFLOW_COMPONENT,
+            "workflow-components",
+        ),
         (ScaffoldKind.VALIDATOR, ExtensionKind.VALIDATOR, "validators"),
         (ScaffoldKind.QUALITY_GATE, ExtensionKind.QUALITY_GATE, "quality-gates"),
         (ScaffoldKind.INTEGRATION, ExtensionKind.INTEGRATION, "integrations"),
@@ -151,7 +155,9 @@ def test_force_is_required_to_replace_owned_scaffold_files(tmp_path: Path) -> No
     assert path.read_text(encoding="utf-8").startswith("---\n")
 
 
-def test_console_create_and_validate_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_console_create_and_validate_commands(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _initialized(tmp_path)
 
     assert entrypoint_main(
@@ -179,6 +185,18 @@ def test_console_extension_alias_validates_manifest(
     ) == 0
     output = capsys.readouterr().out
     assert "kind=Pack version=0.1.0" in output
+
+
+def test_top_level_help_surfaces_extension_authoring_commands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert entrypoint_main(["--help"]) == 0
+    output = capsys.readouterr().out
+    assert "Extension authoring commands:" in output
+    assert "sdai create <kind> <name>" in output
+    assert "sdai extensions validate" in output
+    for kind in ScaffoldKind:
+        assert kind.value in output
 
 
 def test_console_refuses_uninitialized_project(
