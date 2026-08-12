@@ -92,7 +92,15 @@ CLARIFICATION_CATEGORIES: tuple[ClarificationCategory, ...] = (
         "CLAR-005",
         "Edge cases and boundaries",
         "What boundary, empty, maximum/minimum, duplicate, or malformed cases require defined behavior?",
-        ("edge", "boundary", "empty", "maximum", "minimum", "duplicate", "malformed"),
+        (
+            "edge",
+            "boundary",
+            "empty",
+            "maximum",
+            "minimum",
+            "duplicate",
+            "malformed",
+        ),
     ),
     ClarificationCategory(
         "CLAR-006",
@@ -110,7 +118,14 @@ CLARIFICATION_CATEGORIES: tuple[ClarificationCategory, ...] = (
         "CLAR-008",
         "Security and privacy",
         "What trust boundaries, sensitive data, authentication/authorization, cryptographic, or privacy constraints apply?",
-        ("security", "privacy", "authentication", "authorization", "trust", "cryptograph"),
+        (
+            "security",
+            "privacy",
+            "authentication",
+            "authorization",
+            "trust",
+            "cryptograph",
+        ),
     ),
     ClarificationCategory(
         "CLAR-009",
@@ -158,40 +173,61 @@ _REQUIRED_SECTIONS = (
     "Non-Functional Requirements",
     "Acceptance Criteria",
 )
-_PLACEHOLDER = re.compile(r"\b(TBD|TODO|TBC|FIXME)\b|\[(?:placeholder|fill[- ]?in)\]", re.IGNORECASE)
-_REQUIREMENT_LINE = re.compile(r"^\s*-\s*((?:FR|NFR|AC)-\d{3})\s*:\s*(.+?)\s*$", re.MULTILINE)
+_PLACEHOLDER = re.compile(
+    r"\b(TBD|TODO|TBC|FIXME)\b|\[(?:placeholder|fill[- ]?in)\]",
+    re.IGNORECASE,
+)
+_REQUIREMENT_LINE = re.compile(
+    r"^\s*-\s*((?:FR|NFR|AC)-\d{3})\s*:\s*(.+?)\s*$",
+    re.MULTILINE,
+)
 _MEASURABLE = re.compile(
     r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds?|minutes?|rps|qps|tps|%|percent|mb|gb|kb|requests?|users?|devices?|concurrent)\b",
     re.IGNORECASE,
 )
 
 
-def _specification(project_root: Path, feature_id: str) -> tuple[FeatureContext, Path, str]:
+def _specification(
+    project_root: Path,
+    feature_id: str,
+) -> tuple[FeatureContext, Path, str]:
     context = FeatureContext(project_root, feature_id)
     path = context.artifact("specification.md")
     if not path.exists():
         raise FileNotFoundError(
-            f"Feature '{context.feature_id}' has no specification.md; run the requirements/specification step first"
+            f"Feature '{context.feature_id}' has no specification.md; "
+            "run the requirements/specification step first"
         )
     return context, path, read_utf8_text(path)
 
 
 def _sections(markdown: str) -> dict[str, str]:
-    headings = list(re.finditer(r"^##\s+(.+?)\s*$", markdown, flags=re.MULTILINE))
+    headings = list(
+        re.finditer(r"^##\s+(.+?)\s*$", markdown, flags=re.MULTILINE)
+    )
     result: dict[str, str] = {}
     for index, match in enumerate(headings):
         start = match.end()
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        end = (
+            headings[index + 1].start()
+            if index + 1 < len(headings)
+            else len(markdown)
+        )
         result[match.group(1).strip()] = markdown[start:end].strip()
     return result
 
 
-def analyze_clarifications(project_root: Path, feature_id: str) -> tuple[ClarificationFinding, ...]:
+def analyze_clarifications(
+    project_root: Path,
+    feature_id: str,
+) -> tuple[ClarificationFinding, ...]:
     _, _, specification = _specification(project_root, feature_id)
     folded = specification.casefold()
     findings: list[ClarificationFinding] = []
     for category in CLARIFICATION_CATEGORIES:
-        evidence = tuple(term for term in category.evidence_terms if term in folded)
+        evidence = tuple(
+            term for term in category.evidence_terms if term in folded
+        )
         # Keyword evidence is intentionally not treated as reviewer approval. It only
         # reduces obvious noise and remains explicitly marked for human/analyst review.
         status = "candidate-covered" if evidence else "open"
@@ -225,23 +261,31 @@ def write_clarifications(project_root: Path, feature_id: str) -> Path:
         "",
         f"Source: `{spec_path.relative_to(context.project_root).as_posix()}`",
         "",
-        "> `candidate-covered` means the specification contains related evidence; it does not mean the question is approved or resolved.",
+        "> `candidate-covered` means the specification contains related evidence; "
+        "it does not mean the question is approved or resolved.",
         "",
         "| ID | Category | Status | Question | Evidence terms |",
         "|---|---|---|---|---|",
     ]
     for finding in findings:
-        evidence = ", ".join(finding.evidence_terms) if finding.evidence_terms else "—"
+        evidence = (
+            ", ".join(finding.evidence_terms)
+            if finding.evidence_terms
+            else "—"
+        )
         question = finding.question.replace("|", "\\|")
         lines.append(
-            f"| {finding.id} | {finding.category} | {finding.status} | {question} | {evidence} |"
+            f"| {finding.id} | {finding.category} | {finding.status} | "
+            f"{question} | {evidence} |"
         )
     lines.extend(
         [
             "",
             "## Reviewer Notes",
             "",
-            "Record answers or references here. Apply accepted changes to the canonical specification through the requirements workflow; this clarification artifact never rewrites the specification automatically.",
+            "Record answers or references here. Apply accepted changes to the "
+            "canonical specification through the requirements workflow; this "
+            "clarification artifact never rewrites the specification automatically.",
             "",
         ]
     )
@@ -268,24 +312,43 @@ def _finding(
     )
 
 
-def check_requirements(project_root: Path, feature_id: str) -> RequirementsQualityReport:
+def check_requirements(
+    project_root: Path,
+    feature_id: str,
+) -> RequirementsQualityReport:
     context, _, specification = _specification(project_root, feature_id)
     sections = _sections(specification)
     folded = specification.casefold()
     requirements = _REQUIREMENT_LINE.findall(specification)
     ids = [requirement_id for requirement_id, _ in requirements]
-    statements = [statement for _, statement in requirements]
+    fr_ids = [requirement_id for requirement_id in ids if requirement_id.startswith("FR-")]
+    nfr_ids = [requirement_id for requirement_id in ids if requirement_id.startswith("NFR-")]
+    ac_ids = [requirement_id for requirement_id in ids if requirement_id.startswith("AC-")]
+    missing_families = [
+        label
+        for label, values in (("FR", fr_ids), ("NFR", nfr_ids), ("AC", ac_ids))
+        if not values
+    ]
 
     missing_sections = [
-        section for section in _REQUIRED_SECTIONS if not sections.get(section, "").strip()
+        section
+        for section in _REQUIRED_SECTIONS
+        if not sections.get(section, "").strip()
     ]
-    duplicates = sorted({requirement_id for requirement_id in ids if ids.count(requirement_id) > 1})
+    duplicates = sorted(
+        {requirement_id for requirement_id in ids if ids.count(requirement_id) > 1}
+    )
     non_normative = [
         requirement_id
         for requirement_id, statement in requirements
         if requirement_id.startswith(("FR-", "NFR-"))
-        and not re.search(r"\b(MUST|SHALL|SHOULD)\b", statement, flags=re.IGNORECASE)
+        and not re.search(
+            r"\b(MUST|SHALL|SHOULD)\b",
+            statement,
+            flags=re.IGNORECASE,
+        )
     ]
+    placeholders_present = _PLACEHOLDER.search(specification) is not None
     open_questions = sections.get("Open Questions", "").strip()
     open_questions_resolved = not open_questions or open_questions.casefold() in {
         "none",
@@ -293,18 +356,58 @@ def check_requirements(project_root: Path, feature_id: str) -> RequirementsQuali
         "not applicable",
     }
     has_actor = any(
-        term in folded for term in ("actor", "user", "caller", "role", "permission", "authorization")
+        term in folded
+        for term in (
+            "actor",
+            "user",
+            "caller",
+            "role",
+            "permission",
+            "authorization",
+        )
     )
     has_io = any(
-        term in folded for term in ("input", "output", "request", "response", "payload", "file")
+        term in folded
+        for term in ("input", "output", "request", "response", "payload", "file")
     )
     has_edge_or_state = any(
         term in folded
-        for term in ("edge", "boundary", "empty", "maximum", "minimum", "state", "transition", "lifecycle")
+        for term in (
+            "edge",
+            "boundary",
+            "empty",
+            "maximum",
+            "minimum",
+            "state",
+            "transition",
+            "lifecycle",
+        )
     )
     has_compatibility = any(
-        term in folded for term in ("compatibility", "backward", "migration", "breaking")
+        term in folded
+        for term in ("compatibility", "backward", "migration", "breaking")
     )
+    has_failure_and_observability = (
+        "failure" in folded or "error" in folded
+    ) and any(
+        term in folded
+        for term in ("observability", "log", "metric", "trace")
+    )
+    measurable_nfr = _MEASURABLE.search(
+        sections.get("Non-Functional Requirements", "")
+    ) is not None
+    operational_groups = (
+        ("deploy", "rollout", "release"),
+        ("rollback", "recovery", "revert"),
+        ("retention", "delete", "archive", "purge"),
+        ("compliance", "regulatory", "audit"),
+    )
+    operational_scope_complete = all(
+        any(term in folded for term in group) for group in operational_groups
+    )
+    has_all_requirement_families = not missing_families
+    ids_valid = has_all_requirement_families and not duplicates
+    normative_valid = bool(fr_ids) and bool(nfr_ids) and not non_normative
 
     findings = (
         _finding(
@@ -320,40 +423,44 @@ def check_requirements(project_root: Path, feature_id: str) -> RequirementsQuali
             "RQ-002",
             "No unresolved placeholder markers",
             "blocking",
-            _PLACEHOLDER.search(specification) is None,
+            not placeholders_present,
             "No TBD/TODO/TBC/FIXME placeholders detected"
-            if _PLACEHOLDER.search(specification) is None
+            if not placeholders_present
             else "Specification contains unresolved placeholder markers",
         ),
         _finding(
             "RQ-003",
-            "Requirement and acceptance IDs are present and unique",
+            "FR, NFR, and acceptance IDs are present and unique",
             "blocking",
-            bool(ids) and not duplicates,
-            f"Found {len(ids)} structured IDs"
-            if ids and not duplicates
+            ids_valid,
+            f"Found FR={len(fr_ids)}, NFR={len(nfr_ids)}, AC={len(ac_ids)} unique IDs"
+            if ids_valid
             else (
                 f"Duplicate IDs: {', '.join(duplicates)}"
                 if duplicates
-                else "No FR-NNN/NFR-NNN/AC-NNN requirement IDs found"
+                else f"Missing structured requirement families: {', '.join(missing_families)}"
             ),
         ),
         _finding(
             "RQ-004",
             "Functional and non-functional requirements use normative language",
             "blocking",
-            bool(statements) and not non_normative,
+            normative_valid,
             "All FR/NFR statements use MUST/SHALL/SHOULD"
-            if statements and not non_normative
-            else f"Non-normative requirements: {', '.join(non_normative) or 'none parsed'}",
+            if normative_valid
+            else (
+                f"Non-normative requirements: {', '.join(non_normative)}"
+                if non_normative
+                else "Both FR-NNN and NFR-NNN requirements are required"
+            ),
         ),
         _finding(
             "RQ-005",
             "Acceptance criteria are identifiable",
             "blocking",
-            any(requirement_id.startswith("AC-") for requirement_id in ids),
+            bool(ac_ids),
             "Acceptance criteria IDs are present"
-            if any(requirement_id.startswith("AC-") for requirement_id in ids)
+            if ac_ids
             else "No AC-NNN acceptance criteria found",
         ),
         _finding(
@@ -369,20 +476,18 @@ def check_requirements(project_root: Path, feature_id: str) -> RequirementsQuali
             "RQ-007",
             "Failure behavior and observability are explicit",
             "blocking",
-            ("failure" in folded or "error" in folded)
-            and any(term in folded for term in ("observability", "log", "metric", "trace")),
+            has_failure_and_observability,
             "Failure and observability language are both present"
-            if ("failure" in folded or "error" in folded)
-            and any(term in folded for term in ("observability", "log", "metric", "trace"))
+            if has_failure_and_observability
             else "Define both failure behavior and production observability",
         ),
         _finding(
             "RQ-008",
             "Performance/scalability NFRs contain a measurable target",
             "blocking",
-            _MEASURABLE.search(sections.get("Non-Functional Requirements", "")) is not None,
+            measurable_nfr,
             "A measurable performance/scale target is present"
-            if _MEASURABLE.search(sections.get("Non-Functional Requirements", "")) is not None
+            if measurable_nfr
             else "Add at least one measurable latency/throughput/scale/payload/concurrency target",
         ),
         _finding(
@@ -434,25 +539,9 @@ def check_requirements(project_root: Path, feature_id: str) -> RequirementsQuali
             "RQ-014",
             "Clarification scope covers rollout, rollback, retention, and compliance",
             "warning",
-            all(
-                any(term in folded for term in group)
-                for group in (
-                    ("deploy", "rollout", "release"),
-                    ("rollback", "recovery", "revert"),
-                    ("retention", "delete", "archive", "purge"),
-                    ("compliance", "regulatory", "audit"),
-                )
-            ),
+            operational_scope_complete,
             "Operational lifecycle/compliance topics are represented"
-            if all(
-                any(term in folded for term in group)
-                for group in (
-                    ("deploy", "rollout", "release"),
-                    ("rollback", "recovery", "revert"),
-                    ("retention", "delete", "archive", "purge"),
-                    ("compliance", "regulatory", "audit"),
-                )
-            )
+            if operational_scope_complete
             else "Review deployment/rollout, rollback/recovery, retention/deletion, and compliance applicability",
         ),
     )
@@ -492,7 +581,8 @@ def write_requirements_checklist(
     for finding in report.findings:
         detail = finding.detail.replace("|", "\\|")
         lines.append(
-            f"| {finding.id} | {finding.severity} | {finding.status} | {finding.title} | {detail} |"
+            f"| {finding.id} | {finding.severity} | {finding.status} | "
+            f"{finding.title} | {detail} |"
         )
     lines.extend(
         [
@@ -501,7 +591,9 @@ def write_requirements_checklist(
             "",
             "- Reviewer: unassigned",
             "- Decision: pending",
-            "- Notes: requirements-analyst or an authorized human reviewer must resolve blocking findings. An implementation agent cannot self-approve this checklist.",
+            "- Notes: requirements-analyst or an authorized human reviewer must "
+            "resolve blocking findings. An implementation agent cannot self-approve "
+            "this checklist.",
             "",
         ]
     )
