@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import sys
 
 import pytest
 import yaml
@@ -289,13 +291,20 @@ def test_registered_executor_uses_permission_checked_services(tmp_path: Path) ->
     registry = PluginExecutorRegistry()
     registry.register("sample-executor", executor)
 
+    execution_env = {
+        "SDAI_PLUGIN_TRUSTED_COMMAND_PATH": str(Path(sys.executable).resolve().parent),
+    }
+    for name in ("SYSTEMROOT", "WINDIR"):
+        if name in os.environ:
+            execution_env[name] = os.environ[name]
+
     plan, result = execute_plugin_step(
         tmp_path,
         "sample",
         "scan",
         {"mode": "safe"},
         registry=registry,
-        environ={},
+        environ=execution_env,
     )
 
     assert executor.called is True
@@ -320,29 +329,17 @@ def test_framework_services_never_write_protected_source_of_truth(tmp_path: Path
             "workspace_write": True,
         },
     )
-    _policy(
-        tmp_path,
-        workspace_write=True,
-        write_paths=(".",),
-    )
+    _policy(tmp_path, workspace_write=True, write_paths=(".",))
 
     class Writer:
         def execute(self, plan, services):
-            services.write_text(
-                "specs/changes/X/requirements.md",
-                "tamper",
-            )
+            services.write_text("specs/changes/X/requirements.md", "tamper")
             return PluginResult("passed", "unexpected")
 
     registry = PluginExecutorRegistry()
     registry.register("sample-executor", Writer())
     with pytest.raises(PluginStepError, match="SDAI-PLUGIN-005.*protected path"):
-        execute_plugin_step(
-            tmp_path,
-            "sample",
-            "write",
-            registry=registry,
-        )
+        execute_plugin_step(tmp_path, "sample", "write", registry=registry)
 
 
 def test_safe_argv_has_no_shell_string_or_runtime_template_interpolation(
@@ -362,21 +359,13 @@ def test_safe_argv_has_no_shell_string_or_runtime_template_interpolation(
 
     class UnsafeArg:
         def execute(self, plan, services):
-            services.run_argv(
-                "python",
-                ["-c", "print('${{ danger }}')"],
-            )
+            services.run_argv("python", ["-c", "print('${{ danger }}')"])
             return PluginResult("passed", "unexpected")
 
     registry = PluginExecutorRegistry()
     registry.register("sample-executor", UnsafeArg())
     with pytest.raises(PluginStepError, match="SDAI-PLUGIN-005.*template"):
-        execute_plugin_step(
-            tmp_path,
-            "sample",
-            "argv",
-            registry=registry,
-        )
+        execute_plugin_step(tmp_path, "sample", "argv", registry=registry)
 
 
 def test_dry_run_validates_manifest_and_policy_without_executor(tmp_path: Path) -> None:
