@@ -28,6 +28,7 @@ from sdai.skill_cli import add_skill_resolution_parser, run_skill_resolution_com
 from sdai.spec_cli import add_spec_parser, run_spec_command
 from sdai.tech_cli import add_tech_parser, run_tech_command
 from sdai.text import read_utf8_text
+from sdai.workflow_cli import add_workflow_parser, run_workflow_command
 
 
 def _root(value: str | None) -> Path:
@@ -135,6 +136,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_tech_parser(commands)
     add_schema_parser(commands)
     add_artifact_state_parser(commands)
+    add_workflow_parser(commands)
     return parser
 
 
@@ -278,6 +280,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "artifact":
         return run_artifact_state_command(root, args)
 
+    if args.managed_command == "workflow":
+        return run_workflow_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -308,6 +313,9 @@ def _print_top_level_help() -> None:
         "\nArtifact freshness commands:\n"
         "  sdai artifact status <feature> [--risk standard] [--domain DOMAIN] [--json]\n"
         "  sdai artifact explain <feature> <artifact-id> [--risk standard] [--domain DOMAIN] [--json]\n"
+        "\nWorkflow composition commands:\n"
+        "  sdai workflow validate <name> [--input NAME=YAML_VALUE] [--json]\n"
+        "  sdai workflow explain <name> [--input NAME=YAML_VALUE] [--json]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -331,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         "tech",
         "schema",
         "artifact",
+        "workflow",
     }:
         try:
             return _run_managed_command(effective)
