@@ -39,6 +39,7 @@ class StepKind(StrEnum):
     VALIDATE = "validate"
     QUALITY_GATE = "quality-gate"
     PARALLEL = "parallel"
+    PLUGIN = "plugin"
 
 
 class FailureMode(StrEnum):
@@ -47,6 +48,20 @@ class FailureMode(StrEnum):
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PLUGIN_FIELDS = frozenset(
+    {
+        "id",
+        "type",
+        "kind",
+        "plugin",
+        "inputs",
+        "description",
+        "if",
+        "condition",
+        "retry",
+        "on_failure",
+    }
+)
 
 
 def _safe_name(value: str, label: str) -> str:
@@ -87,11 +102,17 @@ class WorkflowStep:
     save_as: str | None = None
     gate: str | None = None
     quality_gate: str | None = None
+    plugin_id: str | None = None
+    plugin_inputs: tuple[tuple[str, object], ...] = ()
     description: str | None = None
     condition: str = "always"
     retry: RetryPolicy = RetryPolicy()
     on_failure: FailureMode = FailureMode.STOP
     children: tuple["WorkflowStep", ...] = ()
+
+    @property
+    def plugin_input_values(self) -> dict[str, object]:
+        return dict(self.plugin_inputs)
 
 
 @dataclass(frozen=True)
@@ -285,6 +306,29 @@ def _parse_step(raw: object, index: int) -> WorkflowStep:
                 )
         return WorkflowStep(id=step_id, kind=kind, children=children, **common)
 
+    if kind == StepKind.PLUGIN:
+        unknown = sorted(set(raw) - _PLUGIN_FIELDS)
+        if unknown:
+            raise WorkflowConfigError(
+                f"Plugin step '{step_id}' has unsupported field(s): {', '.join(unknown)}"
+            )
+        raw_plugin = str(raw.get("plugin") or "").strip()
+        if not raw_plugin:
+            raise WorkflowConfigError(f"Plugin step '{step_id}' is missing plugin")
+        plugin_id = _safe_name(raw_plugin, f"plugin id for step '{step_id}'")
+        inputs = raw.get("inputs") or {}
+        if not isinstance(inputs, Mapping):
+            raise WorkflowConfigError(f"Plugin step '{step_id}' inputs must be a mapping")
+        if not all(isinstance(key, str) and key for key in inputs):
+            raise WorkflowConfigError(f"Plugin step '{step_id}' input keys must be non-empty strings")
+        return WorkflowStep(
+            id=step_id,
+            kind=kind,
+            plugin_id=plugin_id,
+            plugin_inputs=tuple(sorted((key, value) for key, value in inputs.items())),
+            **common,
+        )
+
     return WorkflowStep(id=step_id, kind=StepKind.VALIDATE, **common)
 
 
@@ -336,6 +380,14 @@ def load_workflow(
         )
     except WorkflowComponentError as exc:
         raise WorkflowConfigError(str(exc)) from exc
+
+    has_plugin = any(
+        isinstance(raw, Mapping)
+        and str(raw.get("type") or raw.get("kind") or "").strip() == StepKind.PLUGIN.value
+        for raw in composition.steps
+    )
+    if has_plugin and (version is None or version < 8):
+        raise WorkflowConfigError("Plugin workflow steps require explicit workflow version 8 or newer")
 
     try:
         validation_mode = LifecycleMode(str(data.get("validation_mode") or name))

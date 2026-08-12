@@ -124,6 +124,7 @@ _STEP_KEYS = {
     "quality-gate": _COMMON_STEP_KEYS | {"gate", "quality_gate"},
     "parallel": _COMMON_STEP_KEYS | {"steps"},
     "validate": _COMMON_STEP_KEYS,
+    "plugin": _COMMON_STEP_KEYS | {"plugin", "inputs"},
 }
 _FORBIDDEN_COMPONENT_KEYS = frozenset(
     {

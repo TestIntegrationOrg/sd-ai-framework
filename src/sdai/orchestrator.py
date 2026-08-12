@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 import time
-from typing import Callable, TypeVar
+from typing import Callable, Mapping, TypeVar
 
 from sdai.agent_platform import AgentRuntime, ExecutionMode
 from sdai.agent_platform.models import AgentInvocation
@@ -14,6 +16,14 @@ from sdai.artifacts import write_text
 from sdai.conditions import evaluate_condition
 from sdai.governance import check_workflow_governance, governance_enforced, load_governance
 from sdai.models import FeatureContext, LifecycleMode
+from sdai.plugin_steps import (
+    EXECUTORS,
+    PluginExecutionPlan,
+    PluginExecutorRegistry,
+    PluginResult,
+    execute_plugin_step,
+    prepare_plugin_step,
+)
 from sdai.policy import load_effective_configuration
 from sdai.quality_gates import QualityGateResult, QualityGateRunner
 from sdai.validation import ValidationFinding, has_blockers, validate
@@ -59,11 +69,15 @@ class Orchestrator:
         *,
         agent_runtime: AgentRuntime | None = None,
         quality_gate_runner: QualityGateRunner | None = None,
+        plugin_executor_registry: PluginExecutorRegistry | None = None,
+        plugin_environ: Mapping[str, str] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ):
         self.project_root = project_root.resolve()
         self.agent_runtime = agent_runtime or AgentRuntime(self.project_root)
         self.quality_gate_runner = quality_gate_runner or QualityGateRunner(self.project_root)
+        self.plugin_executor_registry = plugin_executor_registry or EXECUTORS
+        self.plugin_environ = dict(plugin_environ) if plugin_environ is not None else None
         self.policy = load_effective_configuration(self.project_root)
         self.sleeper = sleeper
 
@@ -198,6 +212,59 @@ class Orchestrator:
         )
         return artifact
 
+    @staticmethod
+    def _plugin_plan_evidence(plan: PluginExecutionPlan) -> dict[str, object]:
+        return {
+            "plugin": {
+                "id": plan.plugin.id,
+                "version": plan.plugin.version,
+                "publisher": plan.plugin.publisher,
+                "executor": plan.plugin.executor,
+                "source": plan.plugin.source,
+            },
+            "effective_permissions": plan.permissions.as_dict(),
+            "policy_sources": list(plan.policy_sources),
+            "input_keys": sorted(plan.inputs),
+            "input_sha256": "sha256:" + sha256(plan.to_json().encode("utf-8")).hexdigest(),
+        }
+
+    def _persist_plugin_evidence(
+        self,
+        context: FeatureContext,
+        definition: WorkflowDefinition,
+        step: WorkflowStep,
+        plan: PluginExecutionPlan,
+        *,
+        attempts: int,
+        result: PluginResult | None = None,
+        error: str | None = None,
+    ) -> Path:
+        artifact = context.artifact(f"plugin/{step.id}.json")
+        payload: dict[str, object] = {
+            "version": 1,
+            "feature_id": context.feature_id,
+            "workflow": definition.name,
+            "step_id": step.id,
+            "attempts": attempts,
+            "plan": self._plugin_plan_evidence(plan),
+        }
+        if result is not None:
+            payload["result"] = result.as_dict()
+        if error is not None:
+            payload["error"] = error
+        write_text(
+            artifact,
+            json.dumps(
+                payload,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n",
+        )
+        return artifact
+
     def _dry_run_parallel_child(
         self,
         feature_id: str,
@@ -253,6 +320,99 @@ class Orchestrator:
             )
         except Exception as exc:
             return StepExecution(child.id, child.kind, "failed", message=str(exc), attempts=child.retry.max_attempts)
+
+    def _execute_plugin_workflow_step(
+        self,
+        context: FeatureContext,
+        definition: WorkflowDefinition,
+        step: WorkflowStep,
+        *,
+        force: bool,
+        dry_run: bool,
+    ) -> StepExecution:
+        if not step.plugin_id:
+            raise ValueError(f"Plugin step '{step.id}' has no plugin id")
+        plan = prepare_plugin_step(
+            self.project_root,
+            step.plugin_id,
+            step.id,
+            step.plugin_input_values,
+            environ=self.plugin_environ,
+        )
+        if dry_run:
+            return StepExecution(step.id, step.kind, "dry-run", plan, attempts=0)
+
+        if plan.permissions.workspace_write:
+            self._enforce_workspace_write_policy(
+                context,
+                definition,
+                step.id,
+                force=force,
+            )
+
+        delay = step.retry.delay_seconds
+        last_error: str | None = None
+        last_result: PluginResult | None = None
+        last_plan = plan
+        for attempt in range(1, step.retry.max_attempts + 1):
+            try:
+                current_plan, result = execute_plugin_step(
+                    self.project_root,
+                    step.plugin_id,
+                    step.id,
+                    step.plugin_input_values,
+                    registry=self.plugin_executor_registry,
+                    environ=self.plugin_environ,
+                    dry_run=False,
+                )
+                last_plan = current_plan
+                assert result is not None
+                last_result = result
+                last_error = None
+            except Exception as exc:
+                last_error = str(exc)
+                last_result = None
+            else:
+                if result.status == "passed":
+                    artifact = self._persist_plugin_evidence(
+                        context,
+                        definition,
+                        step,
+                        current_plan,
+                        attempts=attempt,
+                        result=result,
+                    )
+                    return StepExecution(
+                        step.id,
+                        step.kind,
+                        "completed",
+                        result,
+                        str(artifact.relative_to(self.project_root)),
+                        attempt,
+                    )
+                last_error = result.summary or "plugin returned failed status"
+            if attempt < step.retry.max_attempts:
+                if delay > 0:
+                    self.sleeper(delay)
+                delay *= step.retry.backoff_multiplier
+
+        artifact = self._persist_plugin_evidence(
+            context,
+            definition,
+            step,
+            last_plan,
+            attempts=step.retry.max_attempts,
+            result=last_result,
+            error=last_error,
+        )
+        return StepExecution(
+            step.id,
+            step.kind,
+            "failed",
+            last_result,
+            f"{last_error or 'plugin failed'}; evidence={artifact.relative_to(self.project_root)}",
+            step.retry.max_attempts,
+        )
 
     def _execute_workflow_step(
         self,
@@ -349,6 +509,24 @@ class Orchestrator:
                 str(artifact.relative_to(self.project_root)),
                 attempts,
             )
+
+        if step.kind == StepKind.PLUGIN:
+            execution = self._execute_plugin_workflow_step(
+                context,
+                definition,
+                step,
+                force=force,
+                dry_run=dry_run,
+            )
+            if dry_run:
+                return execution
+            if execution.status == "completed":
+                state.mark_complete(step.id)
+            else:
+                state.last_status = "failed"
+                state.paused_at = step.id
+            save_workflow_state(context, state)
+            return execution
 
         if step.kind == StepKind.APPROVAL:
             gate = step.gate or step.id
