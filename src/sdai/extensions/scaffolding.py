@@ -210,6 +210,24 @@ def _manifest_scaffold(
     )
     paths = (path,)
     _preflight(paths, force=force)
+    if kind is ScaffoldKind.WORKFLOW_COMPONENT:
+        spec: dict[str, object] = {
+            "inputs": {
+                "step-id": {
+                    "type": "string",
+                    "default": f"{extension_id}-validate",
+                }
+            },
+            "requires": [],
+            "steps": [
+                {
+                    "id": "${{ inputs.step-id }}",
+                    "type": "validate",
+                }
+            ],
+        }
+    else:
+        spec = {}
     payload = {
         "apiVersion": API_VERSION,
         "kind": manifest_kind.value,
@@ -218,7 +236,7 @@ def _manifest_scaffold(
             "version": "0.1.0",
             "description": f"{kind.value} extension {extension_id}",
         },
-        "spec": {},
+        "spec": spec,
     }
     _write(path, yaml.safe_dump(payload, sort_keys=False), force=force)
     return paths
