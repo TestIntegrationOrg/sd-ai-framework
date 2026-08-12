@@ -18,6 +18,76 @@ The extension foundation is additive and backward compatible.
 
 The runtime agent and skill loaders now resolve their canonical source through `ExtensionRegistry`, then parse the existing source format with the same format-specific validation used before the migration. This separates **resolution/provenance** from **file-format semantics**.
 
+## Creating extensions
+
+The installed `sdai` command exposes extension authoring without requiring an engineer to memorize repository layouts:
+
+```bash
+sdai create skill java-security
+sdai create agent performance-engineer
+sdai create workflow service-review
+sdai create workflow-component architecture-review
+sdai create validator java-layering
+sdai create quality-gate mutation-tests
+sdai create integration cursor
+sdai create pack java-enterprise
+```
+
+Use `--path` to target another initialized SDAI repository. Existing scaffold-owned files are never replaced implicitly. Replacement requires explicit `--force`:
+
+```bash
+sdai create skill java-security --force
+```
+
+For multi-file scaffolds such as skills, collision checks run before any file is written so a pre-existing sidecar cannot leave a half-created scaffold.
+
+New authoring IDs use the portable lowercase `sdai/v1` grammar. This is intentionally stricter than the legacy skill loader; old uppercase skill names remain readable, but newly-created extensions are portable across platforms and future pack/catalog storage.
+
+### Immediately usable canonical scaffolds
+
+Three extension types are generated in the canonical formats already executed by SDAI:
+
+```text
+skill     -> .agents/skills/<id>/SKILL.md + sdai.yaml
+agent     -> .sdai/agents/<id>.agent.md
+workflow  -> .sdai/workflows/<id>.yaml
+```
+
+Each generated scaffold is passed through the same public runtime loader immediately after creation. A create command only reports success if the generated content validates.
+
+### Manifest-first scaffolds
+
+Extension types whose full runtime is delivered in later roadmap phases are created as versioned manifests:
+
+```text
+workflow-component -> .sdai/extensions/workflow-components/<id>.yaml
+validator          -> .sdai/extensions/validators/<id>.yaml
+quality-gate       -> .sdai/extensions/quality-gates/<id>.yaml
+integration        -> .sdai/extensions/integrations/<id>.yaml
+pack               -> .sdai/extensions/packs/<id>.yaml
+```
+
+These manifests are valid `sdai/v1` envelopes now, so later runtimes can consume them without changing their identity/provenance contract.
+
+## Validating extensions
+
+Validate a canonical extension by name:
+
+```bash
+sdai extensions validate skill java-security
+sdai extensions validate agent performance-engineer
+sdai extensions validate workflow service-review
+```
+
+Validate manifest-backed extensions by name or by an explicit repository-relative manifest path:
+
+```bash
+sdai extensions validate pack java-enterprise
+sdai extensions validate validator .sdai/extensions/validators/java-layering.yaml
+```
+
+`sdai extension ...` is accepted as a singular alias. Validation uses UTF-8, safe YAML where applicable, path containment, and the format-specific canonical loader for existing agent/skill/workflow formats.
+
 ## Manifest envelope
 
 The first supported external manifest API version is `sdai/v1`.
@@ -90,6 +160,8 @@ from sdai.agent_platform.skills import (
 ```
 
 The `explain_*` functions return `RegistryEntry`, including source path and layer provenance, without changing the canonical file format.
+
+The scaffolding service is available from `sdai.extensions.scaffolding` for non-CLI integrations such as IDEs and future control-plane tooling.
 
 ## Safe file loading
 
@@ -183,4 +255,4 @@ External manifest errors use `SDAI-EXT-*` codes. Registry errors use `SDAI-REG-*
 
 ## What comes next
 
-The next 0.6 work adds extension scaffolding and validation CLI commands, then the engineering constitution/requirements quality layer, behavioral skill/agent evaluations, deterministic version synchronization, and final 0.6 compatibility validation.
+The next 0.6 work adds the engineering constitution and requirements-quality layer, behavioral skill/agent evaluations, deterministic version synchronization, and final 0.6 compatibility validation.

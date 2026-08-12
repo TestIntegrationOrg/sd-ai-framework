@@ -24,7 +24,7 @@ dependencies = ["PyYAML>=6.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-sdai = "sdai.cli:main"
+sdai = "sdai.entrypoint:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
