@@ -34,6 +34,7 @@ from sdai.v05_scaffold import install_v05_scaffold
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflow_templates import install_current_workflows
 from sdai.workflows import grant_approval, load_workflow_state
+from sdai.worktree_isolation import create_worktree_session
 
 
 def project_root(value: str | None) -> Path:
@@ -173,18 +174,57 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 2 if has_blockers(findings) else 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    root = project_root(args.path)
-    ensure_initialized(root)
-    results = Orchestrator(root).run_workflow(args.feature_id, args.workflow)
+def _workflow_exit_code(results: list[StepExecution]) -> int:
     exit_code = 0
     for execution in results:
-        _print_step_execution(execution, root)
         if execution.status == "failed":
             exit_code = 2
         elif execution.status == "paused" and exit_code == 0:
             exit_code = 3
     return exit_code
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    root = project_root(args.path)
+    ensure_initialized(root)
+    if args.isolation == "in-place":
+        results = Orchestrator(root).run_workflow(args.feature_id, args.workflow)
+        for execution in results:
+            _print_step_execution(execution, root)
+        return _workflow_exit_code(results)
+
+    session = create_worktree_session(root, args.feature_id)
+    print(
+        f"Worktree isolation baseline branch={session.baseline.branch} "
+        f"commit={session.baseline.commit} tree={session.baseline.tree}"
+    )
+    print(f"  worktree={session.worktree_path}")
+    print(f"  branch={session.worktree_branch}")
+    print(f"  evidence={session.evidence_path}")
+    try:
+        results = Orchestrator(session.worktree_path).run_workflow(args.feature_id, args.workflow)
+        for execution in results:
+            _print_step_execution(execution, session.worktree_path)
+        exit_code = _workflow_exit_code(results)
+        outcome = "failed" if exit_code == 2 else "paused" if exit_code == 3 else "success"
+        cleanup = session.finalize(
+            outcome,
+            cleanup_requested=args.cleanup_worktree,
+        )
+        print(f"Worktree outcome={outcome} cleanup={cleanup}")
+        if session.worktree_path.exists():
+            print(f"Review isolated changes at {session.worktree_path}")
+        return exit_code
+    except KeyboardInterrupt:
+        cleanup = session.finalize("cancelled", error="execution cancelled")
+        print(f"Worktree outcome=cancelled cleanup={cleanup}", file=sys.stderr)
+        raise
+    except Exception as exc:
+        cleanup = session.finalize("failed", error=str(exc))
+        print(f"Worktree outcome=failed cleanup={cleanup}", file=sys.stderr)
+        if session.worktree_path.exists():
+            print(f"Preserved isolated worktree at {session.worktree_path}", file=sys.stderr)
+        raise
 
 
 def _step_detail(step) -> str:
@@ -568,6 +608,12 @@ def parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="Execute or resume a declarative workflow")
     run.add_argument("feature_id")
     run.add_argument("--workflow", default="standard")
+    run.add_argument("--isolation", choices=["in-place", "worktree"], default="in-place")
+    run.add_argument(
+        "--cleanup-worktree",
+        action="store_true",
+        help="Remove the isolated worktree after success only when it is clean",
+    )
     run.add_argument("--path")
     run.set_defaults(func=cmd_run)
 
