@@ -1,0 +1,13 @@
+version: 1
+capabilities: [architecture, coding, review, testing, security]
+compatible_agents: []
+requires: [python-engineering]
+compatibility:
+  frameworks:
+    django: null
+selection:
+  auto: true
+  roles: []
+  capabilities: [architecture, coding, review, testing, security]
+  task_keywords: []
+  domains: []

@@ -1,0 +1,16 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-python
+  version: 0.1.0
+  description: Tier-1 SDAI language pack for Python.
+spec:
+  type: language
+  languages:
+    - python
+  skills:
+    core:
+      - python-engineering
+    frameworks:
+      - fastapi
+      - django
