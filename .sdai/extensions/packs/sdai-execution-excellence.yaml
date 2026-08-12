@@ -1,0 +1,17 @@
+apiVersion: sdai/v1
+kind: Pack
+metadata:
+  id: sdai-execution-excellence
+  version: 0.1.0
+  description: Provider-neutral execution discipline for planning, implementation, debugging, and verification.
+spec:
+  type: execution
+  skills:
+    - implementation-planning
+    - test-driven-development
+    - systematic-debugging
+    - verification-before-completion
+  workflow_examples:
+    - examples/workflows/execution-excellence.yaml
+  policy_examples:
+    - examples/policies/execution-excellence.yaml

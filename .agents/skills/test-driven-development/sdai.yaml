@@ -1,0 +1,11 @@
+version: 1
+capabilities: [coding, testing]
+compatible_agents: []
+requires: []
+compatibility: {}
+selection:
+  auto: true
+  roles: []
+  capabilities: [coding, testing]
+  task_keywords: [implement, implementation, feature, fix, refactor, change]
+  domains: []

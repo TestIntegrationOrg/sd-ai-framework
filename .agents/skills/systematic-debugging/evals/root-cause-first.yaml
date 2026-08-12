@@ -1,0 +1,21 @@
+version: 1
+id: root-cause-first
+description: Require reproducible evidence and a falsifiable hypothesis before a fix.
+required: true
+prompt: CI is intermittently failing and someone suggests changing several timeouts until it passes.
+assertions:
+  must:
+    - id: REPRODUCE_FAILURE
+      contains: reproduce
+    - id: FORM_HYPOTHESIS
+      contains: hypothesis
+    - id: ROOT_CAUSE
+      contains: root cause
+    - id: REGRESSION_TEST
+      contains: regression test
+  must_not:
+    - id: NO_RANDOM_CHANGES
+      contains: try random changes
+mock:
+  baseline: Try random changes to timeouts and rerun until CI turns green.
+  candidate: Reproduce the failure and capture timing evidence, form one falsifiable hypothesis, isolate the root cause, then make the smallest fix and add a regression test.

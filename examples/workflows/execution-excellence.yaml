@@ -1,0 +1,34 @@
+version: 5
+name: execution-excellence
+validation_mode: standard
+steps:
+  - id: implementation-plan
+    type: agent
+    agent: planner
+    capability: planning
+    mode: advisory
+    save_as: ai/execution-plan.md
+
+  - id: implementation
+    type: agent
+    agent: developer
+    capability: coding
+    mode: workspace-write
+    save_as: ai/implementation.md
+
+  - id: code-review
+    type: agent
+    agent: code-reviewer
+    capability: review
+    mode: advisory
+    save_as: ai/code-review.md
+
+  - id: test-review
+    type: agent
+    agent: tester
+    capability: testing
+    mode: advisory
+    save_as: ai/test-review.md
+
+  - id: validate
+    type: validate
