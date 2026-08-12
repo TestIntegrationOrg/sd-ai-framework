@@ -33,6 +33,11 @@ _DOMAIN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _FEATURE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _REQUIREMENT_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_WINDOWS_RESERVED_PATH_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
 _CHANGE_KEYS = frozenset(
     {"version", "feature_id", "title", "description", "status", "domains", "baselines"}
 )
@@ -64,12 +69,27 @@ def _validate_identifier(value: object, *, label: str, pattern: re.Pattern[str])
     return value
 
 
+def _reject_windows_reserved_path_name(value: str, *, label: str) -> None:
+    # Windows treats reserved DOS device names as invalid path components even
+    # when an extension is present (for example, CON.txt).
+    device_name = value.split(".", 1)[0].upper()
+    if device_name in _WINDOWS_RESERVED_PATH_NAMES:
+        raise _fail(
+            "SDAI-SPEC-001",
+            f"{label} '{value}' is a Windows-reserved path name",
+        )
+
+
 def validate_domain_id(value: object) -> str:
-    return _validate_identifier(value, label="domain", pattern=_DOMAIN_ID)
+    identifier = _validate_identifier(value, label="domain", pattern=_DOMAIN_ID)
+    _reject_windows_reserved_path_name(identifier, label="domain")
+    return identifier
 
 
 def validate_change_feature_id(value: object) -> str:
-    return _validate_identifier(value, label="feature_id", pattern=_FEATURE_ID)
+    identifier = _validate_identifier(value, label="feature_id", pattern=_FEATURE_ID)
+    _reject_windows_reserved_path_name(identifier, label="feature_id")
+    return identifier
 
 
 def validate_requirement_id(value: object, *, label: str = "requirement_id") -> str:
@@ -139,6 +159,11 @@ def _read_text(project_root: Path, path: Path, label: str) -> str:
         return read_utf8_text(safe)
     except TextEncodingError as exc:
         raise _fail("SDAI-SPEC-002", str(exc)) from exc
+    except OSError as exc:
+        raise _fail(
+            "SDAI-SPEC-002",
+            f"unable to read {label}: {exc}",
+        ) from exc
 
 
 def _load_yaml_mapping(
@@ -370,7 +395,7 @@ def _forbid(
     index: int,
     kind: DeltaOperationKind,
 ) -> None:
-    present = [field for field in fields if field in raw and raw.get(field) is not None]
+    present = [field for field in fields if field in raw]
     if present:
         raise _fail(
             "SDAI-SPEC-004",
@@ -472,13 +497,19 @@ def load_delta_document(project_root: Path, path: Path) -> DeltaDocument:
         _parse_operation(item, index)
         for index, item in enumerate(operations_raw, start=1)
     )
-    targets = [operation.requirement_id for operation in operations]
-    duplicates = sorted({target for target in targets if targets.count(target) > 1})
+    addressed_ids: list[str] = []
+    for operation in operations:
+        addressed_ids.append(operation.requirement_id)
+        if operation.new_requirement_id is not None:
+            addressed_ids.append(operation.new_requirement_id)
+    duplicates = sorted(
+        {identifier for identifier in addressed_ids if addressed_ids.count(identifier) > 1}
+    )
     if duplicates:
         raise _fail(
             "SDAI-SPEC-006",
-            "delta document contains multiple operations for the same requirement_id: "
-            + ", ".join(duplicates),
+            "delta document contains multiple operations for the same requirement_id "
+            "or rename destination: " + ", ".join(duplicates),
         )
     return DeltaDocument(
         domain=domain,
