@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from sdai.artifact_state_cli import add_artifact_state_parser, run_artifact_state_command
 from sdai.cli import main as legacy_main, parser as legacy_parser
 from sdai.constitution import (
     check_constitution,
@@ -133,6 +134,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_spec_parser(commands)
     add_tech_parser(commands)
     add_schema_parser(commands)
+    add_artifact_state_parser(commands)
     return parser
 
 
@@ -273,6 +275,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "schema":
         return run_schema_command(root, args)
 
+    if args.managed_command == "artifact":
+        return run_artifact_state_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -300,6 +305,9 @@ def _print_top_level_help() -> None:
         "  sdai tech detect [--json] [--path PATH]\n"
         "\nArtifact schema commands:\n"
         "  sdai schema list|show|validate|graph ...\n"
+        "\nArtifact freshness commands:\n"
+        "  sdai artifact status <feature> [--risk standard] [--domain DOMAIN] [--json]\n"
+        "  sdai artifact explain <feature> <artifact-id> [--risk standard] [--domain DOMAIN] [--json]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -322,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         "spec",
         "tech",
         "schema",
+        "artifact",
     }:
         try:
             return _run_managed_command(effective)
