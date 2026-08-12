@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from sdai.cli import main as legacy_main
+from sdai.cli import main as legacy_main, parser as legacy_parser
 from sdai.extensions.scaffolding import (
     ScaffoldKind,
     create_extension_scaffold,
@@ -80,8 +80,22 @@ def _run_extension_command(argv: list[str]) -> int:
     raise ValueError(f"Unknown extension command: {args.extension_command}")
 
 
+def _print_top_level_help() -> None:
+    print(legacy_parser().format_help().rstrip())
+    print(
+        "\nExtension authoring commands:\n"
+        "  sdai create <kind> <name> [--path PATH] [--force]\n"
+        "  sdai extensions validate <kind> <name-or-manifest> [--path PATH]\n"
+        "\nExtension kinds: "
+        + ", ".join(item.value for item in ScaffoldKind)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     effective = list(sys.argv[1:] if argv is None else argv)
+    if effective and effective[0] in {"-h", "--help"}:
+        _print_top_level_help()
+        return 0
     if effective and effective[0] in {"create", "extension", "extensions"}:
         try:
             return _run_extension_command(effective)
