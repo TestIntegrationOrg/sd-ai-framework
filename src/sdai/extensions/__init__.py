@@ -1,3 +1,8 @@
+from sdai.extensions.loading import (
+    ExtensionSource,
+    build_extension_registry,
+    register_extension_source,
+)
 from sdai.extensions.manifests import (
     API_VERSION,
     ExtensionKind,
@@ -25,9 +30,12 @@ __all__ = [
     "ExtensionMetadata",
     "ExtensionRegistry",
     "ExtensionRegistryError",
+    "ExtensionSource",
     "RegistryEntry",
     "RegistryLayer",
+    "build_extension_registry",
     "load_extension_manifest",
     "parse_extension_manifest",
     "parse_extension_manifest_text",
+    "register_extension_source",
 ]
