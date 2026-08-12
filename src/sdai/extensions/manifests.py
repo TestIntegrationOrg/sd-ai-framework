@@ -48,7 +48,7 @@ class ExtensionManifest:
 
 _TOP_LEVEL_KEYS = frozenset({"apiVersion", "kind", "metadata", "spec"})
 _METADATA_KEYS = frozenset({"id", "version", "description"})
-_EXTENSION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_EXTENSION_ID = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$")
 _SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -68,6 +68,14 @@ def _require_mapping(value: object, *, code: str, label: str) -> Mapping[str, An
 
 def _unknown_keys(value: Mapping[str, Any], allowed: frozenset[str]) -> list[str]:
     return sorted(str(key) for key in value.keys() if key not in allowed)
+
+
+def _valid_extension_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(_EXTENSION_ID.fullmatch(value))
+        and ".." not in value
+    )
 
 
 def parse_extension_manifest(
@@ -118,11 +126,12 @@ def parse_extension_manifest(
         )
 
     extension_id = metadata.get("id")
-    if not isinstance(extension_id, str) or not _EXTENSION_ID.fullmatch(extension_id):
+    if not _valid_extension_id(extension_id):
         raise _error(
             "SDAI-EXT-007",
-            "metadata.id must start with a lowercase letter or number and use only "
-            "lowercase letters, numbers, dot, underscore, or hyphen (max 128 characters)",
+            "metadata.id must start and end with a lowercase letter or number, use only "
+            "lowercase letters, numbers, dot, underscore, or hyphen, and must not contain "
+            "'..' (max 128 characters)",
         )
 
     version = metadata.get("version")
