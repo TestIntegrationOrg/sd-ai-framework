@@ -91,6 +91,15 @@ def _safe(root: Path, relative: Path, *, label: str) -> Path:
     return ensure_within_project(root, root / relative, label=label)
 
 
+def _preflight(paths: tuple[Path, ...], *, force: bool) -> None:
+    if force:
+        return
+    collisions = [path for path in paths if path.exists()]
+    if collisions:
+        joined = ", ".join(str(path) for path in collisions)
+        raise FileExistsError(f"extension scaffold already exists: {joined}")
+
+
 def _write(path: Path, content: str, *, force: bool) -> Path:
     return write_text(path, content, overwrite=force)
 
@@ -101,8 +110,10 @@ def _skill_scaffold(root: Path, extension_id: str, *, force: bool) -> tuple[Path
         Path(".agents") / "skills" / extension_id,
         label="skill scaffold path",
     )
-    skill_md = _write(
-        skill_root / "SKILL.md",
+    paths = (skill_root / "SKILL.md", skill_root / "sdai.yaml")
+    _preflight(paths, force=force)
+    _write(
+        paths[0],
         f"""---
 name: {extension_id}
 description: Use when this reusable engineering skill applies.
@@ -114,12 +125,8 @@ Describe the engineering technique, constraints, decision points, and examples h
 """,
         force=force,
     )
-    sidecar = _write(
-        skill_root / "sdai.yaml",
-        "capabilities: []\n",
-        force=force,
-    )
-    return (skill_md, sidecar)
+    _write(paths[1], "capabilities: []\n", force=force)
+    return paths
 
 
 def _agent_scaffold(root: Path, extension_id: str, *, force: bool) -> tuple[Path, ...]:
@@ -128,7 +135,9 @@ def _agent_scaffold(root: Path, extension_id: str, *, force: bool) -> tuple[Path
         Path(".sdai") / "agents" / f"{extension_id}.agent.md",
         label="agent scaffold path",
     )
-    created = _write(
+    paths = (path,)
+    _preflight(paths, force=force)
+    _write(
         path,
         f"""---
 name: {extension_id}
@@ -144,7 +153,7 @@ Operate only within the assigned capability and approved SDAI artifacts. State a
 """,
         force=force,
     )
-    return (created,)
+    return paths
 
 
 def _workflow_scaffold(root: Path, extension_id: str, *, force: bool) -> tuple[Path, ...]:
@@ -153,7 +162,9 @@ def _workflow_scaffold(root: Path, extension_id: str, *, force: bool) -> tuple[P
         Path(".sdai") / "workflows" / f"{extension_id}.yaml",
         label="workflow scaffold path",
     )
-    created = _write(
+    paths = (path,)
+    _preflight(paths, force=force)
+    _write(
         path,
         f"""version: 5
 name: {extension_id}
@@ -164,7 +175,7 @@ steps:
 """,
         force=force,
     )
-    return (created,)
+    return paths
 
 
 def _manifest_scaffold(
@@ -181,6 +192,8 @@ def _manifest_scaffold(
         Path(".sdai") / "extensions" / directory / f"{extension_id}.yaml",
         label=f"{kind.value} scaffold path",
     )
+    paths = (path,)
+    _preflight(paths, force=force)
     payload = {
         "apiVersion": API_VERSION,
         "kind": manifest_kind.value,
@@ -191,8 +204,8 @@ def _manifest_scaffold(
         },
         "spec": {},
     }
-    created = _write(path, yaml.safe_dump(payload, sort_keys=False), force=force)
-    return (created,)
+    _write(path, yaml.safe_dump(payload, sort_keys=False), force=force)
+    return paths
 
 
 def create_extension_scaffold(
@@ -247,7 +260,9 @@ def validate_extension_scaffold(
         return None
 
     expected_kind = _KIND_TO_EXTENSION[scaffold_kind]
-    manifest = load_extension_manifest(root, _manifest_path(root, scaffold_kind, target))
+    manifest = load_extension_manifest(
+        root, _manifest_path(root, scaffold_kind, target)
+    )
     if manifest.kind is not expected_kind:
         raise ValueError(
             f"expected {expected_kind.value} manifest for {scaffold_kind.value}, "
