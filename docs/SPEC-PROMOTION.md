@@ -41,9 +41,11 @@ hash-bound promotion approval
        ↓
 acquire local promotion lock
        ↓
-re-validate + re-render under lock
+re-validate + re-evaluate current approval policy
        ↓
 stage every affected domain
+       ↓
+verify each current pre-image immediately before replacement
        ↓
 replace canonical domain files
        ↓
@@ -124,7 +126,7 @@ The existing `.sdai/approval-policies.yaml` policy named `spec-promotion` may re
 - required roles
 - allowed approver identities
 
-If no explicit policy exists, one distinct approval is required.
+If no explicit policy exists, one distinct approval is required. Approval evaluation always re-applies the **current** allowlist and required-role policy. An identity that was allowed when an approval was recorded stops counting if organization/repository policy later removes that identity.
 
 ### Current identity limitation
 
@@ -132,13 +134,13 @@ If no explicit policy exists, one distinct approval is required.
 
 ## Transaction and rollback
 
-Before mutation, SDAI stages every proposed current file on the same filesystem. It then replaces target files and verifies the resulting SHA-256 values.
+Before mutation, SDAI stages every proposed current file on the same filesystem. Immediately before replacing each target, SDAI reads that target's exact bytes and verifies its normalized SHA-256 against the approved `before_sha256`. If a non-cooperating writer changed or created current truth after validation, promotion stops instead of overwriting the newer bytes.
 
-If a caught error occurs before the change workspace is archived, SDAI restores every already-replaced current domain from its exact original bytes (or removes a newly-created domain file). The integration tests inject a failure on the second domain replacement and require the first domain to be byte-for-byte restored.
+If a caught error occurs before the change workspace is archived, SDAI restores every already-replaced current domain from the exact bytes captured immediately before its replacement (or removes a newly-created domain file). Tests cover both an injected second-domain write failure and a concurrent change arriving before the second replacement.
 
 This provides process-level transactional behavior for handled failures. It is not a distributed transaction or a guarantee against machine/power loss between filesystem operations. Stronger durable ledger/recovery behavior is planned in the later execution-ledger/provenance milestones.
 
-A repository-local lock prevents two SDAI promotion processes from intentionally writing current truth concurrently.
+A repository-local lock prevents two SDAI promotion processes from intentionally writing current truth concurrently. The immediate pre-image check additionally protects against writers that do not honor that lock.
 
 ## Promotion evidence and archive
 
@@ -151,7 +153,13 @@ A successful promotion writes `promotion.yaml` into the change workspace with:
 - semantic changes
 - parallel-conflict evidence
 
-The entire change workspace is then moved to a unique archive path. There is no public API in this slice that edits archived promotion evidence.
+The entire change workspace is then moved outside the active-change namespace:
+
+```text
+specs/archive/changes/<FEATURE>/<PROMOTION-ID>/
+```
+
+This prevents archived content from being rediscovered as an active change and allows a valid feature identifier such as `archive` without a namespace collision. The archive move is the final fallible filesystem operation in the success path; there is no public API in this slice that edits archived promotion evidence.
 
 ## Error codes
 
@@ -161,7 +169,7 @@ The entire change workspace is then moved to a unique archive path. There is no 
 | `SDAI-SPECPROMO-002` | current Markdown cannot be rendered deterministically |
 | `SDAI-SPECPROMO-003` | rendered proposed truth does not match delta semantics |
 | `SDAI-SPECPROMO-004` | approval missing, stale, malformed, or policy-invalid |
-| `SDAI-SPECPROMO-005` | change/evidence changed during promotion preparation |
+| `SDAI-SPECPROMO-005` | change/evidence/current pre-image changed during promotion preparation |
 | `SDAI-SPECPROMO-006` | concurrent local promotion lock exists |
 | `SDAI-SPECPROMO-007` | transaction/write verification failed and was rolled back |
 | `SDAI-SPECPROMO-008` | archive/evidence collision |
