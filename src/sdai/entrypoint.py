@@ -11,6 +11,7 @@ from sdai.constitution import (
     load_constitution,
     write_constitution_evidence,
 )
+from sdai.evals import MockEvalExecutor, run_behavioral_eval
 from sdai.extensions.scaffolding import (
     ScaffoldKind,
     create_extension_scaffold,
@@ -31,6 +32,30 @@ def _root(value: str | None) -> Path:
 def _ensure_initialized(root: Path) -> None:
     if not (root / ".sdai" / "config.yaml").exists():
         raise RuntimeError("Not an SD-AI project. Run `sdai init` first.")
+
+
+def _add_eval_parser(
+    commands: argparse._SubParsersAction,
+    target_type: str,
+) -> None:
+    target = commands.add_parser(
+        target_type,
+        help=f"Evaluate a {target_type} with behavioral scenarios",
+    )
+    target_sub = target.add_subparsers(
+        dest=f"{target_type}_action",
+        required=True,
+    )
+    evaluate = target_sub.add_parser("eval")
+    evaluate.add_argument("name")
+    evaluate.add_argument("--provider", choices=["mock"], default="mock")
+    evaluate.add_argument(
+        "--require-improvement",
+        action="store_true",
+        help="Fail unless aggregate candidate score is strictly better than baseline",
+    )
+    evaluate.add_argument("--json", action="store_true")
+    evaluate.add_argument("--path")
 
 
 def _managed_parser() -> argparse.ArgumentParser:
@@ -96,6 +121,9 @@ def _managed_parser() -> argparse.ArgumentParser:
     requirements_check = requirements_sub.add_parser("check")
     requirements_check.add_argument("feature")
     requirements_check.add_argument("--path")
+
+    _add_eval_parser(commands, "skill")
+    _add_eval_parser(commands, "agent")
     return parser
 
 
@@ -103,6 +131,37 @@ def _portable_relative(path: Path, root: Path) -> str:
     """Render repository paths consistently across Windows, macOS, and Linux."""
 
     return path.relative_to(root).as_posix()
+
+
+def _run_eval(root: Path, target_type: str, args: argparse.Namespace) -> int:
+    if args.provider != "mock":
+        raise ValueError(
+            f"Behavioral eval provider '{args.provider}' is not supported in v1; use mock"
+        )
+    report = run_behavioral_eval(
+        root,
+        target_type,
+        args.name,
+        executor=MockEvalExecutor(),
+        require_improvement=args.require_improvement,
+    )
+    if args.json:
+        print(report.to_json())
+    else:
+        print(
+            f"{target_type.capitalize()} eval target={args.name} "
+            f"provider={report.provider} model={report.model} "
+            f"baseline={report.baseline_score:.2f} candidate={report.candidate_score:.2f} "
+            f"delta={report.delta:+.2f} passed={str(report.passed).lower()}"
+        )
+        for result in report.scenarios:
+            status = "PASS" if result.passed else "FAIL"
+            regression = " regression" if result.regression else ""
+            print(
+                f"  {status:4} {result.id} baseline={result.baseline_score:.2f} "
+                f"candidate={result.candidate_score:.2f} delta={result.delta:+.2f}{regression}"
+            )
+    return 0 if report.passed else 1
 
 
 def _run_managed_command(argv: list[str]) -> int:
@@ -187,6 +246,12 @@ def _run_managed_command(argv: list[str]) -> int:
             )
             return 1 if report.blocking_failures else 0
 
+    if args.managed_command == "skill" and args.skill_action == "eval":
+        return _run_eval(root, "skill", args)
+
+    if args.managed_command == "agent" and args.agent_action == "eval":
+        return _run_eval(root, "agent", args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -200,6 +265,9 @@ def _print_top_level_help() -> None:
         "  sdai constitution init|show|validate|check ...\n"
         "  sdai clarify <feature> [--path PATH]\n"
         "  sdai requirements check <feature> [--path PATH]\n"
+        "\nBehavioral evaluation commands:\n"
+        "  sdai skill eval <name> [--provider mock] [--require-improvement] [--json]\n"
+        "  sdai agent eval <name> [--provider mock] [--require-improvement] [--json]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -217,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
         "constitution",
         "clarify",
         "requirements",
+        "skill",
+        "agent",
     }:
         try:
             return _run_managed_command(effective)
