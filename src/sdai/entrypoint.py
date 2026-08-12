@@ -22,6 +22,7 @@ from sdai.requirements_quality import (
     write_clarifications,
     write_requirements_checklist,
 )
+from sdai.skill_cli import add_skill_resolution_parser, run_skill_resolution_command
 from sdai.spec_cli import add_spec_parser, run_spec_command
 from sdai.tech_cli import add_tech_parser, run_tech_command
 from sdai.text import read_utf8_text
@@ -42,7 +43,7 @@ def _add_eval_parser(
 ) -> None:
     target = commands.add_parser(
         target_type,
-        help=f"Evaluate a {target_type} with behavioral scenarios",
+        help=f"Evaluate or inspect a {target_type}",
     )
     target_sub = target.add_subparsers(
         dest=f"{target_type}_action",
@@ -58,6 +59,8 @@ def _add_eval_parser(
     )
     evaluate.add_argument("--json", action="store_true")
     evaluate.add_argument("--path")
+    if target_type == "skill":
+        add_skill_resolution_parser(target_sub)
 
 
 def _managed_parser() -> argparse.ArgumentParser:
@@ -250,8 +253,11 @@ def _run_managed_command(argv: list[str]) -> int:
             )
             return 1 if report.blocking_failures else 0
 
-    if args.managed_command == "skill" and args.skill_action == "eval":
-        return _run_eval(root, "skill", args)
+    if args.managed_command == "skill":
+        if args.skill_action == "eval":
+            return _run_eval(root, "skill", args)
+        if args.skill_action == "resolve":
+            return run_skill_resolution_command(root, args)
 
     if args.managed_command == "agent" and args.agent_action == "eval":
         return _run_eval(root, "agent", args)
@@ -278,6 +284,8 @@ def _print_top_level_help() -> None:
         "\nBehavioral evaluation commands:\n"
         "  sdai skill eval <name> [--provider mock] [--require-improvement] [--json]\n"
         "  sdai agent eval <name> [--provider mock] [--require-improvement] [--json]\n"
+        "\nSkill resolution commands:\n"
+        "  sdai skill resolve --agent <role> --capability <capability> [--task TEXT] [--domain NAME] [--skill NAME] [--json]\n"
         "\nCurrent specification commands:\n"
         "  sdai spec validate <feature> [--json]\n"
         "  sdai spec diff <feature> [--json] [--include-content]\n"
