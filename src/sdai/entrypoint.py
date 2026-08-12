@@ -23,6 +23,7 @@ from sdai.requirements_quality import (
     write_requirements_checklist,
 )
 from sdai.spec_cli import add_spec_parser, run_spec_command
+from sdai.tech_cli import add_tech_parser, run_tech_command
 from sdai.text import read_utf8_text
 
 
@@ -126,6 +127,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     _add_eval_parser(commands, "skill")
     _add_eval_parser(commands, "agent")
     add_spec_parser(commands)
+    add_tech_parser(commands)
     return parser
 
 
@@ -257,6 +259,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "spec":
         return run_spec_command(root, args)
 
+    if args.managed_command == "tech":
+        return run_tech_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -278,6 +283,8 @@ def _print_top_level_help() -> None:
         "  sdai spec diff <feature> [--json] [--include-content]\n"
         "  sdai spec approve <feature> --by <identity> [--role ROLE] [--note NOTE]\n"
         "  sdai spec promote <feature> [--dry-run] [--json] [--include-content]\n"
+        "\nTechnology commands:\n"
+        "  sdai tech detect [--json] [--path PATH]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -298,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         "skill",
         "agent",
         "spec",
+        "tech",
     }:
         try:
             return _run_managed_command(effective)
