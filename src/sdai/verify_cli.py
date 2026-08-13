@@ -67,8 +67,12 @@ def _human(report) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    effective = list(argv or [])
+    if not effective or effective[0] in {"-h", "--help"}:
+        print(_parser().format_help().rstrip())
+        return 0
     try:
-        args = _parser().parse_args(list(argv or []))
+        args = _parser().parse_args(effective)
         root = _root(args.path)
         _ensure_initialized(root)
         report = verify_feature(root, args.feature, risk=args.risk)
