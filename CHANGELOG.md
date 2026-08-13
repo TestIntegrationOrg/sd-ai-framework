@@ -2,6 +2,29 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — 0.9 analysis + durable execution truth
+
+### Added
+- Provider-independent `sdai.analysis-index/v1` facts and `sdai.findings/v1` deterministic cross-artifact analysis across requirements, architecture/ADR, contracts, tasks, tests, threats, approvals, and artifact freshness.
+- Read-only `sdai analyze FEATURE [--risk ...] [--json]` with source/line evidence and CI-stable exit semantics.
+- Append-safe durable execution ledger with canonical hash-chained JSONL events, strict task/run transitions, atomic task/evidence/checkpoint records, crash-safe advisory locking, and current Git/artifact SHA-256 completion bindings.
+- Exact `sdai execution status` / `sdai execution resume` semantics that use original task registration order, current Git/evidence identity, compare-and-append reservations, and durable dispatch idempotency tokens instead of chat/model memory.
+- Provider-neutral `debugger` semantic agent, strengthened `systematic-debugging` behavioral evals, and deterministic `sdai.debug-record/v1` root-cause evidence.
+- Generic required-completion-evidence declarations so a task can require a completion-ready evidence contract from the current attempt before `task.completed` is legal.
+
+### Security, compatibility, and hardening
+- Analysis is byte-for-byte read-only; duplicate/conflicting facts remain inspectable and deterministic finding rules do not mutate source-of-truth artifacts.
+- Ledger corruption, truncation, sequence/hash mismatch, invalid transitions, forged completion bindings, stale checkpoints, and conflicting terminal events fail closed.
+- Resume skips completed work only while the recorded completion commit remains reachable from current `HEAD` and all bound artifact/evidence bytes still match; dirty engineering workspaces block resume.
+- Interrupted started tasks reuse their existing dispatch token; competing resume writers use compare-and-append semantics rather than creating independent reservations.
+- Debugger completion requires confirmed root cause, supported hypothesis/experiment evidence, a recorded fix, and passing regression evidence; previous-attempt or non-ready evidence cannot authorize completion.
+- Semantic debugger identity and evidence schema remain independent from provider/model choice, while existing developer/tester systematic-debugging compatibility is preserved.
+- Windows/Linux and UTF-8 behavior is covered by real Git workspaces with spaces, `Ω`, `Δ`, and `café`.
+- Existing 0.6, 0.7, and 0.8 release compatibility gates remain enabled and part of the full 0.9 regression gate.
+
+### Release gate
+The 0.9 implementation slice is considered complete only when the entire repository suite passes on Ubuntu and Windows for Python 3.11 and 3.12, including `tests/test_v06_release_compatibility.py`, `tests/test_v07_release_compatibility.py`, `tests/test_v08_release_compatibility.py`, and `tests/test_v09_release_compatibility.py`, with no unresolved actionable review finding on the exact merge head. Package/tag publication remains a separate intentional release action.
+
 ## Unreleased — 0.8 artifact graph + workflow composition + isolation
 
 ### Added
