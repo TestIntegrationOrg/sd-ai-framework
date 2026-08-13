@@ -2,6 +2,28 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — 0.10 traceability graph + typed evidence
+
+### Added
+- Canonical provider-independent `sdai.trace-graph/v1` model with typed requirement/scenario/RFC/ADR/component/contract/threat/task/code/test/approval/evidence nodes, typed relationships, deterministic identities, and source:line provenance.
+- Canonical `sdai.trace-evidence/v1` records for execution/test/quality/security/approval/review/operational proof, separating provider/model producer metadata from evidence truth hashes.
+- Read-only graph construction across specification artifacts, architecture, contracts, tasks, repository code/tests, threats, approvals, and typed evidence, with unresolved/ambiguous relationships preserved as deterministic gaps rather than guessed links.
+- Evidence freshness evaluation bound to current Git reachability and SHA-256 content bindings, including integration with 0.8 artifact freshness and durable 0.9 evidence bindings.
+- Read-only `sdai trace`, `trace requirement`, `trace missing`, `trace coverage`, and exact canonical `trace export --format json` commands with stable human/JSON output and CI exit semantics.
+- Risk-based `sdai trace policy` gates across current requirement proof, task linkage, code linkage, test verification, security evidence, and approval evidence.
+- Built-in → organization → repository → user trace-policy layering with monotonic non-weakening thresholds and effective-threshold provenance.
+
+### Security, compatibility, and hardening
+- Stale, missing, blocked, failed, disconnected-history, changed-source, changed-test, and changed-contract proof cannot satisfy current trace coverage.
+- Critical and regulated policies require 100% coverage across all six trace dimensions by default; organization minima cannot be weakened by repository or user policy.
+- Canonical graph truth remains unchanged when only evidence producer/provider/model metadata changes.
+- Repository source identities remain ASCII-stable while UTF-8 paths such as `café`, `Ω`, and `Δ` remain readable in provenance and metadata across Windows/Linux.
+- Trace inspection, requirement queries, missing-link queries, coverage, policy evaluation, and export remain byte-for-byte read-only against repository artifacts.
+- Existing 0.6, 0.7, 0.8, and 0.9 compatibility gates remain enabled and part of the full 0.10 regression gate.
+
+### Release gate
+The 0.10 implementation slice is considered complete only when the entire repository suite passes on the exact candidate head on Ubuntu and Windows for Python 3.11 and 3.12, including `tests/test_v06_release_compatibility.py`, `tests/test_v07_release_compatibility.py`, `tests/test_v08_release_compatibility.py`, `tests/test_v09_release_compatibility.py`, and `tests/test_v010_release_compatibility.py`, with no unresolved actionable review finding. `docs/V010-RELEASE-READINESS.md` records the integrated acceptance evidence. Package/tag publication remains a separate intentional release action.
+
 ## Unreleased — 0.9 analysis + durable execution truth
 
 ### Added
