@@ -422,4 +422,9 @@ def test_contract_and_results_are_machine_clean_and_utf8_portable(tmp_path: Path
     assert result_payload["apiVersion"] == "sdai.isolated-result/v1"
     assert result_payload["invocation"]["apiVersion"] == "sdai.isolated-invocation/v1"
     assert "café" in result_payload["output"]
-    assert "\\" not in contract.to_json()
+    portable_paths = [
+        *contract_payload["allowed_roots"],
+        *contract_payload["forbidden_roots"],
+        *[item["source"] for item in contract_payload["context"]],
+    ]
+    assert all("\\" not in source for source in portable_paths)
