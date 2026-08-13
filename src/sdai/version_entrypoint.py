@@ -5,6 +5,7 @@ import sys
 
 from sdai import __version__
 from sdai.entrypoint import main as lifecycle_main
+from sdai.trace_cli import main as trace_main
 from sdai.versioning import write_framework_metadata
 
 
@@ -22,6 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     if effective in (["--version"], ["-V"]):
         print(f"sdai {__version__}")
         return 0
+
+    if effective and effective[0] == "trace":
+        return trace_main(effective[1:])
 
     result = lifecycle_main(effective)
     if result == 0 and effective and effective[0] in {"init", "upgrade"}:
