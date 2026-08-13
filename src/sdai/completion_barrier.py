@@ -6,8 +6,8 @@ import tempfile
 from typing import Mapping
 
 from sdai.completion_change_checks import final_review_finding, verification_finding
-from sdai.completion_policy import CompletionDimension, CompletionStage, required_dimensions
-from sdai.completion_report import COMPLETION_BARRIER_API_VERSION, CompletionBarrierReport, CompletionFinding
+from sdai.completion_policy import CompletionDimension, CompletionStage, required_dimensions, resolve_completion_risk
+from sdai.completion_report import CompletionBarrierReport, CompletionFinding
 from sdai.completion_review_checks import code_review_finding, current_ledger_attempt, git_head, review_finding
 from sdai.completion_trace_checks import typed_evidence_finding
 from sdai.convergence import RemediationTask
@@ -46,24 +46,44 @@ def evaluate_task_completion(
     task: RemediationTask,
     *,
     attempt: int,
-    risk: str = "standard",
+    risk: str | None = None,
     typed_evidence_paths: Mapping[str, Path | str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> CompletionBarrierReport:
     root = project_root.resolve()
     if ledger.project_root != root or ledger.manifest.feature_id != task.feature_id:
         raise CompletionBarrierError("SDAI-COMPLETE-001: ledger/task/project identities do not match")
+    selected_risk = resolve_completion_risk(root, task.feature_id, risk)
     head = git_head(root)
-    required = required_dimensions(root, risk, CompletionStage.TASK, environ=environ)
+    required = required_dimensions(root, selected_risk, CompletionStage.TASK, environ=environ)
     current_attempt = current_ledger_attempt(ledger, task.task_id)
     if attempt != current_attempt:
         findings = tuple(
-            CompletionFinding(item, "wrong-attempt", f"requested attempt {attempt} is not current ledger attempt {current_attempt}")
+            CompletionFinding(
+                item,
+                "wrong-attempt",
+                f"requested attempt {attempt} is not current ledger attempt {current_attempt}",
+            )
             for item in required
         )
-        return CompletionBarrierReport(task.feature_id, CompletionStage.TASK, f"task:{task.task_id}", risk, head, attempt, required, findings)
+        return CompletionBarrierReport(
+            task.feature_id,
+            CompletionStage.TASK,
+            f"task:{task.task_id}",
+            selected_risk,
+            head,
+            attempt,
+            required,
+            findings,
+        )
 
-    implementation = latest_stage_result(root, task.feature_id, task.task_id, attempt, IsolatedStage.IMPLEMENT)
+    implementation = latest_stage_result(
+        root,
+        task.feature_id,
+        task.task_id,
+        attempt,
+        IsolatedStage.IMPLEMENT,
+    )
     paths = typed_evidence_paths or {}
     findings: list[CompletionFinding] = []
     for dimension in required:
@@ -92,12 +112,18 @@ def evaluate_task_completion(
                 )
             )
         else:
-            findings.append(CompletionFinding(dimension, "blocked", "dimension is not valid for task completion"))
+            findings.append(
+                CompletionFinding(
+                    dimension,
+                    "blocked",
+                    "dimension is not valid for task completion",
+                )
+            )
     return CompletionBarrierReport(
         task.feature_id,
         CompletionStage.TASK,
         f"task:{task.task_id}",
-        risk,
+        selected_risk,
         head,
         attempt,
         required,
@@ -109,21 +135,24 @@ def evaluate_change_completion(
     project_root: Path,
     ledger: ExecutionLedger,
     *,
-    risk: str = "standard",
-    final_attempt: int = 1,
+    risk: str | None = None,
+    final_attempt: int | None = None,
     typed_evidence_paths: Mapping[str, Path | str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> CompletionBarrierReport:
     root = project_root.resolve()
+    if ledger.project_root != root:
+        raise CompletionBarrierError("SDAI-COMPLETE-001: ledger/project identities do not match")
+    selected_risk = resolve_completion_risk(root, ledger.manifest.feature_id, risk)
     head = git_head(root)
-    required = required_dimensions(root, risk, CompletionStage.CHANGE, environ=environ)
+    required = required_dimensions(root, selected_risk, CompletionStage.CHANGE, environ=environ)
     paths = typed_evidence_paths or {}
     state = ledger.reconstruct()
     incomplete = sorted(item.task_id for item in state.tasks if item.status != "completed")
     findings: list[CompletionFinding] = []
     for dimension in required:
         if dimension is CompletionDimension.FINAL_REVIEW:
-            finding = final_review_finding(root, ledger.manifest.feature_id, head=head, final_attempt=final_attempt)
+            finding = final_review_finding(root, ledger, head=head, final_attempt=final_attempt)
             if incomplete and finding.satisfied:
                 finding = CompletionFinding(
                     dimension,
@@ -133,7 +162,7 @@ def evaluate_change_completion(
                 )
             findings.append(finding)
         elif dimension is CompletionDimension.VERIFICATION:
-            findings.append(verification_finding(root, ledger, head=head, risk=risk, environ=environ))
+            findings.append(verification_finding(root, ledger, head=head, risk=selected_risk, environ=environ))
         elif dimension in _TYPED:
             findings.append(
                 typed_evidence_finding(
@@ -141,16 +170,22 @@ def evaluate_change_completion(
                     dimension,
                     paths.get(dimension.value),
                     head=head,
-                    expected_subjects={f"feature:{ledger.manifest.feature_id}"},
+                    expected_subjects={f"feature:ledger.manifest.feature_id"},
                 )
             )
         else:
-            findings.append(CompletionFinding(dimension, "blocked", "dimension is not valid for change completion"))
+            findings.append(
+                CompletionFinding(
+                    dimension,
+                    "blocked",
+                    "dimension is not valid for change completion",
+                )
+            )
     return CompletionBarrierReport(
         ledger.manifest.feature_id,
         CompletionStage.CHANGE,
         f"feature:{ledger.manifest.feature_id}",
-        risk,
+        selected_risk,
         head,
         None,
         required,
@@ -189,7 +224,11 @@ def _persist_report(root: Path, report: CompletionBarrierReport) -> Path:
     return path
 
 
-def _bindings_for_report(root: Path, ledger: ExecutionLedger, report: CompletionBarrierReport) -> tuple[HashBinding, ...]:
+def _bindings_for_report(
+    root: Path,
+    ledger: ExecutionLedger,
+    report: CompletionBarrierReport,
+) -> tuple[HashBinding, ...]:
     bindings: dict[tuple[str, str], HashBinding] = {}
     report_binding = ledger.binding_for_file(_persist_report(root, report), kind="evidence")
     bindings[(report_binding.kind, report_binding.source)] = report_binding
@@ -236,16 +275,37 @@ def _append_task_evidence(
         )
 
 
+def _task_completed_event(ledger: ExecutionLedger, task_id: str) -> LedgerEvent | None:
+    state = ledger.reconstruct()
+    task_state = state.task_map().get(task_id)
+    if task_state is None or task_state.status != "completed" or task_state.terminal_event_id is None:
+        return None
+    return next((event for event in ledger.load_events() if event.event_id == task_state.terminal_event_id), None)
+
+
+def _run_completed_event(ledger: ExecutionLedger) -> LedgerEvent | None:
+    state = ledger.reconstruct()
+    if state.status != "completed":
+        return None
+    return next((event for event in reversed(ledger.load_events()) if event.kind == "run.completed"), None)
+
+
 def complete_isolated_task(
     project_root: Path,
     ledger: ExecutionLedger,
     task: RemediationTask,
     *,
     attempt: int,
-    risk: str = "standard",
+    risk: str | None = None,
     typed_evidence_paths: Mapping[str, Path | str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> LedgerEvent:
+    existing = _task_completed_event(ledger, task.task_id)
+    if existing is not None:
+        return existing
+    task_state = ledger.reconstruct().task_map().get(task.task_id)
+    if task_state is not None and task_state.status == "failed":
+        raise CompletionBarrierError("SDAI-COMPLETE-003: task is already terminal with failed status")
     report = evaluate_task_completion(
         project_root,
         ledger,
@@ -256,7 +316,7 @@ def complete_isolated_task(
         environ=environ,
     )
     if not report.passed:
-        detail = "; ".join(f"{item.dimension.value}:{item.status}:{item.reason}" for item in report.findings if not item.satisfied)
+        detail = ";".join(f"{item.dimension.value}:{item.status}:{item.reason}" for item in report.findings if not item.satisfied)
         raise CompletionBarrierError(f"SDAI-COMPLETE-003: task completion blocked: {detail}")
     root = project_root.resolve()
     bindings = _bindings_for_report(root, ledger, report)
@@ -274,11 +334,17 @@ def complete_isolated_run(
     project_root: Path,
     ledger: ExecutionLedger,
     *,
-    risk: str = "standard",
-    final_attempt: int = 1,
+    risk: str | None = None,
+    final_attempt: int | None = None,
     typed_evidence_paths: Mapping[str, Path | str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> LedgerEvent:
+    existing = _run_completed_event(ledger)
+    if existing is not None:
+        return existing
+    run_state = ledger.reconstruct()
+    if run_state.status in {"failed", "cancelled"}:
+        raise CompletionBarrierError(f"SDAI-COMPLETE-004: run is already terminal with {run_state.status} status")
     report = evaluate_change_completion(
         project_root,
         ledger,
@@ -288,7 +354,7 @@ def complete_isolated_run(
         environ=environ,
     )
     if not report.passed:
-        detail = "; ".join(f"{item.dimension.value}:{item.status}:{item.reason}" for item in report.findings if not item.satisfied)
+        detail = ";".join(f"{item.dimension.value}:{item.status}:{item.reason}" for item in report.findings if not item.satisfied)
         raise CompletionBarrierError(f"SDAI-COMPLETE-004: change completion blocked: {detail}")
     root = project_root.resolve()
     bindings = _bindings_for_report(root, ledger, report)
