@@ -14,6 +14,12 @@ from sdai.isolated_tasks import (
     IsolatedTaskError,
     PreparedIsolatedInvocation,
     execute_isolated_invocation,
+    load_persisted_contract,
+)
+from sdai.isolated_workspace import (
+    IsolatedWorkspaceError,
+    current_head,
+    render_workspace_snapshot,
 )
 from sdai.path_safety import ensure_within_project
 
@@ -47,24 +53,86 @@ def _context_file(root: Path, source: str) -> Path:
     return path
 
 
+def _workspace_snapshot_item(contract: IsolatedTaskContract):
+    suffix = "final-change.diff" if contract.stage is IsolatedStage.FINAL_CHANGE_REVIEW else "workspace.diff"
+    return next((item for item in contract.context if item.source.endswith(suffix)), None)
+
+
+def _review_snapshot_base(root: Path, contract: IsolatedTaskContract) -> str:
+    if contract.stage is IsolatedStage.FINAL_CHANGE_REVIEW:
+        baseline = next(
+            (item for item in contract.context if item.source.endswith("final-baseline.txt")),
+            None,
+        )
+        if baseline is None:
+            raise IsolatedTaskError(
+                "SDAI-ISOLATED-016: final review contract is missing its baseline binding"
+            )
+        return baseline.text.strip().casefold()
+    implementation = load_persisted_contract(
+        root,
+        contract.feature_id,
+        contract.task_id,
+        contract.attempt,
+        IsolatedStage.IMPLEMENT,
+    )
+    if implementation is None:
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-016: review contract has no persisted implementation contract"
+        )
+    return implementation.git_commit
+
+
+def _validate_review_workspace(root: Path, contract: IsolatedTaskContract) -> None:
+    if contract.stage not in {
+        IsolatedStage.SPEC_COMPLIANCE_REVIEW,
+        IsolatedStage.CODE_QUALITY_REVIEW,
+        IsolatedStage.FINAL_CHANGE_REVIEW,
+    }:
+        return
+    snapshot_item = _workspace_snapshot_item(contract)
+    if snapshot_item is None:
+        # Retained compatibility contracts from build_review_contract predate the
+        # hardened workspace-snapshot path. They continue to receive file-context
+        # freshness validation, while prepare_independent_review_contract carries
+        # the stronger tracked+untracked snapshot and recomputation binding.
+        if contract.stage in {
+            IsolatedStage.SPEC_COMPLIANCE_REVIEW,
+            IsolatedStage.CODE_QUALITY_REVIEW,
+        }:
+            return
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-016: final review contract is missing its workspace snapshot"
+        )
+    try:
+        head = current_head(root)
+        base = _review_snapshot_base(root, contract)
+        current_snapshot = render_workspace_snapshot(root, base)
+    except IsolatedWorkspaceError as exc:
+        raise IsolatedTaskError(
+            f"SDAI-ISOLATED-016: unable to revalidate review workspace: {exc}"
+        ) from exc
+    if head != contract.git_commit:
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-016: isolated review Git HEAD changed after contract creation; "
+            f"expected {contract.git_commit}, found {head}"
+        )
+    current_digest = _digest(current_snapshot.encode("utf-8"))
+    if current_digest != snapshot_item.source_sha256 or current_snapshot != snapshot_item.text:
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-016: isolated review workspace is stale; tracked or untracked "
+            "content changed after the review contract was created"
+        )
+
+
 def validate_isolated_context_current(
     project_root: Path,
     contract: IsolatedTaskContract,
 ) -> None:
-    """Fail closed if a persisted file-backed task context no longer matches bytes.
-
-    Generated final-review diff slices live under the isolated framework-state
-    namespace and are already embedded/hash-bound in the immutable contract. File
-    provenance slices are revalidated immediately before provider execution.
-    """
+    """Fail closed if persisted task/review context no longer matches current truth."""
 
     root = project_root.resolve()
     for item in contract.context:
-        if (
-            contract.stage is IsolatedStage.FINAL_CHANGE_REVIEW
-            and item.source.startswith(f".sdai/isolated/{contract.feature_id}/")
-        ):
-            continue
         path = _context_file(root, item.source)
         current = _digest(path.read_bytes())
         if current != item.source_sha256:
@@ -72,16 +140,12 @@ def validate_isolated_context_current(
                 "SDAI-ISOLATED-016: isolated task context is stale; "
                 f"{item.source} changed from {item.source_sha256} to {current}"
             )
+    _validate_review_workspace(root, contract)
 
 
 @dataclass
 class AllowedRootsMutationGuard:
-    """Restore and reject writes outside an isolated task's explicit allowlist.
-
-    The existing AgentRuntime protected-path guard remains active inside this
-    guard. This outer guard adds the stricter per-task allowlist and therefore
-    cannot weaken organization/framework protected-path policy.
-    """
+    """Restore and reject writes outside an isolated task's explicit allowlist."""
 
     project_root: Path
     allowed_roots: tuple[str, ...]
@@ -100,8 +164,6 @@ class AllowedRootsMutationGuard:
                 continue
             if relative == ".git" or relative.startswith(".git/"):
                 continue
-            # Do not follow symlink directories. A symlink itself is captured and
-            # any new/changed symlink is unauthorized unless its path is allowed.
             if path.is_symlink():
                 result[relative] = ("symlink", None)
                 continue
@@ -119,7 +181,6 @@ class AllowedRootsMutationGuard:
         return self
 
     def _restore(self, changed: Iterable[str]) -> None:
-        # Remove files/symlinks created during the failed invocation first.
         for relative in changed:
             if relative in self._before:
                 continue
@@ -127,9 +188,6 @@ class AllowedRootsMutationGuard:
             if raw.is_symlink() or raw.is_file():
                 raw.unlink(missing_ok=True)
 
-        # Restore every pre-existing file changed by the invocation, including
-        # otherwise-allowed writes. A boundary violation invalidates the whole
-        # isolated transaction; partial worker output is never retained.
         for relative in changed:
             before = self._before.get(relative)
             if before is None:

@@ -39,6 +39,7 @@ from sdai.verification import (
 
 FEATURE = "ISOLATED-121"
 RUN_ID = "run-isolated-121"
+HIDDEN_CONTEXT_MARKER = "HIDDEN-FEATURE-CONTEXT-MARKER"
 
 
 def _git(root: Path, *args: str) -> str:
@@ -80,10 +81,7 @@ def _workspace(tmp_path: Path):
 - AC-001: Given a valid script, signing succeeds.
 """,
     )
-    _write(
-        feature / "hidden-context.md",
-        "DO-NOT-INHERIT-HIDDEN-FEATURE-CONTEXT\n",
-    )
+    _write(feature / "hidden-context.md", HIDDEN_CONTEXT_MARKER + "\n")
     _write(
         root / "src" / "signing" / "service.py",
         "# Trace: FR-001 AC-001\nSIGNED = False\n",
@@ -160,8 +158,8 @@ def test_implementation_contract_is_minimal_durable_and_does_not_inherit_feature
     assert len(contract.context) == 1
     assert contract.context[0].source.endswith("requirements.md")
     assert "FR-001" in contract.context[0].text
-    assert "DO-NOT-INHERIT-HIDDEN-FEATURE-CONTEXT" not in prepared.invocation.prompt
-    assert "DO-NOT-INHERIT-HIDDEN-FEATURE-CONTEXT" not in prepared.invocation.system
+    assert HIDDEN_CONTEXT_MARKER not in prepared.invocation.prompt
+    assert HIDDEN_CONTEXT_MARKER not in prepared.invocation.system
     assert contract.sha256 in prepared.invocation.prompt
     assert "no chat history is inherited" in prepared.invocation.prompt
     assert prepared.record.invocation_id == again.record.invocation_id
@@ -182,7 +180,7 @@ def test_runtime_explicit_context_path_does_not_scan_normal_feature_artifacts(tm
     )
 
     assert "ONLY-THIS-CONTEXT café Δ" in isolated.prompt
-    assert "DO-NOT-INHERIT-HIDDEN-FEATURE-CONTEXT" not in isolated.prompt
+    assert HIDDEN_CONTEXT_MARKER not in isolated.prompt
 
 
 def test_execute_isolated_invocation_uses_prebuilt_fresh_invocation_without_rebuilding_context(
@@ -250,9 +248,6 @@ def test_started_interruption_reuses_dispatch_and_exact_persisted_contract(tmp_p
         payload={"dispatch_id": first_dispatch.dispatch_id, "attempt": 1},
     )
 
-    # Simulate partial implementation work. This is outside the bound requirements
-    # context, so resume must reuse the durable task context rather than rescan the
-    # repository and accidentally inherit the partial worker state as new instructions.
     _write(root / "src" / "signing" / "service.py", "# partial interrupted work\nSIGNED = True\n")
     second_dispatch = prepare_implementation_dispatch(ledger, task)
     second_contract = build_implementation_contract(root, task, second_dispatch)
@@ -405,7 +400,10 @@ def test_final_whole_change_review_requires_every_task_individually_accepted(tmp
         spec.record.invocation_id,
         code.record.invocation_id,
     }
-    assert final_contract.context[0].source.endswith("final-change.diff")
+    snapshot = next(
+        item for item in final_contract.context if item.source.endswith("final-change.diff")
+    )
+    assert snapshot.source.endswith("final-change.diff")
 
 
 def test_contract_and_results_are_machine_clean_and_utf8_portable(tmp_path: Path) -> None:
