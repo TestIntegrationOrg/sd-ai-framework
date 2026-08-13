@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import os
+from pathlib import Path
 import re
 from typing import Mapping, Sequence
+
+import yaml
+
+from sdai.path_safety import PathSafetyError, ensure_within_project
 
 
 COMPLETION_POLICY_API_VERSION = "sdai.completion-policy/v1"
@@ -19,6 +25,7 @@ VERIFICATION_CONTRACT = "sdai.completion/verification/v1"
 _CONTRACT = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63})+$"
 )
+_POLICY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 
 
 class CompletionPolicyError(RuntimeError):
@@ -42,6 +49,15 @@ class CompletionPolicyLayer(str, Enum):
     ORG = "org"
     REPO = "repo"
     USER = "user"
+
+    @property
+    def priority(self) -> int:
+        return {
+            CompletionPolicyLayer.BUILTIN: 0,
+            CompletionPolicyLayer.ORG: 10,
+            CompletionPolicyLayer.REPO: 20,
+            CompletionPolicyLayer.USER: 30,
+        }[self]
 
 
 _DEFAULTS: Mapping[
