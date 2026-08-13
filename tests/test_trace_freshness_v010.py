@@ -21,7 +21,6 @@ from sdai.trace_evidence import (
 )
 from sdai.trace_freshness import (
     CommitPolicy,
-    EvidenceFreshnessReport,
     ProofFreshness,
     TraceFreshnessError,
     evaluate_trace_coverage,
@@ -72,7 +71,10 @@ def _repo(root: Path) -> str:
     _git(root, "config", "user.name", "SDAI Test")
     _write(root / "src" / "café.py", "# FR-001\nVALUE = 1\n")
     _write(root / "tests" / "test_café.py", "# FR-001\ndef test_value():\n    assert True\n")
-    _write(root / "specs" / "changes" / FEATURE / "contracts" / "api.yaml", "id: CONTRACT-001\n")
+    _write(
+        root / "specs" / "changes" / FEATURE / "contracts" / "api.yaml",
+        "id: CONTRACT-001\n",
+    )
     _git(root, "add", ".")
     _git(root, "commit", "-m", "initial")
     return _git(root, "rev-parse", "HEAD")
@@ -86,8 +88,16 @@ def _evidence(
     bindings: tuple[EvidenceBinding, ...] | None = None,
 ) -> TraceEvidence:
     effective = bindings or (
-        EvidenceBinding(EvidenceBindingKind.SOURCE, "src/café.py", _digest(root / "src" / "café.py")),
-        EvidenceBinding(EvidenceBindingKind.TEST, "tests/test_café.py", _digest(root / "tests" / "test_café.py")),
+        EvidenceBinding(
+            EvidenceBindingKind.SOURCE,
+            "src/café.py",
+            _digest(root / "src" / "café.py"),
+        ),
+        EvidenceBinding(
+            EvidenceBindingKind.TEST,
+            "tests/test_café.py",
+            _digest(root / "tests" / "test_café.py"),
+        ),
         EvidenceBinding(
             EvidenceBindingKind.ARTIFACT,
             f"specs/changes/{FEATURE}/contracts/api.yaml",
@@ -101,7 +111,12 @@ def _evidence(
         subject="requirement:FR-001",
         git_commit=commit,
         bindings=effective,
-        provenance=(TraceProvenance(f"specs/changes/{FEATURE}/evidence/test.json", 1),),
+        provenance=(
+            TraceProvenance(
+                f"specs/changes/{FEATURE}/evidence/test.json",
+                1,
+            ),
+        ),
         producer=EvidenceProducer("tester", "codex", "model-a"),
         result={"passed": 1},
         command=("python", "-m", "pytest"),
@@ -152,7 +167,10 @@ def test_changed_source_and_changed_contract_invalidate_evidence(tmp_path: Path)
     _write(tmp_path / "src" / "café.py", "# FR-001\nVALUE = 2\n")
     changed_source = evaluate_trace_evidence_freshness(tmp_path, record)
     assert changed_source.freshness is ProofFreshness.STALE
-    assert any(item.source == "src/café.py" and item.freshness is ProofFreshness.STALE for item in changed_source.bindings)
+    assert any(
+        item.source == "src/café.py" and item.freshness is ProofFreshness.STALE
+        for item in changed_source.bindings
+    )
 
     _write(tmp_path / "src" / "café.py", "# FR-001\nVALUE = 1\n")
     _write(
@@ -161,7 +179,10 @@ def test_changed_source_and_changed_contract_invalidate_evidence(tmp_path: Path)
     )
     changed_contract = evaluate_trace_evidence_freshness(tmp_path, record)
     assert changed_contract.freshness is ProofFreshness.STALE
-    assert any(item.kind == "artifact" and item.freshness is ProofFreshness.STALE for item in changed_contract.bindings)
+    assert any(
+        item.kind == "artifact" and item.freshness is ProofFreshness.STALE
+        for item in changed_contract.bindings
+    )
 
 
 def test_deleted_test_is_missing_and_never_satisfies_coverage(tmp_path: Path) -> None:
@@ -173,7 +194,10 @@ def test_deleted_test_is_missing_and_never_satisfies_coverage(tmp_path: Path) ->
 
     assert report.freshness is ProofFreshness.MISSING
     assert report.satisfies_current_coverage is False
-    assert any(item.kind == "test" and item.current_sha256 is None for item in report.bindings)
+    assert any(
+        item.kind == "test" and item.current_sha256 is None
+        for item in report.bindings
+    )
 
 
 def test_disconnected_rewritten_history_commit_is_stale(tmp_path: Path) -> None:
@@ -268,14 +292,23 @@ def test_freshness_propagates_to_evidenced_by_coverage_edges(tmp_path: Path) -> 
     graph = TraceGraph(
         feature_id=FEATURE,
         nodes=(
-            TraceNode(TraceNodeType.REQUIREMENT, "FR-001"),
-            TraceNode(TraceNodeType.EVIDENCE, "EVIDENCE-001"),
+            TraceNode(
+                TraceNodeType.REQUIREMENT,
+                "FR-001",
+                provenance=(TraceProvenance("requirements.md", 1),),
+            ),
+            TraceNode(
+                TraceNodeType.EVIDENCE,
+                "EVIDENCE-001",
+                provenance=(TraceProvenance("evidence.json", 1),),
+            ),
         ),
         edges=(
             TraceEdge(
                 TraceRelation.EVIDENCED_BY,
                 "requirement:FR-001",
                 "evidence:EVIDENCE-001",
+                provenance=(TraceProvenance("evidence.json", 1),),
             ),
         ),
     )
