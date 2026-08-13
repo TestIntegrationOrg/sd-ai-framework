@@ -172,7 +172,7 @@ def test_effective_artifact_schema_graph_is_embedded_as_read_only_facts(tmp_path
     assert facts["operations"].depends_on == ("architecture",)
     assert facts["operations"].exists is True
     assert index.schema_topological_order.index("architecture") < index.schema_topological_order.index("operations")
-    assert ".sdai/schemas/operations.yaml" in index.schema_sources
+    assert "repo:.sdai/schemas/operations.yaml" in index.schema_sources
 
 
 def test_duplicate_entity_ids_are_preserved_for_later_analysis_not_silently_collapsed(
