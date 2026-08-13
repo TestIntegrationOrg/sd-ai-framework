@@ -167,6 +167,32 @@ def _safe_existing_path(project_root: Path, path: Path, *, label: str) -> Path:
     return candidate
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Durably persist a directory entry update where the platform supports it."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(directory, flags)
+    except OSError as exc:
+        raise _fail(
+            "SDAI-LEDGER-007",
+            f"unable to open parent directory for durability sync: {exc}",
+        ) from exc
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        raise _fail(
+            "SDAI-LEDGER-007",
+            f"unable to sync parent directory after atomic replacement: {exc}",
+        ) from exc
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
@@ -183,6 +209,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
+        _fsync_directory(path.parent)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -568,6 +595,34 @@ class ExecutionLedger:
         source = candidate.relative_to(self.project_root).as_posix()
         return HashBinding(kind, source, _sha256_bytes(candidate.read_bytes()))
 
+    def _validate_completion_bindings(
+        self,
+        bindings: tuple[HashBinding, ...],
+    ) -> None:
+        for binding in bindings:
+            candidate = _safe_existing_path(
+                self.project_root,
+                self.project_root.joinpath(*PurePosixPath(binding.source).parts),
+                label="task completion binding",
+            )
+            if candidate.is_symlink() or not candidate.is_file():
+                raise _fail(
+                    "SDAI-LEDGER-005",
+                    f"task completion binding is not a regular file: {binding.source}",
+                )
+            try:
+                actual = _sha256_bytes(candidate.read_bytes())
+            except OSError as exc:
+                raise _fail(
+                    "SDAI-LEDGER-005",
+                    f"unable to read task completion binding {binding.source}: {exc}",
+                ) from exc
+            if actual != binding.sha256:
+                raise _fail(
+                    "SDAI-LEDGER-005",
+                    f"task completion binding hash mismatch: {binding.source}",
+                )
+
     def write_task_brief(self, task_id: str, content: str) -> HashBinding:
         task = self._validate_task_id(task_id)
         with self._lock():
@@ -640,6 +695,8 @@ class ExecutionLedger:
             events = self._load_events_unlocked()
             state = self._reconstruct_events(events)
             self._validate_transition(state, kind, task, commit, bindings)
+            if kind == "task.completed":
+                self._validate_completion_bindings(bindings)
             sequence = len(events) + 1
             previous = events[-1].sha256 if events else _ZERO_HASH
             body: dict[str, object] = {

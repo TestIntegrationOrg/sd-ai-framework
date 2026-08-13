@@ -40,7 +40,6 @@ ledger = load_execution_run(root, sys.argv[2], sys.argv[3])
 lock = ledger._lock()
 lock.__enter__()
 os.write(1, b'locked\\n')
-os.fsync(1)
 os._exit(23)
 """
     completed = subprocess.run(
@@ -63,7 +62,9 @@ os._exit(23)
 
     assert state.last_sequence == 2
     assert state.task_map()["TASK-001"].status == "registered"
-    assert not reloaded.lock_path.exists()
+    assert reloaded.lock_path.exists(), "ledger.lock is a persistent advisory-lock anchor"
+    with reloaded._lock():
+        pass
 
 
 def test_live_lock_owner_is_never_reclaimed(tmp_path: Path) -> None:

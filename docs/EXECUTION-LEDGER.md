@@ -11,7 +11,7 @@ specs/<FEATURE>/.sdai/execution/<RUN-ID>/
 ├── run.json
 ├── events.jsonl
 ├── checkpoint.json        # optional
-├── ledger.lock            # present only while a process holds the ledger
+├── ledger.lock            # persistent anchor; OS lock ownership is transient
 └── tasks/
     └── <TASK-ID>/
         ├── brief.md
@@ -72,9 +72,9 @@ The append path uses literal filesystem operations, `O_APPEND`, complete-write l
 
 ## Cross-process serialization
 
-A per-run `ledger.lock` is acquired before reads that must be consistent with a following mutation and before append/checkpoint operations. The current v1 lock is fail-closed: another visible lock owner blocks mutation rather than allowing two processes to assign the same sequence.
+A per-run `ledger.lock` is a persistent lock anchor. SDAI acquires an OS advisory lock on that anchor before reads that must be consistent with a following mutation and before append/checkpoint operations. The current v1 lock is fail-closed: another live lock owner blocks mutation rather than allowing two processes to assign the same sequence. File existence alone never means the ledger is locked.
 
-If a process is terminated in the middle of an append, restart validation checks the JSONL boundary/hash chain before any state is reconstructed. A partial final record therefore cannot silently become completion truth.
+OS lock ownership is released automatically when a process exits, including hard process termination, so the persistent anchor does not brick restart. If a process is terminated in the middle of an append, restart validation checks the JSONL boundary/hash chain before any state is reconstructed. A partial final record therefore cannot silently become completion truth.
 
 ## Run state machine
 
@@ -112,9 +112,9 @@ A task must be registered before it can start. Implementation/review/evidence/co
 `task.completed` requires:
 
 1. a concrete Git commit identity; and
-2. at least one persistent `artifact` or `evidence` SHA-256 binding.
+2. at least one persistent `artifact` or `evidence` SHA-256 binding whose current regular non-symlink file exists and matches the declared digest at completion time.
 
-A chat message, provider response, or plain `"done"` flag cannot create durable completion truth.
+A chat message, provider response, forged digest, missing file, or plain `"done"` flag cannot create durable completion truth. Historical reconstruction does not re-read those files; #93 performs current-evidence freshness checks again before resume may skip work.
 
 ## Task records
 
@@ -125,7 +125,7 @@ Task records are deterministic files outside the model/chat context:
 - `review.json` — structured review report.
 - `evidence.json` — structured verification/evidence report.
 
-Writes are atomic. Record writes are rejected after the task becomes terminal.
+Writes are atomic. On POSIX, the parent directory is also fsynced after replacement so the new directory entry is durable across power loss; Windows keeps the atomic replacement without unsupported directory fsync. Record writes are rejected after the task becomes terminal.
 
 `binding_for_file()` creates a repository-relative POSIX source + SHA-256 binding for a regular non-symlink file inside the SDAI project.
 

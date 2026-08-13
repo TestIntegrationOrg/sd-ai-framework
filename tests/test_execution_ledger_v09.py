@@ -120,6 +120,38 @@ def test_completion_requires_git_and_persistent_hash_binding(tmp_path: Path) -> 
     assert ledger.reconstruct().task_map()["TASK-001"].status == "started"
 
 
+def test_completion_rejects_forged_or_stale_hash_bindings(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _start_task(ledger)
+
+    missing = HashBinding(
+        "artifact",
+        f"specs/{FEATURE}/missing.txt",
+        "sha256:" + "1" * 64,
+    )
+    with pytest.raises(ExecutionLedgerError, match="not a regular file"):
+        ledger.append_event(
+            "task.completed",
+            task_id="TASK-001",
+            git_commit=IMPLEMENTED,
+            bindings=(missing,),
+        )
+
+    output = tmp_path / "specs" / FEATURE / "stale.txt"
+    output.write_text("original\n", encoding="utf-8")
+    stale = ledger.binding_for_file(output, kind="artifact")
+    output.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(ExecutionLedgerError, match="hash mismatch"):
+        ledger.append_event(
+            "task.completed",
+            task_id="TASK-001",
+            git_commit=IMPLEMENTED,
+            bindings=(stale,),
+        )
+
+    assert ledger.reconstruct().task_map()["TASK-001"].status == "started"
+
+
 def test_duplicate_or_conflicting_terminal_task_events_are_rejected(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     _start_task(ledger)
