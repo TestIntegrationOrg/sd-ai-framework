@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from sdai import __version__
+from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
 from sdai.trace_cli import main as trace_main
 from sdai.trace_policy_cli import main as trace_policy_main
@@ -53,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if effective and effective[0] == "verify":
         return verify_main(effective[1:])
+
+    if effective and effective[0] == "converge":
+        return converge_main(effective[1:])
 
     result = lifecycle_main(effective)
     if result == 0 and effective and effective[0] in {"init", "upgrade"}:
