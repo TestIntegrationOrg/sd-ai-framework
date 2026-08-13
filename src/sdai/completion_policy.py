@@ -7,6 +7,8 @@ from typing import Mapping
 
 import yaml
 
+from sdai.convergence import load_convergence_state
+
 
 COMPLETION_POLICY_API_VERSION = "sdai.completion-policy/v1"
 
@@ -57,6 +59,24 @@ def normalize_risk(value: str) -> str:
     return risk
 
 
+def resolve_completion_risk(
+    project_root: Path,
+    feature_id: str,
+    requested_risk: str | None = None,
+) -> str:
+    root = project_root.resolve()
+    requested = None if requested_risk is None else normalize_risk(requested_risk)
+    state = load_convergence_state(root, feature_id)
+    if state is None:
+        return requested or "standard"
+    if requested is not None and requested != state.risk:
+        raise _fail(
+            "requested completion risk does not match durable convergence risk; "
+            f"requested={requested} durable={state.risk}"
+        )
+    return state.risk
+
+
 def _layer(path: Path, risk: str, stage: CompletionStage) -> frozenset[CompletionDimension]:
     if not path.exists():
         return frozenset()
@@ -98,7 +118,6 @@ def required_dimensions(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[CompletionDimension, ...]:
-    """Resolve built-in -> org -> repo -> user requirements by monotonic set union."""
     root = project_root.resolve()
     selected_risk = normalize_risk(risk)
     selected_stage = stage if isinstance(stage, CompletionStage) else CompletionStage(stage)
@@ -107,10 +126,10 @@ def required_dimensions(
     required = set(builtins[selected_risk])
     paths: list[Path] = []
     if env.get("SDAI_ORG_COMPLETION_POLICY_PATH"):
-        paths.append(Path(env["SDAI_ORG_COMPLETION_POLICY_PATH"]).expanduser().resolve())
+        paths.append(Path(env["SDAI_ORG_COMPLETION_POLICY_PATH"]).expanduser())
     paths.append(root / ".sdai" / "completion-policy.yaml")
     if env.get("SDAI_USER_COMPLETION_POLICY_PATH"):
-        paths.append(Path(env["SDAI_USER_COMPLETION_POLICY_PATH"]).expanduser().resolve())
+        paths.append(Path(env["SDAI_USER_COMPLETION_POLICY_PATH"]).expanduser())
     for path in paths:
         required.update(_layer(path, selected_risk, selected_stage))
     return tuple(sorted(required, key=lambda item: item.value))
@@ -123,4 +142,5 @@ __all__ = [
     "CompletionStage",
     "normalize_risk",
     "required_dimensions",
+    "resolve_completion_risk",
 ]
