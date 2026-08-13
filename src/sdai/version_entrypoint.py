@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 
@@ -18,6 +20,23 @@ def _project_root(argv: list[str]) -> Path:
     return Path(".").resolve()
 
 
+def _run_trace(argv: list[str]) -> int:
+    # `TraceGraph.to_json()` already includes its canonical trailing newline.
+    # The trace module currently uses print() for export, so normalize only the
+    # versioned executable boundary to avoid adding a second newline. This keeps
+    # `sdai trace export ...` byte-for-byte equal to the canonical graph JSON.
+    if argv and argv[0] == "export":
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            result = trace_main(argv)
+        output = buffer.getvalue()
+        if output.endswith("\n\n"):
+            output = output[:-1]
+        sys.stdout.write(output)
+        return result
+    return trace_main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     effective = list(sys.argv[1:] if argv is None else argv)
     if effective in (["--version"], ["-V"]):
@@ -25,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if effective and effective[0] == "trace":
-        return trace_main(effective[1:])
+        return _run_trace(effective[1:])
 
     result = lifecycle_main(effective)
     if result == 0 and effective and effective[0] in {"init", "upgrade"}:
