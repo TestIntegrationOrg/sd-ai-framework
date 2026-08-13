@@ -36,6 +36,8 @@ _EVENT_KINDS = frozenset(
         "run.cancelled",
         "task.registered",
         "task.started",
+        "task.reopened",
+        "task.dispatch_reserved",
         "task.implementation",
         "task.review",
         "task.evidence",
@@ -678,6 +680,7 @@ class ExecutionLedger:
         git_commit: str | None = None,
         bindings: tuple[HashBinding, ...] = (),
         payload: Mapping[str, object] | None = None,
+        expected_last_sha256: str | None = None,
     ) -> LedgerEvent:
         if kind not in _EVENT_KINDS:
             raise _fail("SDAI-LEDGER-002", f"unsupported event kind: {kind!r}")
@@ -685,6 +688,14 @@ class ExecutionLedger:
         commit = _validate_commit(git_commit)
         payload_dict = dict(payload or {})
         _validate_json_value(payload_dict, label="event payload")
+        if (
+            expected_last_sha256 is not None
+            and not _SHA256.fullmatch(expected_last_sha256)
+        ):
+            raise _fail(
+                "SDAI-LEDGER-002",
+                f"invalid expected last ledger SHA-256: {expected_last_sha256!r}",
+            )
         keys = [(item.kind, item.source) for item in bindings]
         if len(keys) != len(set(keys)):
             raise _fail(
@@ -694,6 +705,14 @@ class ExecutionLedger:
         with self._lock():
             events = self._load_events_unlocked()
             state = self._reconstruct_events(events)
+            if (
+                expected_last_sha256 is not None
+                and state.last_sha256 != expected_last_sha256
+            ):
+                raise _fail(
+                    "SDAI-LEDGER-008",
+                    "compare-and-append expectation no longer matches the current ledger head",
+                )
             self._validate_transition(state, kind, task, commit, bindings)
             if kind == "task.completed":
                 self._validate_completion_bindings(bindings)
@@ -880,11 +899,25 @@ class ExecutionLedger:
             current = tasks.get(task_id)
             if current is None:
                 raise _fail("SDAI-LEDGER-005", f"task '{task_id}' is not registered")
+            if kind == "task.reopened":
+                if current.status not in _TASK_TERMINAL:
+                    raise _fail(
+                        "SDAI-LEDGER-005",
+                        f"task '{task_id}' can reopen only from a terminal state, not {current.status}",
+                    )
+                return
             if current.status in _TASK_TERMINAL:
                 raise _fail(
                     "SDAI-LEDGER-005",
                     f"task '{task_id}' is already terminal ({current.status})",
                 )
+            if kind == "task.dispatch_reserved":
+                if current.status not in {"registered", "started"}:
+                    raise _fail(
+                        "SDAI-LEDGER-005",
+                        f"task '{task_id}' cannot reserve dispatch from status {current.status}",
+                    )
+                return
             if kind == "task.started":
                 if current.status != "registered":
                     raise _fail(
@@ -970,6 +1003,9 @@ class ExecutionLedger:
             elif event.kind == "task.started":
                 assert event.task_id is not None
                 tasks[event.task_id] = TaskExecutionState(event.task_id, "started")
+            elif event.kind == "task.reopened":
+                assert event.task_id is not None
+                tasks[event.task_id] = TaskExecutionState(event.task_id, "registered")
             elif event.kind == "task.completed":
                 assert event.task_id is not None
                 tasks[event.task_id] = TaskExecutionState(

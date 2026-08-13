@@ -14,6 +14,7 @@ from sdai.constitution import (
     write_constitution_evidence,
 )
 from sdai.evals import MockEvalExecutor, run_behavioral_eval
+from sdai.execution_cli import add_execution_parser, run_execution_command
 from sdai.extensions.scaffolding import (
     ScaffoldKind,
     create_extension_scaffold,
@@ -139,6 +140,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_artifact_state_parser(commands)
     add_workflow_parser(commands)
     add_analysis_parser(commands)
+    add_execution_parser(commands)
     return parser
 
 
@@ -288,6 +290,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "analyze":
         return run_analysis_command(root, args)
 
+    if args.managed_command == "execution":
+        return run_execution_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -323,6 +328,9 @@ def _print_top_level_help() -> None:
         "  sdai workflow explain <name> [--input NAME=YAML_VALUE] [--json]\n"
         "\nCross-artifact analysis:\n"
         "  sdai analyze <feature> [--risk standard] [--json] [--path PATH]\n"
+        "\nDurable execution resume:\n"
+        "  sdai execution status <feature> --run <run-id> [--json] [--path PATH]\n"
+        "  sdai execution resume <feature> --run <run-id> [--json] [--path PATH]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -348,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         "artifact",
         "workflow",
         "analyze",
+        "execution",
     }:
         try:
             return _run_managed_command(effective)
