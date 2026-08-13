@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Mapping
 
 from sdai.agent_platform import AgentRuntime
@@ -47,8 +46,6 @@ def build_routed_isolated_invocation(
     runtime: AgentRuntime,
     contract: IsolatedTaskContract,
     request: RoutingRequest,
-    *,
-    environ: Mapping[str, str] | None = None,
 ) -> RoutedIsolatedInvocation:
     if request.semantic_role != contract.semantic_agent:
         raise ModelRoutingError("SDAI-ROUTING-005: routing semantic role differs from isolated contract")
@@ -66,7 +63,6 @@ def build_routed_isolated_invocation(
         runtime.project_root,
         request,
         mode=contract.mode,
-        environ=environ,
     )
     if decision.selected_profile is None:
         raise ModelRoutingError(
