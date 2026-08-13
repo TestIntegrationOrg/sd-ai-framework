@@ -223,7 +223,7 @@ def test_trace_export_is_exact_canonical_graph_json(tmp_path: Path, capsys) -> N
 
     assert exit_code == 0
     assert captured.err == ""
-    assert captured.out.rstrip("\n") == expected
+    assert captured.out == expected
     assert json.loads(captured.out)["apiVersion"] == "sdai.trace-graph/v1"
 
 
