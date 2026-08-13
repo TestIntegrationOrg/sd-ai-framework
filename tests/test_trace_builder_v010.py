@@ -134,6 +134,15 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+def _node_for_source(result: object, source: str, node_type: TraceNodeType):
+    graph = result.graph  # type: ignore[attr-defined]
+    return next(
+        node
+        for node in graph.nodes
+        if node.type is node_type and node.metadata.get("source") == source
+    )
+
+
 def test_builder_links_explicit_artifact_code_test_and_evidence_facts_read_only(tmp_path: Path) -> None:
     feature = _feature(tmp_path)
     _evidence(feature)
@@ -158,14 +167,20 @@ def test_builder_links_explicit_artifact_code_test_and_evidence_facts_read_only(
         TraceNodeType.EVIDENCE,
     } <= types
 
+    code = _node_for_source(result, "src/café/signing.py", TraceNodeType.CODE)
+    test = _node_for_source(result, "tests/test_signing.py", TraceNodeType.TEST)
+    assert code.entity_id.startswith("path-sha256:")
+    assert test.entity_id.startswith("path-sha256:")
+    assert "café" not in code.node_id
+
     edges = {(edge.relation, edge.source, edge.target) for edge in result.graph.edges}
-    assert (TraceRelation.REFERENCES, "code:src/café/signing.py", "requirement:FR-001") in edges
-    assert (TraceRelation.REFERENCES, "test:tests/test_signing.py", "requirement:FR-001") in edges
+    assert (TraceRelation.REFERENCES, code.node_id, "requirement:FR-001") in edges
+    assert (TraceRelation.REFERENCES, test.node_id, "requirement:FR-001") in edges
     assert (TraceRelation.EVIDENCED_BY, "requirement:FR-001", "evidence:EVIDENCE-001") in edges
     assert any(gap.target == "ADR-MISSING" for gap in result.gaps)
 
 
-def test_builder_is_deterministic_and_preserves_utf8_portable_paths(tmp_path: Path) -> None:
+def test_builder_is_deterministic_and_preserves_utf8_portable_provenance(tmp_path: Path) -> None:
     feature = _feature(tmp_path)
     _evidence(feature)
 
@@ -177,6 +192,19 @@ def test_builder_is_deterministic_and_preserves_utf8_portable_paths(tmp_path: Pa
     assert first.sha256 == second.sha256
     assert "\\" not in first.graph.to_json()
     assert "café" in first.graph.to_json()
+
+
+def test_provider_only_evidence_change_does_not_change_graph_truth(tmp_path: Path) -> None:
+    feature = _feature(tmp_path)
+    _evidence(feature, provider="codex")
+    first = build_feature_trace_graph(tmp_path, FEATURE, environ={})
+
+    _evidence(feature, provider="claude")
+    second = build_feature_trace_graph(tmp_path, FEATURE, environ={})
+
+    assert first.graph.to_json() == second.graph.to_json()
+    assert first.graph.sha256 == second.graph.sha256
+    assert first.sha256 == second.sha256
 
 
 def test_missing_evidence_subject_is_visible_gap_not_invented_edge(tmp_path: Path) -> None:
