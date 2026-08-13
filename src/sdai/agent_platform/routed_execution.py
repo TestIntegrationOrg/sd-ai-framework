@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from sdai.agent_platform.context import collect_feature_context
 from sdai.agent_platform.model_routing import ModelRoutingError, RoutingDecision, RoutingRequest, route_model
 from sdai.agent_platform.models import AgentExecutionResult, AgentInvocation, ExecutionMode
 from sdai.agent_platform.runtime import AgentRuntime
+from sdai.models import FeatureContext
 
 
 @dataclass(frozen=True)
@@ -21,34 +23,31 @@ def build_routed_invocation(
     mode: ExecutionMode = ExecutionMode.ADVISORY,
     explicit_context: str | None = None,
 ) -> RoutedInvocation:
-    effective_request = request
-    if explicit_context is not None:
+    root = runtime.project_root.resolve()
+    if explicit_context is None:
+        actual_context = collect_feature_context(
+            FeatureContext(root, feature_id),
+            max_chars_per_file=runtime.max_explicit_context_chars(),
+        )
+    else:
         if not isinstance(explicit_context, str) or not explicit_context.strip():
             raise ValueError("explicit agent context must be non-empty text")
-        effective_request = replace(request, context_chars=len(explicit_context))
-    decision = route_model(runtime.project_root, effective_request, mode=mode)
+        actual_context = explicit_context
+    effective_request = replace(request, context_chars=len(actual_context))
+    decision = route_model(root, effective_request, mode=mode)
     if decision.selected_profile is None:
         raise ModelRoutingError(
             "SDAI-ROUTING-003: no profile may be selected; "
             f"reason={decision.selection_reason}; decision_sha256={decision.sha256}"
         )
-    if explicit_context is None:
-        invocation = runtime.build_invocation(
-            feature_id,
-            effective_request.capability,
-            profile_name=decision.selected_profile,
-            agent_name=effective_request.semantic_role,
-            mode=mode,
-        )
-    else:
-        invocation = runtime.build_explicit_context_invocation(
-            feature_id,
-            effective_request.capability,
-            explicit_context,
-            profile_name=decision.selected_profile,
-            agent_name=effective_request.semantic_role,
-            mode=mode,
-        )
+    invocation = runtime.build_explicit_context_invocation(
+        feature_id,
+        effective_request.capability,
+        actual_context or "No feature artifacts found.",
+        profile_name=decision.selected_profile,
+        agent_name=effective_request.semantic_role,
+        mode=mode,
+    )
     if invocation.agent_name != effective_request.semantic_role:
         raise ModelRoutingError(
             "SDAI-ROUTING-003: runtime did not preserve the requested semantic agent identity"
