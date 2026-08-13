@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
-import os
-import shutil
-import subprocess
 
 from sdai.agent_platform.models import Capability, ExecutionMode
 from sdai.convergence import RemediationTask
@@ -16,8 +13,14 @@ from sdai.isolated_tasks import (
     IsolatedTaskContract,
     IsolatedTaskError,
     context_from_remediation,
+    latest_stage_result,
     load_persisted_contract,
     persist_contract,
+)
+from sdai.isolated_workspace import (
+    IsolatedWorkspaceError,
+    current_head,
+    render_workspace_snapshot,
 )
 
 
@@ -26,53 +29,6 @@ _MAX_REVIEW_CONTEXT_CHARS = 60_000
 
 def _digest(content: bytes) -> str:
     return "sha256:" + sha256(content).hexdigest()
-
-
-def _git_executable() -> str:
-    candidate = shutil.which("git")
-    if not candidate:
-        raise IsolatedTaskError("SDAI-ISOLATED-018: Git executable is unavailable")
-    return str(Path(candidate).resolve())
-
-
-def _git_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for key in list(env):
-        upper = key.upper()
-        if (
-            upper in {
-                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG",
-                "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
-            }
-            or upper.startswith("GIT_CONFIG_KEY_")
-            or upper.startswith("GIT_CONFIG_VALUE_")
-        ):
-            env.pop(key, None)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    return env
-
-
-def _git(root: Path, *args: str) -> str:
-    completed = subprocess.run(
-        [_git_executable(), *args],
-        cwd=root,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="strict",
-        check=False,
-        shell=False,
-        env=_git_env(),
-    )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "git command failed").strip()
-        raise IsolatedTaskError(
-            f"SDAI-ISOLATED-018: git {' '.join(args)} failed: {detail}"
-        )
-    return completed.stdout.strip()
 
 
 def _generated_slice(source: str, text: str) -> IsolatedContextSlice:
@@ -89,6 +45,54 @@ def _generated_slice(source: str, text: str) -> IsolatedContextSlice:
     )
 
 
+def _require_current_spec_review(
+    root: Path,
+    task: RemediationTask,
+    implementation: IsolatedStageResult,
+    attempt: int,
+    prior_spec_review: IsolatedStageResult | None,
+) -> IsolatedStageResult:
+    if (
+        prior_spec_review is None
+        or prior_spec_review.invocation.stage is not IsolatedStage.SPEC_COMPLIANCE_REVIEW
+        or prior_spec_review.status is not IsolatedStageStatus.PASSED
+    ):
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-018: code-quality review requires passing independent spec-compliance review"
+        )
+    spec_contract = load_persisted_contract(
+        root,
+        task.feature_id,
+        task.task_id,
+        attempt,
+        IsolatedStage.SPEC_COMPLIANCE_REVIEW,
+    )
+    if spec_contract is None:
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-018: persisted spec-compliance contract is required before code-quality review"
+        )
+    if (
+        prior_spec_review.invocation.contract_sha256 != spec_contract.sha256
+        or spec_contract.worker_invocation_id != implementation.invocation.invocation_id
+        or spec_contract.remediation_task_sha256 != task.sha256
+    ):
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-018: spec-compliance review does not belong to the current task/attempt/worker"
+        )
+    persisted_result = latest_stage_result(
+        root,
+        task.feature_id,
+        task.task_id,
+        attempt,
+        IsolatedStage.SPEC_COMPLIANCE_REVIEW,
+    )
+    if persisted_result is None or persisted_result.sha256 != prior_spec_review.sha256:
+        raise IsolatedTaskError(
+            "SDAI-ISOLATED-018: spec-compliance review is not the persisted current review result"
+        )
+    return prior_spec_review
+
+
 def build_independent_review_contract(
     project_root: Path,
     task: RemediationTask,
@@ -103,8 +107,10 @@ def build_independent_review_contract(
     The reviewer receives only:
     - the original remediation provenance windows;
     - the worker's recorded output;
-    - the current Git diff relative to the persisted implementation contract;
-    - for code-quality review, the prior spec-review result.
+    - a deterministic tracked + untracked workspace snapshot relative to the
+      persisted implementation contract;
+    - for code-quality review, the persisted spec-review result for this exact
+      task, attempt, and worker invocation.
     """
 
     if stage not in {
@@ -139,34 +145,34 @@ def build_independent_review_contract(
         raise IsolatedTaskError(
             "SDAI-ISOLATED-018: persisted implementation contract is required for independent review"
         )
-    if implementation_contract.sha256 != implementation.invocation.contract_sha256:
+    if (
+        implementation_contract.sha256 != implementation.invocation.contract_sha256
+        or implementation_contract.remediation_task_sha256 != task.sha256
+    ):
         raise IsolatedTaskError(
-            "SDAI-ISOLATED-018: implementation result does not match persisted task contract"
+            "SDAI-ISOLATED-018: implementation result does not match persisted current task contract"
         )
 
     existing = load_persisted_contract(root, task.feature_id, task.task_id, attempt, stage)
     if existing is not None:
         return existing
 
+    current_spec_review: IsolatedStageResult | None = None
     if stage is IsolatedStage.CODE_QUALITY_REVIEW:
-        if (
-            prior_spec_review is None
-            or prior_spec_review.invocation.stage is not IsolatedStage.SPEC_COMPLIANCE_REVIEW
-            or prior_spec_review.status is not IsolatedStageStatus.PASSED
-        ):
-            raise IsolatedTaskError(
-                "SDAI-ISOLATED-018: code-quality review requires passing independent spec-compliance review"
-            )
+        current_spec_review = _require_current_spec_review(
+            root,
+            task,
+            implementation,
+            attempt,
+            prior_spec_review,
+        )
 
-    diff = _git(
-        root,
-        "diff",
-        "--no-ext-diff",
-        "--unified=3",
-        implementation_contract.git_commit,
-        "--",
-        ".",
-    )
+    try:
+        snapshot = render_workspace_snapshot(root, implementation_contract.git_commit)
+        head = current_head(root)
+    except IsolatedWorkspaceError as exc:
+        raise IsolatedTaskError(f"SDAI-ISOLATED-018: unable to capture review workspace: {exc}") from exc
+
     worker_source = (
         f".sdai/isolated/{task.feature_id}/{task.task_id}/attempt-{attempt}/"
         "implement/worker-output.txt"
@@ -178,16 +184,16 @@ def build_independent_review_contract(
     context = [
         *context_from_remediation(root, task),
         _generated_slice(worker_source, implementation.output),
-        _generated_slice(diff_source, diff),
+        _generated_slice(diff_source, snapshot),
     ]
     predecessors: tuple[str, ...] = ()
-    if prior_spec_review is not None:
+    if current_spec_review is not None:
         spec_source = (
             f".sdai/isolated/{task.feature_id}/{task.task_id}/attempt-{attempt}/"
             "spec-compliance-review/reviewer-output.txt"
         )
-        context.append(_generated_slice(spec_source, prior_spec_review.output))
-        predecessors = (prior_spec_review.invocation.invocation_id,)
+        context.append(_generated_slice(spec_source, current_spec_review.output))
+        predecessors = (current_spec_review.invocation.invocation_id,)
 
     if sum(len(item.text) for item in context) > _MAX_REVIEW_CONTEXT_CHARS:
         raise IsolatedTaskError(
@@ -201,7 +207,7 @@ def build_independent_review_contract(
         round_id=task.round_id,
         attempt=attempt,
         stage=stage,
-        git_commit=_git(root, "rev-parse", "--verify", "HEAD").casefold(),
+        git_commit=head,
         dispatch_id=f"{implementation.invocation.invocation_id}:{stage.value}",
         semantic_agent="code-reviewer",
         capability=Capability.REVIEW,
