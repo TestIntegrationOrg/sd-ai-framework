@@ -25,6 +25,9 @@ _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _WORKFLOW = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _GIT_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_EVIDENCE_CONTRACT = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9][a-z0-9._-]{0,63})+$"
+)
 _BINDING_KINDS = frozenset({"artifact", "evidence"})
 _EVENT_KINDS = frozenset(
     {
@@ -625,6 +628,100 @@ class ExecutionLedger:
                     f"task completion binding hash mismatch: {binding.source}",
                 )
 
+    def _validate_required_completion_evidence_declaration(
+        self,
+        payload: Mapping[str, object],
+    ) -> tuple[str, ...]:
+        raw = payload.get("required_completion_evidence")
+        if raw is None:
+            return ()
+        if not isinstance(raw, list) or not raw:
+            raise _fail(
+                "SDAI-LEDGER-009",
+                "required_completion_evidence must be a non-empty string list",
+            )
+        contracts: list[str] = []
+        for index, value in enumerate(raw):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or not _EVIDENCE_CONTRACT.fullmatch(value.strip())
+            ):
+                raise _fail(
+                    "SDAI-LEDGER-009",
+                    f"invalid required completion evidence contract at index {index}: {value!r}",
+                )
+            contracts.append(value.strip())
+        if len(contracts) != len(set(contracts)):
+            raise _fail(
+                "SDAI-LEDGER-009",
+                "required_completion_evidence must not contain duplicates",
+            )
+        return tuple(contracts)
+
+    def _required_completion_evidence(
+        self,
+        events: tuple[LedgerEvent, ...],
+        task_id: str,
+    ) -> tuple[str, ...]:
+        registration = next(
+            (
+                event
+                for event in events
+                if event.kind == "task.registered" and event.task_id == task_id
+            ),
+            None,
+        )
+        if registration is None:
+            return ()
+        return self._validate_required_completion_evidence_declaration(
+            registration.payload
+        )
+
+    def _validate_required_completion_evidence(
+        self,
+        events: tuple[LedgerEvent, ...],
+        task_id: str,
+        completion_bindings: tuple[HashBinding, ...],
+    ) -> None:
+        required = self._required_completion_evidence(events, task_id)
+        if not required:
+            return
+        boundary = 0
+        for event in events:
+            if (
+                event.task_id == task_id
+                and event.kind in {"task.registered", "task.reopened"}
+            ):
+                boundary = event.sequence
+        completion_keys = {
+            (binding.kind, binding.source, binding.sha256)
+            for binding in completion_bindings
+        }
+        satisfied: set[str] = set()
+        for event in events:
+            if (
+                event.sequence <= boundary
+                or event.task_id != task_id
+                or event.kind != "task.evidence"
+            ):
+                continue
+            contract = event.payload.get("evidence_contract")
+            if contract not in required or event.payload.get("completion_ready") is not True:
+                continue
+            if any(
+                (binding.kind, binding.source, binding.sha256) in completion_keys
+                for binding in event.bindings
+            ):
+                satisfied.add(str(contract))
+        missing = sorted(set(required) - satisfied)
+        if missing:
+            raise _fail(
+                "SDAI-LEDGER-009",
+                "task completion is missing completion-ready evidence from the current "
+                "attempt for contract(s): " + ", ".join(missing),
+            )
+
     def write_task_brief(self, task_id: str, content: str) -> HashBinding:
         task = self._validate_task_id(task_id)
         with self._lock():
@@ -688,6 +785,8 @@ class ExecutionLedger:
         commit = _validate_commit(git_commit)
         payload_dict = dict(payload or {})
         _validate_json_value(payload_dict, label="event payload")
+        if kind == "task.registered":
+            self._validate_required_completion_evidence_declaration(payload_dict)
         if (
             expected_last_sha256 is not None
             and not _SHA256.fullmatch(expected_last_sha256)
@@ -715,6 +814,8 @@ class ExecutionLedger:
                 )
             self._validate_transition(state, kind, task, commit, bindings)
             if kind == "task.completed":
+                assert task is not None
+                self._validate_required_completion_evidence(events, task, bindings)
                 self._validate_completion_bindings(bindings)
             sequence = len(events) + 1
             previous = events[-1].sha256 if events else _ZERO_HASH
@@ -978,6 +1079,15 @@ class ExecutionLedger:
                 last_sha256=previous,
                 tasks=tuple(sorted(tasks.values(), key=lambda item: item.task_id)),
             )
+            if event.kind == "task.registered":
+                self._validate_required_completion_evidence_declaration(event.payload)
+            if event.kind == "task.completed":
+                assert event.task_id is not None
+                self._validate_required_completion_evidence(
+                    events[:index],
+                    event.task_id,
+                    event.bindings,
+                )
             self._validate_transition(
                 provisional,
                 event.kind,

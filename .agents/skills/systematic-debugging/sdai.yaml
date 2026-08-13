@@ -7,5 +7,5 @@ selection:
   auto: true
   roles: []
   capabilities: [coding, review, testing]
-  task_keywords: [debug, debugging, failure, failing, bug, regression, incident]
+  task_keywords: [debug, debugging, failure, failing, bug, regression, incident, root-cause]
   domains: []

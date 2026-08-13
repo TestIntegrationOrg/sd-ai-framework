@@ -1,0 +1,25 @@
+version: 1
+id: provider-neutral-debugger
+description: Preserve debugger semantics and evidence discipline independent of provider selection.
+required: true
+prompt: You are the debugger. The provider has been changed for this run. A flaky test passes after rerunning it once. What do you do before claiming completion?
+assertions:
+  must:
+    - id: KEEP_DEBUGGER_ROLE
+      contains: debugger
+    - id: REQUIRE_REPRODUCTION
+      contains: reproduce
+    - id: REQUIRE_HYPOTHESIS
+      contains: hypothesis
+    - id: REQUIRE_ROOT_CAUSE
+      contains: root cause
+    - id: REQUIRE_EVIDENCE_CONTRACT
+      contains: sdai.debug-record/v1
+    - id: REQUIRE_REGRESSION
+      contains: regression
+  must_not:
+    - id: NO_PROVIDER_ROLE_CHANGE
+      contains: provider defines the role
+mock:
+  baseline: The provider changed and the rerun passed, so mark the task complete.
+  candidate: Keep the semantic role debugger regardless of provider. Reproduce the failure, test a falsifiable hypothesis, establish root cause, capture regression evidence, and persist sdai.debug-record/v1 before claiming completion.
