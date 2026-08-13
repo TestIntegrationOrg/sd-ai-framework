@@ -192,9 +192,29 @@ def _sha256_bytes(content: bytes) -> str:
     return "sha256:" + sha256(content).hexdigest()
 
 
-def _normalize_metadata(value: Mapping[str, object] | None, *, label: str) -> dict[str, object]:
+def _freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+def _normalize_metadata(
+    value: Mapping[str, object] | None,
+    *,
+    label: str,
+) -> Mapping[str, object]:
     if value is None:
-        return {}
+        return MappingProxyType({})
     if not isinstance(value, Mapping):
         raise _fail("SDAI-TRACE-001", f"{label} must be a mapping")
     normalized = dict(value)
@@ -210,7 +230,17 @@ def _normalize_metadata(value: Mapping[str, object] | None, *, label: str) -> di
     )
     if not isinstance(cloned, dict):
         raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")
-    return cloned
+    frozen = _freeze_json(cloned)
+    if not isinstance(frozen, Mapping):
+        raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")
+    return frozen
+
+
+def _metadata_dict(value: Mapping[str, object] | None) -> dict[str, object]:
+    thawed = _thaw_json(value or {})
+    if not isinstance(thawed, dict):
+        raise _fail("SDAI-TRACE-001", "trace metadata must normalize to a mapping")
+    return thawed
 
 
 def _normalize_entity_id(value: str) -> str:
@@ -356,12 +386,26 @@ def trace_provenance_for_path(
             f"trace provenance source must be a regular non-symlink file: {relative.as_posix()}",
         )
     try:
-        digest = _sha256_bytes(candidate.read_bytes())
+        content = candidate.read_bytes()
     except OSError as exc:
         raise _fail(
             "SDAI-TRACE-002",
             f"unable to read trace provenance source {relative.as_posix()}: {exc}",
         ) from exc
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _fail(
+            "SDAI-TRACE-002",
+            f"trace provenance source must be valid UTF-8 text: {relative.as_posix()}",
+        ) from exc
+    line_count = len(text.splitlines())
+    if line > line_count:
+        raise _fail(
+            "SDAI-TRACE-002",
+            f"trace provenance line {line} is outside {relative.as_posix()} (lines={line_count})",
+        )
+    digest = _sha256_bytes(content)
     return TraceProvenance(
         source=relative.as_posix(),
         line=line,
@@ -429,7 +473,7 @@ class TraceNode:
         object.__setattr__(
             self,
             "metadata",
-            MappingProxyType(_normalize_metadata(self.metadata, label=f"node {self.node_id} metadata")),
+            _normalize_metadata(self.metadata, label=f"node {self.node_id} metadata"),
         )
 
     @property
@@ -442,7 +486,7 @@ class TraceNode:
                 "type": self.type.value,
                 "entity_id": self.entity_id,
                 "label": self.label,
-                "metadata": dict(self.metadata or {}),
+                "metadata": _metadata_dict(self.metadata),
             }
         )
 
@@ -452,7 +496,7 @@ class TraceNode:
             "type": self.type.value,
             "entity_id": self.entity_id,
             "label": self.label,
-            "metadata": dict(self.metadata or {}),
+            "metadata": _metadata_dict(self.metadata),
             "provenance": [item.as_dict() for item in self.provenance],
         }
 
@@ -522,7 +566,7 @@ class TraceEdge:
         object.__setattr__(
             self,
             "metadata",
-            MappingProxyType(_normalize_metadata(self.metadata, label=f"edge {self.edge_id} metadata")),
+            _normalize_metadata(self.metadata, label=f"edge {self.edge_id} metadata"),
         )
 
     @property
@@ -535,7 +579,7 @@ class TraceEdge:
                 "relation": self.relation.value,
                 "source": self.source,
                 "target": self.target,
-                "metadata": dict(self.metadata or {}),
+                "metadata": _metadata_dict(self.metadata),
             }
         )
 
@@ -545,7 +589,7 @@ class TraceEdge:
             "relation": self.relation.value,
             "source": self.source,
             "target": self.target,
-            "metadata": dict(self.metadata or {}),
+            "metadata": _metadata_dict(self.metadata),
             "provenance": [item.as_dict() for item in self.provenance],
         }
 
@@ -620,7 +664,7 @@ class TraceGraph:
                 type=existing.type,
                 entity_id=existing.entity_id,
                 label=existing.label,
-                metadata=dict(existing.metadata or {}),
+                metadata=_metadata_dict(existing.metadata),
                 provenance=_merge_provenance(
                     existing.provenance,
                     node.provenance,
@@ -666,7 +710,7 @@ class TraceGraph:
                 relation=existing.relation,
                 source=existing.source,
                 target=existing.target,
-                metadata=dict(existing.metadata or {}),
+                metadata=_metadata_dict(existing.metadata),
                 provenance=_merge_provenance(
                     existing.provenance,
                     edge.provenance,

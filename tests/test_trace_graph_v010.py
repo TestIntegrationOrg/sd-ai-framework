@@ -277,7 +277,13 @@ def test_metadata_is_deep_copied_from_mutable_caller_data() -> None:
     metadata["tags"].append("mutated")  # type: ignore[union-attr]
 
     assert graph.to_json() == original_json
-    assert graph.node_map[node.node_id].metadata["tags"] == ["security", "signing"]
+    stored_tags = graph.node_map[node.node_id].metadata["tags"]
+    assert stored_tags == ("security", "signing")
+    with pytest.raises(AttributeError):
+        stored_tags.append("direct-mutation")  # type: ignore[union-attr]
+    with pytest.raises(TypeError):
+        graph.node_map[node.node_id].metadata["new"] = "mutation"  # type: ignore[index]
+    assert graph.to_json() == original_json
 
 
 def test_repository_provenance_helper_preserves_unicode_and_rejects_symlinks(
@@ -293,6 +299,14 @@ def test_repository_provenance_helper_preserves_unicode_and_rejects_symlinks(
     assert provenance.source == f"specs/changes/{FEATURE}/café requirements.md"
     assert provenance.line == 1
     assert provenance.declaration_sha256 == "sha256:" + __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+
+    with pytest.raises(TraceGraphError, match="outside"):
+        trace_provenance_for_path(root, source, line=2)
+
+    invalid_utf8 = root / "invalid.bin"
+    invalid_utf8.write_bytes(b"\xff\xfe")
+    with pytest.raises(TraceGraphError, match="valid UTF-8"):
+        trace_provenance_for_path(root, invalid_utf8, line=1)
 
     outside = tmp_path / "outside.md"
     outside.write_text("outside\n", encoding="utf-8")
