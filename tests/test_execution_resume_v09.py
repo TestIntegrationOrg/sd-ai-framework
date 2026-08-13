@@ -141,7 +141,7 @@ def test_rewritten_completion_commit_invalidates_skip_even_when_file_matches(tmp
     _register(ledger, "TASK-001", "TASK-002")
     artifact, old_commit = _complete(root, ledger, "TASK-001")
     assert artifact.exists()
-    _git(root, "commit", "--amend", "--no-edit")
+    _git(root, "commit", "--amend", "-m", "rewritten completion commit")
     assert _git(root, "rev-parse", "HEAD") != old_commit
 
     plan = build_resume_plan(root, FEATURE, RUN_ID)
