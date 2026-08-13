@@ -80,9 +80,9 @@ def _workspace(tmp_path: Path):
         run_id="run-isolated-edge-121",
     )
     task = RemediationTask(
-        task_id="REMEDIATE-edge1210edge1210",
+        task_id="REMEDIATE-1210abcd1210abcd",
         feature_id=FEATURE,
-        round_id="ROUND-edge1210edge1210",
+        round_id="ROUND-abcd1210abcd1210",
         verification_report_sha256="sha256:" + "1" * 64,
         verification_input_sha256="sha256:" + "2" * 64,
         finding_sha256="sha256:" + "3" * 64,
