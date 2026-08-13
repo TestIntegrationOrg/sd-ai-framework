@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-import shutil
 from typing import Iterable
 
 from sdai.agent_platform import AgentRuntime
@@ -119,8 +118,8 @@ class AllowedRootsMutationGuard:
         self._before = self._scan()
         return self
 
-    def _restore(self, changed: Iterable[str], after: dict[str, tuple[str, bytes | None]]) -> None:
-        # Remove newly-created unauthorized files/symlinks first.
+    def _restore(self, changed: Iterable[str]) -> None:
+        # Remove files/symlinks created during the failed invocation first.
         for relative in changed:
             if relative in self._before:
                 continue
@@ -128,9 +127,9 @@ class AllowedRootsMutationGuard:
             if raw.is_symlink() or raw.is_file():
                 raw.unlink(missing_ok=True)
 
-        # Restore modified/deleted unauthorized files. Existing symlinks are not a
-        # supported safe baseline for isolated execution; fail closed rather than
-        # following/reconstructing attacker-controlled targets.
+        # Restore every pre-existing file changed by the invocation, including
+        # otherwise-allowed writes. A boundary violation invalidates the whole
+        # isolated transaction; partial worker output is never retained.
         for relative in changed:
             before = self._before.get(relative)
             if before is None:
@@ -167,12 +166,12 @@ class AllowedRootsMutationGuard:
             or _under(relative, self.forbidden_roots)
         ]
         if unauthorized:
-            self._restore(unauthorized, after)
+            self._restore(changed)
             preview = ", ".join(unauthorized[:8])
             suffix = " ..." if len(unauthorized) > 8 else ""
             raise IsolatedWriteViolation(
                 "SDAI-ISOLATED-017: isolated agent modified paths outside its task allowlist; "
-                f"changes were restored: {preview}{suffix}"
+                f"the entire invocation was rolled back: {preview}{suffix}"
             )
         return False
 
