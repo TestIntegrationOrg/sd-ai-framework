@@ -25,6 +25,7 @@ from sdai.convergence import (
 from sdai.execution_ledger import create_execution_run
 from sdai.isolated_final_review import prepare_final_change_review_contract
 from sdai.isolated_tasks import (
+    IsolatedDispatch,
     IsolatedStage,
     IsolatedStageResult,
     IsolatedStageStatus,
@@ -33,6 +34,7 @@ from sdai.isolated_tasks import (
     build_review_contract,
     persist_stage_result,
     prepare_implementation_dispatch,
+    register_remediation_task,
 )
 from sdai.scaffold import init_project
 from sdai.trace_graph import TraceProvenance
@@ -128,11 +130,17 @@ def _passed(prepared, root: Path, output: str) -> IsolatedStageResult:
     )
 
 
-def _accepted_task(root: Path, ledger, task: RemediationTask):
-    dispatch = prepare_implementation_dispatch(ledger, task)
+def _accepted_task(
+    root: Path,
+    ledger,
+    task: RemediationTask,
+    *,
+    dispatch: IsolatedDispatch | None = None,
+):
+    selected = dispatch or prepare_implementation_dispatch(ledger, task)
     implementation = build_isolated_invocation(
         AgentRuntime(root),
-        build_implementation_contract(root, task, dispatch),
+        build_implementation_contract(root, task, selected),
     )
     impl_result = _passed(implementation, root, "implementation passed")
     persist_stage_result(root, implementation.contract, impl_result, ledger=ledger)
@@ -270,7 +278,13 @@ def test_final_review_is_invalidated_when_new_current_task_is_added(tmp_path: Pa
         finding_sha256="sha256:" + "6" * 64,
         summary="Second independent remediation task.",
     )
-    second_chain = _accepted_task(root, ledger, second)
+    register_remediation_task(ledger, second)
+    second_chain = _accepted_task(
+        root,
+        ledger,
+        second,
+        dispatch=IsolatedDispatch("manual-second-task", False, 1),
+    )
     complete_isolated_task(root, ledger, second, attempt=1, risk="trivial")
     assert len(second_chain) == 3
 
