@@ -59,6 +59,39 @@ def test_same_inputs_produce_same_json_and_cost_breaks_equal_rank(tmp_path: Path
     assert "café" in first.to_json()
 
 
+def test_equal_suitability_prefers_lower_cost_before_default_route(tmp_path: Path) -> None:
+    root = tmp_path / "routing default cost"
+    root.mkdir()
+    init_project(root)
+    _profiles(
+        root,
+        """  economy:
+    provider: provider-a
+    capabilities: [coding]
+    prompt: auto
+    cost_class: economy
+    routing_priority: 10
+  premium-default:
+    provider: provider-b
+    capabilities: [coding]
+    prompt: auto
+    cost_class: premium
+    routing_priority: 10
+""",
+        routes="routes:\n  coding: premium-default\n",
+    )
+    request = RoutingRequest(
+        semantic_role="developer",
+        capability=Capability.CODING,
+        provider_availability={"provider-a": True, "provider-b": True},
+    )
+
+    decision = route_model(root, request, environ={})
+
+    assert decision.default_profile == "premium-default"
+    assert decision.selected_profile == "economy"
+
+
 def test_explicit_forbidden_profile_has_no_fallback(tmp_path: Path) -> None:
     root = tmp_path / "routing policy"
     root.mkdir()
@@ -146,6 +179,7 @@ def test_availability_context_and_technology_filter_before_rank(tmp_path: Path) 
         root,
         """  unavailable:
     provider: provider-a
+    model: model-a
     capabilities: [coding]
     prompt: auto
     cost_class: economy
@@ -175,7 +209,7 @@ def test_availability_context_and_technology_filter_before_rank(tmp_path: Path) 
         capability=Capability.CODING,
         affected_technologies=("java",),
         context_chars=2000,
-        provider_availability={"provider-a": False, "provider-b": True, "provider-c": True, "provider-d": True},
+        provider_availability={"model-a": False, "provider-b": True, "provider-c": True, "provider-d": True},
     )
     decision = route_model(root, request, environ={})
     by_name = {item.profile: item for item in decision.candidates}
