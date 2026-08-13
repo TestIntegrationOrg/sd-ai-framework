@@ -79,11 +79,27 @@ def _task() -> RemediationTask:
     )
 
 
-def _workspace(tmp_path: Path, *, requirement: str = "Sign café scripts with Δ behavior."):
+def _workspace(
+    tmp_path: Path,
+    *,
+    requirement: str = "Sign café scripts with Δ behavior.",
+    max_context_chars: int | None = None,
+):
     root = tmp_path / "isolated hardening Ω"
     root.mkdir()
     init_project(root)
     install_v05_scaffold(root)
+    if max_context_chars is not None:
+        config = root / ".sdai" / "config.yaml"
+        text = config.read_text(encoding="utf-8")
+        config.write_text(
+            text.replace(
+                "max_context_chars_per_file: 30000",
+                f"max_context_chars_per_file: {max_context_chars}",
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.name", "SDAI Hardening Test")
     _git(root, "config", "user.email", "sdai@example.test")
@@ -239,13 +255,10 @@ def test_final_review_snapshot_fails_closed_when_workspace_changes_after_prepara
 
 
 def test_contract_persistence_rejects_prompt_larger_than_runtime_limit(tmp_path: Path) -> None:
-    root, _, ledger, task = _workspace(tmp_path, requirement="X" * 1600)
-    config = root / ".sdai" / "config.yaml"
-    text = config.read_text(encoding="utf-8")
-    config.write_text(
-        text.replace("max_context_chars_per_file: 30000", "max_context_chars_per_file: 1000"),
-        encoding="utf-8",
-        newline="\n",
+    root, _, ledger, task = _workspace(
+        tmp_path,
+        requirement="X" * 1600,
+        max_context_chars=1000,
     )
     dispatch = prepare_implementation_dispatch(ledger, task)
 
