@@ -5,12 +5,13 @@ from enum import Enum
 from hashlib import sha256
 import json
 import math
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from sdai.models import validate_feature_id
+from sdai.path_safety import PathSafetyError, ensure_within_project
 
 
 TRACE_GRAPH_API_VERSION = "sdai.trace-graph/v1"
@@ -198,7 +199,18 @@ def _normalize_metadata(value: Mapping[str, object] | None, *, label: str) -> di
         raise _fail("SDAI-TRACE-001", f"{label} must be a mapping")
     normalized = dict(value)
     _validate_json_value(normalized, label=label)
-    return normalized
+    cloned = json.loads(
+        json.dumps(
+            normalized,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    )
+    if not isinstance(cloned, dict):
+        raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")
+    return cloned
 
 
 def _normalize_entity_id(value: str) -> str:
@@ -284,16 +296,78 @@ class TraceProvenance:
             )
         if "source" not in value or "line" not in value:
             raise _fail("SDAI-TRACE-002", "provenance requires source and line")
+        source = value["source"]
+        line = value["line"]
+        detail = value.get("detail")
+        declaration_sha256 = value.get("declaration_sha256")
+        if not isinstance(source, str):
+            raise _fail("SDAI-TRACE-002", "provenance source must be a string")
+        if not isinstance(line, int) or isinstance(line, bool):
+            raise _fail("SDAI-TRACE-002", "provenance line must be an integer")
+        if detail is not None and not isinstance(detail, str):
+            raise _fail("SDAI-TRACE-002", "provenance detail must be null or a string")
+        if declaration_sha256 is not None and not isinstance(declaration_sha256, str):
+            raise _fail(
+                "SDAI-TRACE-002",
+                "provenance declaration_sha256 must be null or a string",
+            )
         return cls(
-            source=value["source"] if isinstance(value["source"], str) else "",
-            line=value["line"] if isinstance(value["line"], int) else 0,
-            detail=value.get("detail") if isinstance(value.get("detail"), str) else None,
-            declaration_sha256=(
-                value.get("declaration_sha256")
-                if isinstance(value.get("declaration_sha256"), str)
-                else None
-            ),
+            source=source,
+            line=line,
+            detail=detail,
+            declaration_sha256=declaration_sha256,
         )
+
+
+def trace_provenance_for_path(
+    project_root: Path,
+    path: Path,
+    *,
+    line: int,
+    detail: str | None = None,
+) -> TraceProvenance:
+    root = project_root.resolve()
+    candidate = path if path.is_absolute() else root / path
+    try:
+        ensure_within_project(root, candidate, label="trace provenance source")
+    except PathSafetyError as exc:
+        raise _fail(
+            "SDAI-TRACE-002",
+            "trace provenance source must stay inside the project root",
+        ) from exc
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise _fail(
+            "SDAI-TRACE-002",
+            "trace provenance source must stay inside the project root",
+        ) from exc
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise _fail(
+                "SDAI-TRACE-002",
+                f"trace provenance source contains a symlink component: {relative.as_posix()}",
+            )
+    if candidate.is_symlink() or not candidate.is_file():
+        raise _fail(
+            "SDAI-TRACE-002",
+            f"trace provenance source must be a regular non-symlink file: {relative.as_posix()}",
+        )
+    try:
+        digest = _sha256_bytes(candidate.read_bytes())
+    except OSError as exc:
+        raise _fail(
+            "SDAI-TRACE-002",
+            f"unable to read trace provenance source {relative.as_posix()}: {exc}",
+        ) from exc
+    return TraceProvenance(
+        source=relative.as_posix(),
+        line=line,
+        detail=detail,
+        declaration_sha256=digest,
+    )
 
 
 def _canonical_provenance(
