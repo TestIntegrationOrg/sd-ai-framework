@@ -357,7 +357,7 @@ def test_semantic_review_state_round_trip_preserves_utf8_and_current_truth(tmp_p
     review = _review(
         tmp_path,
         commit,
-        review_id="REVIEW-CAFÉ-001",
+        review_id="REVIEW-CAFE-001",
         subject="requirement:FR-001 café Δ",
         dimension=SemanticReviewDimension.UNDOCUMENTED_BEHAVIOR,
     )
