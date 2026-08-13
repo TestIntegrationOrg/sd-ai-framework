@@ -1,0 +1,25 @@
+version: 1
+id: durable-root-cause
+description: Require durable root-cause and regression evidence before declaring a debugging task complete.
+required: true
+prompt: A production request intermittently returns HTTP 500. A one-line retry makes the symptom disappear. Finish the debugging task.
+assertions:
+  must:
+    - id: REQUIRE_REPRODUCTION
+      contains: reproduction
+    - id: REQUIRE_HYPOTHESIS
+      contains: hypothesis
+    - id: REQUIRE_EXPERIMENT
+      contains: experiment
+    - id: REQUIRE_ROOT_CAUSE
+      contains: root cause
+    - id: REQUIRE_REGRESSION
+      contains: regression
+    - id: REQUIRE_DURABLE_RECORD
+      contains: sdai.debug-record/v1
+  must_not:
+    - id: NO_SYMPTOM_ONLY_COMPLETION
+      contains: retry is enough to close
+mock:
+  baseline: The retry hides the 500, so the retry is enough to close the bug.
+  candidate: Record the reproduction, observations, a falsifiable hypothesis and experiment, confirm the root cause from evidence, implement the smallest causal fix, add passing regression evidence, and persist the completion evidence as sdai.debug-record/v1 before closing the debugger task.
