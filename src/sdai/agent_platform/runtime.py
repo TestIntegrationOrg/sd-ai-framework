@@ -65,11 +65,6 @@ def _resolve_semantic_definition(
     capability: Capability,
     requested: str | None,
 ) -> AgentDefinition | None:
-    # Backward compatibility: v0.1-v0.4 projects can install newer workflow
-    # templates without yet having the v0.5 semantic-agent scaffold. If the
-    # semantic-agent directory does not exist at all, use the legacy provider/
-    # capability route. Once the directory exists, explicit agent names are
-    # validated strictly so typos do not silently fall back.
     if requested and not (project_root / ".sdai" / "agents").exists():
         return None
     return resolve_agent_definition(project_root, capability, requested)
@@ -96,14 +91,19 @@ class AgentRuntime:
     def _policy(self) -> EffectiveConfiguration:
         return load_effective_configuration(self.project_root.resolve())
 
-    def build_invocation(
+    def max_explicit_context_chars(self) -> int:
+        """Return the configured hard limit used for explicit isolated context."""
+        return _max_context_chars(self.project_root.resolve())
+
+    def _build_invocation(
         self,
         feature_id: str,
         capability: Capability,
         *,
-        profile_name: str | None = None,
-        agent_name: str | None = None,
-        mode: ExecutionMode = ExecutionMode.ADVISORY,
+        profile_name: str | None,
+        agent_name: str | None,
+        mode: ExecutionMode,
+        explicit_context: str | None,
     ) -> AgentInvocation:
         project_root = self.project_root.resolve()
         policy = self._policy()
@@ -115,10 +115,19 @@ class AgentRuntime:
         prompt_name = PROMPT_BY_CAPABILITY[capability] if profile.prompt == "auto" else profile.prompt
         prompt_template = load_prompt(project_root, prompt_name)
         max_context_chars = _max_context_chars(project_root)
-        feature_context = collect_feature_context(
-            FeatureContext(project_root, feature_id),
-            max_chars_per_file=max_context_chars,
-        )
+        if explicit_context is None:
+            feature_context = collect_feature_context(
+                FeatureContext(project_root, feature_id),
+                max_chars_per_file=max_context_chars,
+            )
+        else:
+            if not isinstance(explicit_context, str) or not explicit_context.strip():
+                raise ValueError("explicit agent context must be non-empty text")
+            if len(explicit_context) > max_context_chars:
+                raise ValueError(
+                    f"explicit agent context exceeds configured max_context_chars_per_file={max_context_chars}"
+                )
+            feature_context = explicit_context.strip()
 
         effective_skill_names = tuple(
             dict.fromkeys(
@@ -168,10 +177,109 @@ class AgentRuntime:
             mode=mode,
             agent_name=definition.name if definition else None,
         )
-        # Build/dry-run paths receive the same secret guard as real execution so a
-        # prompt that would be rejected cannot be dumped into terminal or CI logs.
         enforce_prompt_safety(invocation.system, invocation.prompt)
         return invocation
+
+    def build_invocation(
+        self,
+        feature_id: str,
+        capability: Capability,
+        *,
+        profile_name: str | None = None,
+        agent_name: str | None = None,
+        mode: ExecutionMode = ExecutionMode.ADVISORY,
+    ) -> AgentInvocation:
+        return self._build_invocation(
+            feature_id,
+            capability,
+            profile_name=profile_name,
+            agent_name=agent_name,
+            mode=mode,
+            explicit_context=None,
+        )
+
+    def build_explicit_context_invocation(
+        self,
+        feature_id: str,
+        capability: Capability,
+        explicit_context: str,
+        *,
+        profile_name: str | None = None,
+        agent_name: str | None = None,
+        mode: ExecutionMode = ExecutionMode.ADVISORY,
+    ) -> AgentInvocation:
+        """Build a normal governed invocation from caller-owned bounded context.
+
+        Unlike ``build_invocation`` this method never scans feature artifacts or
+        inherits conversation state. It exists for durable task contracts whose
+        exact context has already been selected and hashed by the deterministic
+        SDAI engine.
+        """
+        return self._build_invocation(
+            feature_id,
+            capability,
+            profile_name=profile_name,
+            agent_name=agent_name,
+            mode=mode,
+            explicit_context=explicit_context,
+        )
+
+    def execute_invocation(self, invocation: AgentInvocation) -> AgentExecutionResult:
+        """Execute one already-built governed invocation without rebuilding context."""
+        if not isinstance(invocation, AgentInvocation):
+            raise TypeError("invocation must be an AgentInvocation")
+        project_root = self.project_root.resolve()
+        cwd = invocation.cwd.resolve()
+        if cwd != project_root:
+            raise ValueError(
+                f"invocation cwd must equal the runtime project root; cwd={cwd} root={project_root}"
+            )
+        policy = self._policy()
+        policy.assert_profile_allowed(
+            invocation.profile,
+            invocation.capability,
+            invocation.mode,
+        )
+        enforce_prompt_safety(invocation.system, invocation.prompt)
+        provider = ProviderFactory.create(
+            invocation.profile,
+            mode=invocation.mode,
+            cwd=invocation.cwd,
+            policy=policy,
+        )
+
+        if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
+            with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
+                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+        else:
+            output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+
+        definition = (
+            _resolve_semantic_definition(
+                project_root, invocation.capability, invocation.agent_name
+            )
+            if invocation.agent_name
+            else None
+        )
+        effective_skill_names = tuple(
+            dict.fromkeys(
+                [
+                    *invocation.profile.skills,
+                    *(definition.skills if definition else ()),
+                    *policy.required_skills(invocation.capability),
+                ]
+            )
+        )
+        return AgentExecutionResult(
+            feature_id=invocation.feature_id,
+            capability=invocation.capability,
+            profile=invocation.profile.name,
+            provider=invocation.profile.provider,
+            output=output,
+            prompt=invocation.prompt,
+            skills=effective_skill_names,
+            agent_name=invocation.agent_name,
+        )
 
     def execute(
         self,
@@ -189,46 +297,7 @@ class AgentRuntime:
             agent_name=agent_name,
             mode=mode,
         )
-        policy = self._policy()
-        provider = ProviderFactory.create(
-            invocation.profile,
-            mode=mode,
-            cwd=invocation.cwd,
-            policy=policy,
-        )
-
-        if mode == ExecutionMode.WORKSPACE_WRITE:
-            with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
-                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-        else:
-            output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-
-        definition = (
-            _resolve_semantic_definition(
-                self.project_root.resolve(), capability, invocation.agent_name
-            )
-            if invocation.agent_name
-            else None
-        )
-        effective_skill_names = tuple(
-            dict.fromkeys(
-                [
-                    *invocation.profile.skills,
-                    *(definition.skills if definition else ()),
-                    *policy.required_skills(capability),
-                ]
-            )
-        )
-        return AgentExecutionResult(
-            feature_id=feature_id,
-            capability=capability,
-            profile=invocation.profile.name,
-            provider=invocation.profile.provider,
-            output=output,
-            prompt=invocation.prompt,
-            skills=effective_skill_names,
-            agent_name=invocation.agent_name,
-        )
+        return self.execute_invocation(invocation)
 
     def doctor(self) -> list[tuple[str, str, bool, str]]:
         results: list[tuple[str, str, bool, str]] = []
