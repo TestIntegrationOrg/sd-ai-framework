@@ -92,8 +92,17 @@ def _validate_review_workspace(root: Path, contract: IsolatedTaskContract) -> No
         return
     snapshot_item = _workspace_snapshot_item(contract)
     if snapshot_item is None:
+        # Retained compatibility contracts from build_review_contract predate the
+        # hardened workspace-snapshot path. They continue to receive file-context
+        # freshness validation, while prepare_independent_review_contract carries
+        # the stronger tracked+untracked snapshot and recomputation binding.
+        if contract.stage in {
+            IsolatedStage.SPEC_COMPLIANCE_REVIEW,
+            IsolatedStage.CODE_QUALITY_REVIEW,
+        }:
+            return
         raise IsolatedTaskError(
-            "SDAI-ISOLATED-016: review contract is missing its workspace snapshot"
+            "SDAI-ISOLATED-016: final review contract is missing its workspace snapshot"
         )
     try:
         head = current_head(root)
