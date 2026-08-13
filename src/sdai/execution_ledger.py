@@ -30,6 +30,7 @@ _EVENT_KINDS = frozenset(
     {
         "run.created",
         "run.paused",
+        "run.resumed",
         "run.completed",
         "run.failed",
         "run.cancelled",
@@ -61,6 +62,18 @@ _EVENT_KEYS = frozenset(
         "sha256",
     }
 )
+_CHECKPOINT_KEYS = frozenset(
+    {
+        "apiVersion",
+        "run_id",
+        "feature_id",
+        "last_sequence",
+        "last_sha256",
+        "state",
+        "extra",
+        "sha256",
+    }
+)
 _ZERO_HASH = "sha256:" + ("0" * 64)
 
 
@@ -88,6 +101,15 @@ def _canonical_bytes(payload: Mapping[str, object]) -> bytes:
     except (TypeError, ValueError) as exc:
         raise _fail("SDAI-LEDGER-002", f"record is not finite JSON data: {exc}") from exc
     return text.encode("utf-8")
+
+
+def _write_all(fd: int, content: bytes) -> None:
+    view = memoryview(content)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise _fail("SDAI-LEDGER-007", "operating system returned a short/zero append write")
+        view = view[written:]
 
 
 def _validate_json_value(value: object, *, label: str) -> None:
@@ -300,7 +322,9 @@ class LedgerEvent:
         if len(keys) != len(set(keys)):
             raise _fail("SDAI-LEDGER-004", "event contains duplicate binding kind/source entries")
         git_commit_raw = raw.get("git_commit")
-        git_commit = _validate_commit(git_commit_raw if isinstance(git_commit_raw, str) else None)
+        if git_commit_raw is not None and not isinstance(git_commit_raw, str):
+            raise _fail("SDAI-LEDGER-004", "event git_commit must be a string or null")
+        git_commit = _validate_commit(git_commit_raw)
         previous = raw.get("previous_sha256")
         digest = raw.get("sha256")
         if not isinstance(previous, str) or not _SHA256.fullmatch(previous):
@@ -393,7 +417,7 @@ class _LedgerLock:
                 f"execution ledger is locked by another process: {self.path}",
             ) from exc
         payload = f"pid={os.getpid()} acquired_at={_now().isoformat()}\n".encode("utf-8")
-        os.write(self.fd, payload)
+        _write_all(self.fd, payload)
         os.fsync(self.fd)
         return self
 
@@ -561,7 +585,7 @@ class ExecutionLedger:
             flags |= os.O_NOFOLLOW
         fd = os.open(self.events_path, flags, 0o600)
         try:
-            os.write(fd, line)
+            _write_all(fd, line)
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -628,6 +652,16 @@ class ExecutionLedger:
             return
         if state.last_sequence == 0:
             raise _fail("SDAI-LEDGER-005", "run.created must be the first event")
+        if state.status == "paused" and kind not in {"run.resumed", "run.failed", "run.cancelled"}:
+            raise _fail("SDAI-LEDGER-005", "paused run must be resumed before additional task/run activity")
+        if kind == "run.paused":
+            if state.status != "active":
+                raise _fail("SDAI-LEDGER-005", f"run cannot pause from status {state.status}")
+            return
+        if kind == "run.resumed":
+            if state.status != "paused":
+                raise _fail("SDAI-LEDGER-005", f"run cannot resume from status {state.status}")
+            return
         if kind == "task.registered":
             assert task_id is not None
             if task_id in tasks:
@@ -690,6 +724,8 @@ class ExecutionLedger:
                 run_status = "active"
             elif event.kind == "run.paused":
                 run_status = "paused"
+            elif event.kind == "run.resumed":
+                run_status = "active"
             elif event.kind == "run.completed":
                 run_status = "completed"
             elif event.kind == "run.failed":
@@ -743,7 +779,7 @@ class ExecutionLedger:
         _validate_json_value(extra_dict, label="checkpoint extra")
         with self._lock():
             state = self._reconstruct_unlocked()
-            payload = {
+            body: dict[str, object] = {
                 "apiVersion": "sdai.execution-checkpoint/v1",
                 "run_id": self.manifest.run_id,
                 "feature_id": self.manifest.feature_id,
@@ -752,6 +788,8 @@ class ExecutionLedger:
                 "state": state.as_dict(),
                 "extra": extra_dict,
             }
+            payload = dict(body)
+            payload["sha256"] = _sha256_bytes(_canonical_bytes(body))
             _atomic_json(self.checkpoint_path, payload)
             return payload
 
@@ -765,13 +803,23 @@ class ExecutionLedger:
                 payload = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise _fail("SDAI-LEDGER-004", f"invalid checkpoint.json: {exc}") from exc
-            if not isinstance(payload, Mapping) or payload.get("apiVersion") != "sdai.execution-checkpoint/v1":
-                raise _fail("SDAI-LEDGER-004", "invalid execution checkpoint contract")
+            if not isinstance(payload, Mapping) or set(payload) != _CHECKPOINT_KEYS:
+                raise _fail("SDAI-LEDGER-004", "invalid execution checkpoint fields")
+            if payload.get("apiVersion") != "sdai.execution-checkpoint/v1":
+                raise _fail("SDAI-LEDGER-004", "invalid execution checkpoint apiVersion")
+            body = {key: payload[key] for key in _CHECKPOINT_KEYS if key != "sha256"}
+            expected = _sha256_bytes(_canonical_bytes(body))
+            if payload.get("sha256") != expected:
+                raise _fail("SDAI-LEDGER-004", "checkpoint content hash mismatch")
             state = self._reconstruct_unlocked()
             if payload.get("run_id") != self.manifest.run_id or payload.get("feature_id") != self.manifest.feature_id:
                 raise _fail("SDAI-LEDGER-004", "checkpoint run/feature identity mismatch")
             if payload.get("last_sequence") != state.last_sequence or payload.get("last_sha256") != state.last_sha256:
                 raise _fail("SDAI-LEDGER-004", "checkpoint is stale relative to the current event ledger")
+            if payload.get("state") != state.as_dict():
+                raise _fail("SDAI-LEDGER-004", "checkpoint state does not match reconstructed ledger state")
+            if not isinstance(payload.get("extra"), Mapping):
+                raise _fail("SDAI-LEDGER-004", "checkpoint extra must be a mapping")
             return dict(payload)
 
 
@@ -874,4 +922,14 @@ def load_execution_run(project_root: Path, feature_id: str, run_id: str) -> Exec
     events = ledger.load_events()
     if not events or events[0].kind != "run.created":
         raise _fail("SDAI-LEDGER-004", "execution run is missing its run.created ledger event")
+    created = events[0]
+    current_manifest_binding = ledger.binding_for_file(manifest_path, kind="evidence")
+    if current_manifest_binding not in created.bindings:
+        raise _fail("SDAI-LEDGER-004", "run.json byte identity does not match run.created evidence binding")
+    if created.git_commit != manifest.baseline_commit:
+        raise _fail("SDAI-LEDGER-004", "run.created Git baseline does not match run.json")
+    if created.payload.get("workflow") != manifest.workflow:
+        raise _fail("SDAI-LEDGER-004", "run.created workflow does not match run.json")
+    if created.payload.get("manifest_sha256") != manifest.sha256:
+        raise _fail("SDAI-LEDGER-004", "run.created manifest hash does not match run.json")
     return ledger
