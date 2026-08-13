@@ -170,7 +170,7 @@ def evaluate_change_completion(
                     dimension,
                     paths.get(dimension.value),
                     head=head,
-                    expected_subjects={f"feature:ledger.manifest.feature_id"},
+                    expected_subjects={f"feature:{ledger.manifest.feature_id}"},
                 )
             )
         else:
