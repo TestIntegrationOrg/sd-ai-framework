@@ -13,6 +13,10 @@ class ProfileError(RuntimeError):
 
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COST_CLASSES = frozenset({"economy", "standard", "premium"})
+_ROUTING_TIERS = frozenset({"standard", "advanced"})
+_RISKS = ("trivial", "standard", "critical", "regulated")
+_COMPLEXITIES = ("low", "medium", "high", "extreme")
 
 
 def _capabilities(values: object) -> tuple[Capability, ...]:
@@ -39,6 +43,60 @@ def _environment_allowlist(values: object, profile: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _enum_values(values: object, allowed: tuple[str, ...], *, label: str, profile: str) -> tuple[str, ...]:
+    if values is None:
+        return allowed
+    if not isinstance(values, list) or not values:
+        raise ProfileError(f"profile '{profile}' {label} must be a non-empty list")
+    result: list[str] = []
+    for raw in values:
+        value = str(raw).strip().lower()
+        if value not in allowed:
+            raise ProfileError(f"profile '{profile}' has unsupported {label} value '{raw}'")
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _technologies(values: object, profile: str) -> tuple[str, ...]:
+    if values is None:
+        return ("*",)
+    if not isinstance(values, list) or not values:
+        raise ProfileError(f"profile '{profile}' technologies must be a non-empty list")
+    result: list[str] = []
+    for raw in values:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ProfileError(f"profile '{profile}' technologies must contain non-empty strings")
+        value = raw.strip().casefold()
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _routing_metadata(raw: dict[object, object], profile: str) -> dict[str, object]:
+    cost_class = str(raw.get("cost_class") or "standard").strip().lower()
+    if cost_class not in _COST_CLASSES:
+        raise ProfileError(f"profile '{profile}' cost_class must be economy, standard, or premium")
+    routing_tier = str(raw.get("routing_tier") or "advanced").strip().lower()
+    if routing_tier not in _ROUTING_TIERS:
+        raise ProfileError(f"profile '{profile}' routing_tier must be standard or advanced")
+    max_context = raw.get("max_context_chars", 1_000_000)
+    priority = raw.get("routing_priority", 100)
+    if not isinstance(max_context, int) or isinstance(max_context, bool) or not 1_000 <= max_context <= 10_000_000:
+        raise ProfileError(f"profile '{profile}' max_context_chars must be between 1000 and 10000000")
+    if not isinstance(priority, int) or isinstance(priority, bool) or not 0 <= priority <= 1_000_000:
+        raise ProfileError(f"profile '{profile}' routing_priority must be between 0 and 1000000")
+    return {
+        "cost_class": cost_class,
+        "routing_tier": routing_tier,
+        "risk_levels": _enum_values(raw.get("risk_levels"), _RISKS, label="risk_levels", profile=profile),
+        "complexity_levels": _enum_values(raw.get("complexity_levels"), _COMPLEXITIES, label="complexity_levels", profile=profile),
+        "technologies": _technologies(raw.get("technologies"), profile),
+        "max_context_chars": max_context,
+        "routing_priority": priority,
+    }
+
+
 def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
     project_root = project_root.resolve()
     path = ensure_within_project(
@@ -54,6 +112,7 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
         if not isinstance(raw, dict):
             raise ProfileError(f"profile '{name}' must be a mapping")
         profile_name = str(name)
+        routing = _routing_metadata(raw, profile_name)
         profiles[profile_name] = AgentProfile(
             name=profile_name,
             provider=str(raw.get("provider") or name),
@@ -66,9 +125,8 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
             extra_args=tuple(str(v) for v in (raw.get("extra_args") or [])),
             command=tuple(str(v) for v in (raw.get("command") or [])),
             workspace_write_args=tuple(str(v) for v in (raw.get("workspace_write_args") or [])),
-            environment_allowlist=_environment_allowlist(
-                raw.get("environment_allowlist"), profile_name
-            ),
+            environment_allowlist=_environment_allowlist(raw.get("environment_allowlist"), profile_name),
+            **routing,
         )
     return profiles
 

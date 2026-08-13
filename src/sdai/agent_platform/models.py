@@ -35,6 +35,13 @@ class AgentProfile:
     command: tuple[str, ...] = ()
     workspace_write_args: tuple[str, ...] = ()
     environment_allowlist: tuple[str, ...] = ()
+    cost_class: str = "standard"
+    routing_tier: str = "advanced"
+    risk_levels: tuple[str, ...] = ("trivial", "standard", "critical", "regulated")
+    complexity_levels: tuple[str, ...] = ("low", "medium", "high", "extreme")
+    technologies: tuple[str, ...] = ("*",)
+    max_context_chars: int = 1_000_000
+    routing_priority: int = 100
 
     def supports(self, capability: Capability) -> bool:
         return capability in self.capabilities
@@ -59,6 +66,7 @@ class AgentInvocation:
     cwd: Path
     mode: ExecutionMode = ExecutionMode.ADVISORY
     agent_name: str | None = None
+    routing_decision: str | None = None
 
 
 @dataclass(frozen=True)
