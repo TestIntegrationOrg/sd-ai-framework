@@ -1,11 +1,11 @@
 version: 1
 capabilities: [coding, review, testing]
-compatible_agents: []
+compatible_agents: [debugger]
 requires: []
 compatibility: {}
 selection:
   auto: true
-  roles: []
+  roles: [debugger]
   capabilities: [coding, review, testing]
-  task_keywords: [debug, debugging, failure, failing, bug, regression, incident]
+  task_keywords: [debug, debugging, failure, failing, bug, regression, incident, root-cause]
   domains: []
