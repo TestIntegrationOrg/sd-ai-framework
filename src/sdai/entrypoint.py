@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from sdai.analysis_cli import add_analysis_parser, run_analysis_command
 from sdai.artifact_state_cli import add_artifact_state_parser, run_artifact_state_command
 from sdai.cli import main as legacy_main, parser as legacy_parser
 from sdai.constitution import (
@@ -137,6 +138,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_schema_parser(commands)
     add_artifact_state_parser(commands)
     add_workflow_parser(commands)
+    add_analysis_parser(commands)
     return parser
 
 
@@ -283,6 +285,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "workflow":
         return run_workflow_command(root, args)
 
+    if args.managed_command == "analyze":
+        return run_analysis_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -316,6 +321,8 @@ def _print_top_level_help() -> None:
         "\nWorkflow composition commands:\n"
         "  sdai workflow validate <name> [--input NAME=YAML_VALUE] [--json]\n"
         "  sdai workflow explain <name> [--input NAME=YAML_VALUE] [--json]\n"
+        "\nCross-artifact analysis:\n"
+        "  sdai analyze <feature> [--risk standard] [--json] [--path PATH]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -340,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema",
         "artifact",
         "workflow",
+        "analyze",
     }:
         try:
             return _run_managed_command(effective)
