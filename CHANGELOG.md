@@ -2,6 +2,30 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — 0.8 artifact graph + workflow composition + isolation
+
+### Added
+- File-driven `sdai/v1` ArtifactSchema registry with deterministic built-in → organization → repository → user layering, provenance, required/locked controls, dependency mandates, topological ordering, and cycle/missing-edge validation.
+- Hash-bound artifact lifecycle state with `fresh`, `stale`, `missing`, and `blocked` states, transitive dependency invalidation, and approval/validation/verification evidence bindings.
+- Reusable WorkflowComponent manifests with typed/default/enum/sensitive inputs, deterministic interpolation, component dependency validation, redacted provenance, and v5 compatibility.
+- Workflow inheritance plus organization → repository → user overlays and safe lifecycle hooks, with organization-mandated step/hook non-weakening.
+- Strict PluginStep permission SDK and workflow v8 integration through trusted registered executors only, including layered policy denial, filesystem/environment/command permissions, structured results/evidence, retry handling, and existing workspace-write approval controls.
+- Git worktree execution mode via `sdai run --isolation worktree`, with verified clean baseline commit/tree evidence, dedicated isolated branches, conservative cleanup, and preservation of dirty implementation work.
+
+### Security, compatibility, and hardening
+- Organization artifact requirements/dependency edges and organization workflow controls cannot be weakened by repository/user overlays.
+- Artifact state records are domain-safe and collision-resistant; malformed dependency/evidence paths fail closed.
+- Lifecycle hooks remain advisory/gate/validation-only; provider/shell execution fields are not accepted through overlay configuration.
+- Plugin YAML cannot import executable code or introduce a generic shell primitive. Network access fails closed in the cross-platform v1 permission contract.
+- Plugin protected-path checks cover symlink resolution, case-insensitive protected namespaces, CODEOWNERS locations, and trusted executable search roots instead of ambient/workspace `PATH`.
+- Plugin steps expanded from reusable components remain subject to workflow version and organization permission policy; overlays/hooks remain plugin-free in v1.
+- Worktree mode rejects dirty or detached source baselines, strips dangerous Git environment overrides, and records evidence outside tracked source files.
+- Worktree creation verifies a detached copy of the exact source commit/tree before creating its dedicated branch; rollback cannot delete a pre-existing branch collision.
+- Existing v0.5/v0.6/v0.7 workflow, provider, specification, extension, UTF-8, and upgrade compatibility tests remain part of the full regression gate.
+
+### Release gate
+The 0.8 implementation slice is considered complete only when the entire repository suite passes on Ubuntu and Windows for Python 3.11 and 3.12, including `tests/test_v06_release_compatibility.py`, `tests/test_v07_release_compatibility.py`, and `tests/test_v08_release_compatibility.py`, with no unresolved actionable review finding on the exact merge head. Package/tag publication remains a separate intentional release action.
+
 ## Unreleased — 0.7 current truth + technology skills
 
 ### Added
