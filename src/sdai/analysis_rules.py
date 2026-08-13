@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 import re
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -161,7 +160,6 @@ def _conflicting_duplicates(
 
 
 def _orphan_findings(
-    index: FeatureArtifactIndex,
     grouped: Mapping[str, tuple[IndexedEntity, ...]],
     edge_map: Mapping[str, tuple[RelationshipEdge, ...]],
 ) -> list[AnalysisFinding]:
@@ -376,6 +374,51 @@ def _stale_artifacts(
     return findings
 
 
+def _dedupe_findings(findings: Iterable[AnalysisFinding]) -> tuple[AnalysisFinding, ...]:
+    grouped: dict[tuple[str, str | None], list[AnalysisFinding]] = defaultdict(list)
+    for finding in findings:
+        grouped[(finding.code, finding.entity_id)].append(finding)
+
+    result: list[AnalysisFinding] = []
+    for key in sorted(grouped, key=lambda item: (item[0], item[1] or "")):
+        values = grouped[key]
+        first = sorted(
+            values,
+            key=lambda item: (
+                item.message,
+                tuple((ev.source, ev.line, ev.detail or "") for ev in item.evidence),
+            ),
+        )[0]
+        evidence_by_key: dict[tuple[str, int, str | None, str | None], SourceEvidence] = {}
+        for finding in values:
+            for evidence in finding.evidence:
+                evidence_by_key[
+                    (evidence.source, evidence.line, evidence.entity_id, evidence.detail)
+                ] = evidence
+        evidence = tuple(
+            evidence_by_key[item]
+            for item in sorted(
+                evidence_by_key,
+                key=lambda value: (
+                    value[0],
+                    value[1],
+                    value[2] or "",
+                    value[3] or "",
+                ),
+            )
+        )
+        result.append(
+            AnalysisFinding(
+                code=first.code,
+                severity=first.severity,
+                message=first.message,
+                entity_id=first.entity_id,
+                evidence=evidence,
+            )
+        )
+    return tuple(result)
+
+
 def analyze_feature(
     project_root: Path,
     feature_id: str,
@@ -391,7 +434,7 @@ def analyze_feature(
     edge_map = _edges_by_id(index)
 
     findings: list[AnalysisFinding] = []
-    findings.extend(_orphan_findings(index, grouped, edge_map))
+    findings.extend(_orphan_findings(grouped, edge_map))
     findings.extend(_missing_nfr(grouped))
     findings.extend(
         _conflicting_duplicates(
@@ -422,5 +465,5 @@ def analyze_feature(
     return AnalysisReport(
         feature_id=index.feature_id,
         index_sha256=index.sha256,
-        findings=tuple(findings),
+        findings=_dedupe_findings(findings),
     )
