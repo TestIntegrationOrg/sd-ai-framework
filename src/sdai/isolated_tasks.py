@@ -353,8 +353,6 @@ class IsolatedTaskContract:
             if self.worker_invocation_id is None:
                 raise _fail("SDAI-ISOLATED-005", "review stages require the independent worker invocation id")
             if self.worker_invocation_id in predecessor:
-                # The worker ID is carried separately so reviewers cannot accidentally
-                # treat the worker invocation as a prior reviewer approval.
                 raise _fail("SDAI-ISOLATED-005", "worker invocation must not be a predecessor review approval")
 
     def body_dict(self) -> dict[str, object]:
@@ -1051,7 +1049,7 @@ def persist_stage_result(
     if ledger is not None:
         if ledger.manifest.feature_id != contract.feature_id:
             raise _fail("SDAI-ISOLATED-013", "execution ledger feature does not match isolated result")
-        state = ledger.load_state()
+        state = ledger.reconstruct()
         task_state = state.task_map().get(contract.task_id)
         if task_state is None:
             raise _fail("SDAI-ISOLATED-013", "isolated ledger task is not registered")
