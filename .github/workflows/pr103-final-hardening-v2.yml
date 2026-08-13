@@ -1,0 +1,98 @@
+name: PR103 Final Trace Hardening v2
+
+on:
+  push:
+    branches:
+      - agent/issue-103-trace-graph-contract
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/issue-103-trace-graph-contract
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply final trace integrity hardening
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_count(path: Path, old: str, new: str, expected: int = 1) -> None:
+              text = path.read_text(encoding="utf-8")
+              actual = text.count(old)
+              if actual != expected:
+                  raise SystemExit(
+                      f"patch anchor count mismatch in {path}: expected={expected} actual={actual} anchor={old[:100]!r}"
+                  )
+              path.write_text(text.replace(old, new), encoding="utf-8")
+
+          source = Path("src/sdai/trace_graph.py")
+          replace_count(
+              source,
+              '''def _normalize_metadata(value: Mapping[str, object] | None, *, label: str) -> dict[str, object]:\n    if value is None:\n        return {}\n    if not isinstance(value, Mapping):\n        raise _fail("SDAI-TRACE-001", f"{label} must be a mapping")\n    normalized = dict(value)\n    _validate_json_value(normalized, label=label)\n    cloned = json.loads(\n        json.dumps(\n            normalized,\n            sort_keys=True,\n            ensure_ascii=False,\n            separators=(",", ":"),\n            allow_nan=False,\n        )\n    )\n    if not isinstance(cloned, dict):\n        raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")\n    return cloned\n''',
+              '''def _freeze_json(value: object) -> object:\n    if isinstance(value, Mapping):\n        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})\n    if isinstance(value, (list, tuple)):\n        return tuple(_freeze_json(item) for item in value)\n    return value\n\n\ndef _thaw_json(value: object) -> object:\n    if isinstance(value, Mapping):\n        return {key: _thaw_json(item) for key, item in value.items()}\n    if isinstance(value, tuple):\n        return [_thaw_json(item) for item in value]\n    return value\n\n\ndef _normalize_metadata(\n    value: Mapping[str, object] | None,\n    *,\n    label: str,\n) -> Mapping[str, object]:\n    if value is None:\n        return MappingProxyType({})\n    if not isinstance(value, Mapping):\n        raise _fail("SDAI-TRACE-001", f"{label} must be a mapping")\n    normalized = dict(value)\n    _validate_json_value(normalized, label=label)\n    cloned = json.loads(\n        json.dumps(\n            normalized,\n            sort_keys=True,\n            ensure_ascii=False,\n            separators=(",", ":"),\n            allow_nan=False,\n        )\n    )\n    if not isinstance(cloned, dict):\n        raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")\n    frozen = _freeze_json(cloned)\n    if not isinstance(frozen, Mapping):\n        raise _fail("SDAI-TRACE-001", f"{label} must normalize to a mapping")\n    return frozen\n\n\ndef _metadata_dict(value: Mapping[str, object] | None) -> dict[str, object]:\n    thawed = _thaw_json(value or {})\n    if not isinstance(thawed, dict):\n        raise _fail("SDAI-TRACE-001", "trace metadata must normalize to a mapping")\n    return thawed\n''',
+          )
+          replace_count(
+              source,
+              '            MappingProxyType(_normalize_metadata(self.metadata, label=f"node {self.node_id} metadata")),\n',
+              '            _normalize_metadata(self.metadata, label=f"node {self.node_id} metadata"),\n',
+          )
+          replace_count(
+              source,
+              '            MappingProxyType(_normalize_metadata(self.metadata, label=f"edge {self.edge_id} metadata")),\n',
+              '            _normalize_metadata(self.metadata, label=f"edge {self.edge_id} metadata"),\n',
+          )
+          replace_count(
+              source,
+              'dict(self.metadata or {})',
+              '_metadata_dict(self.metadata)',
+              expected=4,
+          )
+          replace_count(
+              source,
+              'dict(existing.metadata or {})',
+              '_metadata_dict(existing.metadata)',
+              expected=2,
+          )
+          replace_count(
+              source,
+              '''    try:\n        digest = _sha256_bytes(candidate.read_bytes())\n    except OSError as exc:\n        raise _fail(\n            "SDAI-TRACE-002",\n            f"unable to read trace provenance source {relative.as_posix()}: {exc}",\n        ) from exc\n    return TraceProvenance(\n''',
+              '''    try:\n        content = candidate.read_bytes()\n    except OSError as exc:\n        raise _fail(\n            "SDAI-TRACE-002",\n            f"unable to read trace provenance source {relative.as_posix()}: {exc}",\n        ) from exc\n    try:\n        text = content.decode("utf-8")\n    except UnicodeDecodeError as exc:\n        raise _fail(\n            "SDAI-TRACE-002",\n            f"trace provenance source must be valid UTF-8 text: {relative.as_posix()}",\n        ) from exc\n    line_count = len(text.splitlines())\n    if line > line_count:\n        raise _fail(\n            "SDAI-TRACE-002",\n            f"trace provenance line {line} is outside {relative.as_posix()} (lines={line_count})",\n        )\n    digest = _sha256_bytes(content)\n    return TraceProvenance(\n''',
+          )
+
+          tests = Path("tests/test_trace_graph_v010.py")
+          replace_count(
+              tests,
+              '''    assert graph.to_json() == original_json\n    assert graph.node_map[node.node_id].metadata["tags"] == ["security", "signing"]\n\n\ndef test_repository_provenance_helper_preserves_unicode_and_rejects_symlinks(\n''',
+              '''    assert graph.to_json() == original_json\n    stored_tags = graph.node_map[node.node_id].metadata["tags"]\n    assert stored_tags == ("security", "signing")\n    with pytest.raises(AttributeError):\n        stored_tags.append("direct-mutation")  # type: ignore[union-attr]\n    with pytest.raises(TypeError):\n        graph.node_map[node.node_id].metadata["new"] = "mutation"  # type: ignore[index]\n    assert graph.to_json() == original_json\n\n\ndef test_repository_provenance_helper_preserves_unicode_and_rejects_symlinks(\n''',
+          )
+          replace_count(
+              tests,
+              '''    assert provenance.declaration_sha256 == "sha256:" + __import__("hashlib").sha256(source.read_bytes()).hexdigest()\n\n    outside = tmp_path / "outside.md"\n''',
+              '''    assert provenance.declaration_sha256 == "sha256:" + __import__("hashlib").sha256(source.read_bytes()).hexdigest()\n\n    with pytest.raises(TraceGraphError, match="outside"):\n        trace_provenance_for_path(root, source, line=2)\n\n    invalid_utf8 = root / "invalid.bin"\n    invalid_utf8.write_bytes(b"\\xff\\xfe")\n    with pytest.raises(TraceGraphError, match="valid UTF-8"):\n        trace_provenance_for_path(root, invalid_utf8, line=1)\n\n    outside = tmp_path / "outside.md"\n''',
+          )
+          PY
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Run trace contract and 0.9 release regressions
+        run: pytest -q tests/test_trace_graph_v010.py tests/test_v09_release_compatibility.py
+      - name: Commit final hardening
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/sdai/trace_graph.py tests/test_trace_graph_v010.py
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: make trace graph metadata and provenance immutable (#103)"
+          git push origin HEAD:agent/issue-103-trace-graph-contract
