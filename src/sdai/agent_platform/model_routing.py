@@ -186,6 +186,8 @@ def _availability(request: RoutingRequest, profile: AgentProfile) -> bool | None
     availability = request.provider_availability or {}
     if profile.name in availability:
         return availability[profile.name]
+    if profile.model is not None and profile.model in availability:
+        return availability[profile.model]
     if profile.provider in availability:
         return availability[profile.provider]
     return None
@@ -266,8 +268,8 @@ def _candidate(
     if eligible:
         rank = (
             profile.routing_priority,
-            0 if profile.name == default_profile else 1,
             _COST_RANK[profile.cost_class],
+            0 if profile.name == default_profile else 1,
             profile.provider,
             profile.model or "",
             profile.name,
