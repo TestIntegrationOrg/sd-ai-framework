@@ -22,6 +22,7 @@ from sdai.agent_platform.models import (
 from sdai.convergence import RemediationTask
 from sdai.execution_ledger import ExecutionLedger, HashBinding
 from sdai.execution_resume import resume_execution
+from sdai.isolated_workspace import IsolatedWorkspaceError, render_workspace_snapshot
 from sdai.models import validate_feature_id
 from sdai.path_safety import PathSafetyError, ensure_within_project
 from sdai.text import TextEncodingError, read_utf8_text
@@ -353,6 +354,7 @@ class IsolatedTaskContract:
             if self.worker_invocation_id is None:
                 raise _fail("SDAI-ISOLATED-005", "review stages require the independent worker invocation id")
             if self.worker_invocation_id in predecessor:
+                # Worker identity is carried separately from prior reviewer approvals.
                 raise _fail("SDAI-ISOLATED-005", "worker invocation must not be a predecessor review approval")
 
     def body_dict(self) -> dict[str, object]:
@@ -664,6 +666,14 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 def persist_contract(project_root: Path, contract: IsolatedTaskContract) -> Path:
     root = project_root.resolve()
+    runtime_limit = AgentRuntime(root).max_explicit_context_chars()
+    rendered_context = contract.prompt_context()
+    if len(rendered_context) > runtime_limit:
+        raise _fail(
+            "SDAI-ISOLATED-009",
+            "isolated contract prompt context exceeds configured runtime limit; "
+            f"rendered={len(rendered_context)} limit={runtime_limit}",
+        )
     path = _contract_path(root, contract)
     content = contract.to_json().encode("utf-8") + b"\n"
     if path.exists():
@@ -730,7 +740,6 @@ def register_remediation_task(ledger: ExecutionLedger, task: RemediationTask) ->
                 "round_id": task.round_id,
             },
         )
-        attempt = 1
     brief = task.to_json() + "\n"
     path = ledger.task_record_paths(task.task_id)["brief"]
     if path.exists():
@@ -876,7 +885,7 @@ def build_review_contract(
             raise _fail("SDAI-ISOLATED-011", "code-quality review requires passing spec-compliance review")
         predecessor = (prior_review.invocation.invocation_id,)
     root = project_root.resolve()
-    attempt = implementation.invocation.stage and _attempt_from_result_path(root, task.feature_id, task.task_id, implementation)
+    attempt = _attempt_from_result_path(root, task.feature_id, task.task_id, implementation)
     existing = load_persisted_contract(root, task.feature_id, task.task_id, attempt, stage)
     if existing is not None:
         return existing
@@ -1146,17 +1155,29 @@ def build_final_change_review_contract(
         )
     baseline = _commit(baseline_commit)
     head = _head(root)
-    diff = _git(root, "diff", "--no-ext-diff", "--unified=3", baseline, "--", ".")
-    if len(diff) > _MAX_CONTEXT_CHARS:
-        raise _fail("SDAI-ISOLATED-015", "whole-change Git diff exceeds final review context limit")
+    try:
+        snapshot = render_workspace_snapshot(root, baseline)
+    except IsolatedWorkspaceError as exc:
+        raise _fail("SDAI-ISOLATED-015", f"unable to capture final review workspace: {exc}") from exc
+    if len(snapshot) > _MAX_CONTEXT_CHARS:
+        raise _fail("SDAI-ISOLATED-015", "whole-change workspace snapshot exceeds final review context limit")
+    baseline_text = baseline + "\n"
+    baseline_source = f".sdai/isolated/{feature}/final-baseline.txt"
     diff_source = f".sdai/isolated/{feature}/final-change.diff"
     context = (
         IsolatedContextSlice(
+            source=baseline_source,
+            line_start=1,
+            line_end=1,
+            source_sha256=_hash_bytes(baseline_text.encode("utf-8")),
+            text=baseline_text,
+        ),
+        IsolatedContextSlice(
             source=diff_source,
             line_start=1,
-            line_end=max(1, len(diff.splitlines())),
-            source_sha256=_hash_bytes(diff.encode("utf-8")),
-            text=diff,
+            line_end=max(1, len(snapshot.splitlines())),
+            source_sha256=_hash_bytes(snapshot.encode("utf-8")),
+            text=snapshot,
         ),
     )
     aggregate_hash = _hash({"accepted_tasks": aggregate, "baseline_commit": baseline, "head": head})

@@ -111,6 +111,10 @@ def _portable_source(raw: bytes) -> str:
     return path.as_posix()
 
 
+def _is_framework_state(source: str) -> bool:
+    return source.startswith(".sdai/") or "/.sdai/" in source
+
+
 def _untracked_entries(
     root: Path,
     *,
@@ -123,7 +127,10 @@ def _untracked_entries(
         if not item:
             continue
         source = _portable_source(item)
-        if any(source == prefix.rstrip("/") or source.startswith(prefix) for prefix in excluded_prefixes):
+        if _is_framework_state(source) or any(
+            source == prefix.rstrip("/") or source.startswith(prefix)
+            for prefix in excluded_prefixes
+        ):
             continue
         try:
             path = ensure_within_project(
@@ -174,8 +181,9 @@ def render_workspace_snapshot(
     """Render deterministic tracked + untracked review truth since ``base_commit``.
 
     Git's ordinary diff omits untracked files. This snapshot appends their exact byte
-    identity (and UTF-8 contents when textual) while excluding framework-generated
-    ``.sdai/isolated/**`` review material so the review snapshot does not include itself.
+    identity (and UTF-8 contents when textual). Framework-owned ``.sdai`` execution/
+    review state is excluded so the snapshot does not recursively include its own
+    durable bookkeeping.
     """
 
     root = project_root.resolve()

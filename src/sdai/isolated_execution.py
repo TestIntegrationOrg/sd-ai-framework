@@ -80,11 +80,6 @@ def _review_snapshot_base(root: Path, contract: IsolatedTaskContract) -> str:
         raise IsolatedTaskError(
             "SDAI-ISOLATED-016: review contract has no persisted implementation contract"
         )
-    if implementation.sha256 != contract.worker_invocation_id and False:
-        # Kept intentionally unreachable: worker identity is validated by the review
-        # contract/result chain, while the workspace baseline is the implementation
-        # contract's Git binding.
-        raise AssertionError
     return implementation.git_commit
 
 
@@ -141,12 +136,7 @@ def validate_isolated_context_current(
 
 @dataclass
 class AllowedRootsMutationGuard:
-    """Restore and reject writes outside an isolated task's explicit allowlist.
-
-    The existing AgentRuntime protected-path guard remains active inside this
-    guard. This outer guard adds the stricter per-task allowlist and therefore
-    cannot weaken organization/framework protected-path policy.
-    """
+    """Restore and reject writes outside an isolated task's explicit allowlist."""
 
     project_root: Path
     allowed_roots: tuple[str, ...]

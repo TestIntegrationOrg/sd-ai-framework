@@ -65,11 +65,6 @@ def _resolve_semantic_definition(
     capability: Capability,
     requested: str | None,
 ) -> AgentDefinition | None:
-    # Backward compatibility: v0.1-v0.4 projects can install newer workflow
-    # templates without yet having the v0.5 semantic-agent scaffold. If the
-    # semantic-agent directory does not exist at all, use the legacy provider/
-    # capability route. Once the directory exists, explicit agent names are
-    # validated strictly so typos do not silently fall back.
     if requested and not (project_root / ".sdai" / "agents").exists():
         return None
     return resolve_agent_definition(project_root, capability, requested)
@@ -95,6 +90,10 @@ class AgentRuntime:
 
     def _policy(self) -> EffectiveConfiguration:
         return load_effective_configuration(self.project_root.resolve())
+
+    def max_explicit_context_chars(self) -> int:
+        """Return the configured hard limit used for explicit isolated context."""
+        return _max_context_chars(self.project_root.resolve())
 
     def _build_invocation(
         self,
@@ -178,8 +177,6 @@ class AgentRuntime:
             mode=mode,
             agent_name=definition.name if definition else None,
         )
-        # Build/dry-run paths receive the same secret guard as real execution so a
-        # prompt that would be rejected cannot be dumped into terminal or CI logs.
         enforce_prompt_safety(invocation.system, invocation.prompt)
         return invocation
 
@@ -243,6 +240,7 @@ class AgentRuntime:
             invocation.capability,
             invocation.mode,
         )
+        enforce_prompt_safety(invocation.system, invocation.prompt)
         provider = ProviderFactory.create(
             invocation.profile,
             mode=invocation.mode,
