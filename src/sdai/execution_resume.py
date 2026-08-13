@@ -446,7 +446,7 @@ def build_resume_plan(project_root: Path, feature_id: str, run_id: str) -> Resum
     feature = validate_feature_id(feature_id)
     ledger = load_execution_run(root, feature, run_id)
     events = ledger.load_events()
-    state = ledger.reconstruct()
+    state = ledger._reconstruct_events(events)
     checkpoint = _checkpoint_status(ledger)
     head, clean, status_text = _repository_identity(root, feature)
     ordered = _event_task_order(events)
