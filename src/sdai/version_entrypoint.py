@@ -8,6 +8,7 @@ import sys
 from sdai import __version__
 from sdai.entrypoint import main as lifecycle_main
 from sdai.trace_cli import main as trace_main
+from sdai.trace_policy_cli import main as trace_policy_main
 from sdai.versioning import write_framework_metadata
 
 
@@ -21,6 +22,9 @@ def _project_root(argv: list[str]) -> Path:
 
 
 def _run_trace(argv: list[str]) -> int:
+    if argv and argv[0] == "policy":
+        return trace_policy_main(argv[1:])
+
     # `TraceGraph.to_json()` already includes its canonical trailing newline.
     # The trace module currently uses print() for export, so normalize only the
     # versioned executable boundary to avoid adding a second newline. This keeps
