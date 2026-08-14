@@ -247,6 +247,8 @@ def _parse_safe_command(raw: Mapping[str, object], index: int) -> WorkflowOperat
     workspace_write = raw.get("workspace_write", False)
     if not isinstance(workspace_write, bool):
         raise _fail("SDAI-WF2-LEAF-002", f"safe-command step '{step_id}' workspace_write must be true or false")
+    if (input_mode == IntegrationInputMode.FILE or output_mode == IntegrationOutputMode.FILE) and not workspace_write:
+        raise _fail("SDAI-WF2-LEAF-002", f"safe-command step '{step_id}' file I/O requires workspace_write: true")
     retry = _parse_retry(raw.get("retry"), step_id)
     try:
         on_failure = FailureMode(str(raw.get("on_failure") or FailureMode.STOP.value))
