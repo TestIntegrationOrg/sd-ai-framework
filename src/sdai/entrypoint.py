@@ -20,6 +20,7 @@ from sdai.extensions.scaffolding import (
     create_extension_scaffold,
     validate_extension_scaffold,
 )
+from sdai.integration_cli import add_integration_parser, run_integration_command
 from sdai.pack_cli import add_pack_parser, run_pack_command
 from sdai.requirements_quality import (
     analyze_clarifications,
@@ -143,6 +144,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_analysis_parser(commands)
     add_execution_parser(commands)
     add_pack_parser(commands)
+    add_integration_parser(commands)
     return parser
 
 
@@ -298,6 +300,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "pack":
         return run_pack_command(root, args)
 
+    if args.managed_command == "integration":
+        return run_integration_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -342,6 +347,12 @@ def _print_top_level_help() -> None:
         "  sdai pack outdated --lock FILE [--json]\n"
         "  sdai pack info <publisher/id> --catalog FILE [--catalog FILE ...] [--json]\n"
         "  sdai pack search [QUERY] --catalog FILE [--catalog FILE ...] [--json]\n"
+        "\nIntegration lifecycle commands:\n"
+        "  sdai integration search [QUERY] [--json] [--path PATH]\n"
+        "  sdai integration info <id> [--version VERSION] [--json] [--path PATH]\n"
+        "  sdai integration install|status|repair|upgrade <id> [--version VERSION] [--json] [--path PATH]\n"
+        "  sdai integration use <id> [--version VERSION] [--json] [--path PATH]\n"
+        "  sdai integration remove <id> [--json] [--path PATH]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -369,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         "analyze",
         "execution",
         "pack",
+        "integration",
     }:
         try:
             return _run_managed_command(effective)
