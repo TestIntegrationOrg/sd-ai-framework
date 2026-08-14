@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cmp_to_key
 from hashlib import sha256
@@ -8,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Iterable, Mapping
+from typing import Iterable, Iterator, Mapping
 import unicodedata
 
 from sdai.pack_manifest import PackManifest, PackManifestError, SemVer, VersionConstraint
@@ -561,6 +562,63 @@ def compare_pack_lock(current: PackLock, expected: PackLock) -> PackLockFreshnes
     )
 
 
+def _write_guard_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.write-lock")
+
+
+@contextmanager
+def _exclusive_write_lock(path: Path) -> Iterator[None]:
+    guard = _write_guard_path(path)
+    if guard.is_symlink():
+        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock write guard '{guard}' must not be a symlink")
+    try:
+        handle = guard.open("a+b")
+    except OSError as exc:
+        raise _fail("SDAI-PACK-LOCK-006", f"unable to open Pack lock write guard '{guard}'") from exc
+
+    locked = False
+    try:
+        if guard.is_symlink():
+            raise _fail("SDAI-PACK-LOCK-006", f"Pack lock write guard '{guard}' must not be a symlink")
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            except OSError as exc:
+                raise _fail("SDAI-PACK-LOCK-006", f"unable to acquire Pack lock write guard '{guard}'") from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                raise _fail("SDAI-PACK-LOCK-006", f"unable to acquire Pack lock write guard '{guard}'") from exc
+        locked = True
+        yield
+    finally:
+        if locked:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
+
+
 def pack_lock_file_sha256(path: Path) -> str:
     if path.is_symlink():
         raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
@@ -590,62 +648,64 @@ def write_pack_lock(
     *,
     expected_current_sha256: str | None = None,
 ) -> Path:
-    if path.is_symlink():
-        raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
-    if path.exists() and not path.is_file():
-        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' exists but is not a file")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise _fail("SDAI-PACK-LOCK-006", f"unable to create Pack lock directory '{path.parent}'") from exc
     target_bytes = lock.to_text().encode("utf-8")
 
-    if path.exists():
-        try:
-            current_bytes = path.read_bytes()
-        except OSError as exc:
-            raise _fail("SDAI-PACK-LOCK-006", f"unable to read existing Pack lock '{path}'") from exc
-        if current_bytes == target_bytes:
-            return path
-        current_sha = _HASH_PREFIX + sha256(current_bytes).hexdigest()
-        if expected_current_sha256 is None:
-            raise _fail(
-                "SDAI-PACK-LOCK-006",
-                "existing Pack lock is outdated; explicit expected_current_sha256 is required to replace it",
-            )
-        expected = _hash(expected_current_sha256, label="expected_current_sha256")
-        if current_sha != expected:
-            raise _fail(
-                "SDAI-PACK-LOCK-006",
-                f"Pack lock changed concurrently: expected {expected}, found {current_sha}",
-            )
-    elif expected_current_sha256 is not None:
-        raise _fail(
-            "SDAI-PACK-LOCK-006",
-            "cannot apply expected_current_sha256 because the Pack lock does not exist",
-        )
+    with _exclusive_write_lock(path):
+        if path.is_symlink():
+            raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
+        if path.exists() and not path.is_file():
+            raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' exists but is not a file")
 
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            handle.write(target_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-        temporary_path = None
-    except OSError as exc:
-        raise _fail("SDAI-PACK-LOCK-006", f"unable to atomically write Pack lock '{path}'") from exc
-    finally:
-        if temporary_path is not None:
+        if path.exists():
             try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                current_bytes = path.read_bytes()
+            except OSError as exc:
+                raise _fail("SDAI-PACK-LOCK-006", f"unable to read existing Pack lock '{path}'") from exc
+            if current_bytes == target_bytes:
+                return path
+            current_sha = _HASH_PREFIX + sha256(current_bytes).hexdigest()
+            if expected_current_sha256 is None:
+                raise _fail(
+                    "SDAI-PACK-LOCK-006",
+                    "existing Pack lock is outdated; explicit expected_current_sha256 is required to replace it",
+                )
+            expected = _hash(expected_current_sha256, label="expected_current_sha256")
+            if current_sha != expected:
+                raise _fail(
+                    "SDAI-PACK-LOCK-006",
+                    f"Pack lock changed concurrently: expected {expected}, found {current_sha}",
+                )
+        elif expected_current_sha256 is not None:
+            raise _fail(
+                "SDAI-PACK-LOCK-006",
+                "cannot apply expected_current_sha256 because the Pack lock does not exist",
+            )
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(target_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        except OSError as exc:
+            raise _fail("SDAI-PACK-LOCK-006", f"unable to atomically write Pack lock '{path}'") from exc
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
     return path
