@@ -9,6 +9,7 @@ from typing import Iterable, Mapping
 
 from sdai.pack_catalog import (
     PackCatalogEntry,
+    PackCatalogError,
     ResolvedCatalog,
     canonical_catalog_source,
 )
@@ -95,6 +96,13 @@ def _publisher(value: object, *, label: str = "publisher") -> str:
     if value[-1] in "-_." or any(pair in value for pair in ("--", "__", "..", "-.", ".-", "-_", "_-", "._", "_.")):
         raise _fail("SDAI-PACK-POLICY-001", f"{label} '{value}' is not a portable lowercase identifier")
     return value
+
+
+def _catalog_source_policy_value(value: object) -> str:
+    try:
+        return canonical_catalog_source(value)
+    except PackCatalogError as exc:
+        raise _fail("SDAI-PACK-POLICY-001", f"invalid catalog source policy value: {value!r}") from exc
 
 
 def _allowlist(
@@ -189,12 +197,12 @@ class PackTrustPolicy:
             allowed_catalogs=_allowlist(
                 raw["allowedCatalogs"],
                 label="allowedCatalogs",
-                validator=canonical_catalog_source,
+                validator=_catalog_source_policy_value,
             ),
             denied_catalogs=_denylist(
                 raw["deniedCatalogs"],
                 label="deniedCatalogs",
-                validator=canonical_catalog_source,
+                validator=_catalog_source_policy_value,
             ),
             allowed_publishers=_allowlist(
                 raw["allowedPublishers"],
@@ -362,6 +370,8 @@ def evaluate_pack_trust(
     if signature_verification is None:
         if policy.require_signatures:
             reasons.append("signature-required")
+    elif not signature_verification.verified:
+        reasons.append("signature-not-current-valid")
     else:
         signature_matches_entry = (
             signature_verification.pack_identity == entry.identity
@@ -371,8 +381,6 @@ def evaluate_pack_trust(
         )
         if not signature_matches_entry:
             reasons.append("signature-report-entry-mismatch")
-        elif not signature_verification.verified:
-            reasons.append("signature-not-current-valid")
         else:
             signature_verified = True
 
