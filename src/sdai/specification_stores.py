@@ -94,7 +94,7 @@ def _construct_unique_mapping(
             raise ConstructorError(
                 "while constructing a mapping",
                 node.start_mark,
-                f"found duplicate key {key!r}",
+                "found a duplicate mapping key",
                 key_node.start_mark,
             )
         mapping[key] = loader.construct_object(value_node, deep=deep)
@@ -356,7 +356,7 @@ def _layer(value: SpecificationStoreLayer | str) -> SpecificationStoreLayer:
     try:
         return SpecificationStoreLayer(value)
     except ValueError as exc:
-        raise _fail("SDAI-STORE-REG-001", f"unknown store registry layer {value!r}") from exc
+        raise _fail("SDAI-STORE-REG-001", "unknown store registry layer") from exc
 
 
 def _source_label(value: object) -> str:
@@ -519,8 +519,7 @@ class SpecificationStoreManifest:
         if raw["apiVersion"] != SPECIFICATION_STORE_MANIFEST_API_VERSION:
             raise _fail(
                 "SDAI-STORE-001",
-                f"unsupported apiVersion {raw['apiVersion']!r}; expected "
-                f"{SPECIFICATION_STORE_MANIFEST_API_VERSION!r}",
+                f"unsupported apiVersion; expected {SPECIFICATION_STORE_MANIFEST_API_VERSION}",
             )
         if raw["kind"] != "SpecificationStore":
             raise _fail("SDAI-STORE-001", "kind must be 'SpecificationStore'")

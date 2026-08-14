@@ -112,6 +112,25 @@ def test_manifest_rejects_unknown_duplicate_and_invalid_semver(tmp_path: Path) -
         load_specification_store_manifest(tmp_path)
 
 
+def test_unrenderable_programmatic_discriminators_use_store_domain_errors() -> None:
+    huge = 10**5000
+    with pytest.raises(SpecificationStoreError, match="unsupported apiVersion"):
+        SpecificationStoreManifest.from_dict(
+            {
+                "apiVersion": huge,
+                "kind": "SpecificationStore",
+                "metadata": {},
+                "spec": {},
+            }
+        )
+    with pytest.raises(SpecificationStoreError, match="unknown store registry layer"):
+        SpecificationStoreSource(
+            Path("."),
+            huge,  # type: ignore[arg-type]
+            "programmatic source",
+        )
+
+
 def test_optional_metadata_rejects_unicode_normalization_key_collision(
     tmp_path: Path,
 ) -> None:
