@@ -5,6 +5,14 @@ import json
 from pathlib import Path
 
 from sdai.pack_catalog import load_pack_catalog, resolve_pack_catalogs
+from sdai.pack_certification import (
+    PackCertificationError,
+    evaluate_pack_certification,
+    load_pack_certification_policy,
+    load_pack_eval_evidence,
+    resolve_pack_certification_policy,
+)
+from sdai.pack_integrity import build_pack_content_index
 from sdai.pack_lifecycle import (
     catalog_info,
     install_from_local,
@@ -14,6 +22,7 @@ from sdai.pack_lifecycle import (
     search_catalogs,
 )
 from sdai.pack_lock import load_pack_lock
+from sdai.pack_manifest import load_pack_manifest
 
 
 def add_pack_parser(commands: argparse._SubParsersAction) -> None:
@@ -56,6 +65,20 @@ def add_pack_parser(commands: argparse._SubParsersAction) -> None:
     search.add_argument("--json", action="store_true")
     search.add_argument("--path")
 
+    certification = actions.add_parser(
+        "certification",
+        help="Evaluate exact Pack eval evidence against non-weakening certification policy",
+    )
+    certification.add_argument("--source", required=True, help="Local Pack artifact directory")
+    certification.add_argument("--manifest", default="pack.yaml")
+    certification.add_argument("--evidence", help="sdai.pack-eval-evidence/v1 JSON")
+    certification.add_argument("--organization-policy")
+    certification.add_argument("--repository-policy")
+    certification.add_argument("--user-policy")
+    certification.add_argument("--risk", default="standard")
+    certification.add_argument("--json", action="store_true")
+    certification.add_argument("--path")
+
 
 def _resolve_path(root: Path, value: str) -> Path:
     candidate = Path(value)
@@ -71,6 +94,65 @@ def _catalogs(root: Path, paths: list[str]):
 
 def _emit_json(value: object) -> None:
     print(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
+def _load_optional_cert_policy(root: Path, value: str | None):
+    return None if value is None else load_pack_certification_policy(_resolve_path(root, value))
+
+
+def _run_certification(root: Path, args: argparse.Namespace) -> int:
+    pack_root = _resolve_path(root, args.source)
+    manifest = load_pack_manifest(pack_root / args.manifest, pack_root=pack_root)
+    content = build_pack_content_index(pack_root, manifest)
+    policy = resolve_pack_certification_policy(
+        organization=_load_optional_cert_policy(root, args.organization_policy),
+        repository=_load_optional_cert_policy(root, args.repository_policy),
+        user=_load_optional_cert_policy(root, args.user_policy),
+    )
+
+    evidence = None
+    malformed: str | None = None
+    if args.evidence is not None:
+        try:
+            evidence = load_pack_eval_evidence(_resolve_path(root, args.evidence))
+        except PackCertificationError as exc:
+            malformed = str(exc)
+
+    if malformed is not None:
+        payload = {
+            "apiVersion": "sdai.pack-certification-decision/v1",
+            "certified": False,
+            "packIdentity": manifest.identity,
+            "policySha256": policy.sha256,
+            "reasons": ["evidence-malformed"],
+            "status": "malformed",
+        }
+        if args.json:
+            _emit_json(payload)
+        else:
+            print(f"Pack certification malformed: {manifest.identity}")
+            print("  evidence-malformed")
+        return 4
+
+    decision = evaluate_pack_certification(
+        manifest,
+        content.sha256,
+        policy,
+        evidence,
+        risk=args.risk,
+    )
+    if args.json:
+        _emit_json(decision.as_dict())
+    else:
+        print(
+            f"Pack certification {decision.status}: {decision.pack_identity} "
+            f"policy={decision.policy_sha256}"
+        )
+        if decision.aggregate_score_basis_points is not None:
+            print(f"  aggregate={decision.aggregate_score_basis_points / 100:.2f}%")
+        for reason in decision.reasons:
+            print(f"  {reason}")
+    return 0 if decision.status in {"certified", "not-required"} else 4
 
 
 def run_pack_command(root: Path, args: argparse.Namespace) -> int:
@@ -158,5 +240,8 @@ def run_pack_command(root: Path, args: argparse.Namespace) -> int:
             for row in rows:
                 print(f"{row['identity']} catalog={row['catalog']} - {row['description']}")
         return 0
+
+    if action == "certification":
+        return _run_certification(root, args)
 
     raise ValueError(f"Unknown Pack action: {action}")
