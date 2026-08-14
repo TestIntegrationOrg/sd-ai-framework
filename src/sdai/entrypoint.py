@@ -20,6 +20,7 @@ from sdai.extensions.scaffolding import (
     create_extension_scaffold,
     validate_extension_scaffold,
 )
+from sdai.pack_cli import add_pack_parser, run_pack_command
 from sdai.requirements_quality import (
     analyze_clarifications,
     write_clarifications,
@@ -141,6 +142,7 @@ def _managed_parser() -> argparse.ArgumentParser:
     add_workflow_parser(commands)
     add_analysis_parser(commands)
     add_execution_parser(commands)
+    add_pack_parser(commands)
     return parser
 
 
@@ -293,6 +295,9 @@ def _run_managed_command(argv: list[str]) -> int:
     if args.managed_command == "execution":
         return run_execution_command(root, args)
 
+    if args.managed_command == "pack":
+        return run_pack_command(root, args)
+
     raise ValueError(f"Unknown managed command: {args.managed_command}")
 
 
@@ -331,6 +336,12 @@ def _print_top_level_help() -> None:
         "\nDurable execution resume:\n"
         "  sdai execution status <feature> --run <run-id> [--json] [--path PATH]\n"
         "  sdai execution resume <feature> --run <run-id> [--json] [--path PATH]\n"
+        "\nPack lifecycle commands:\n"
+        "  sdai pack install|update <publisher/id> --lock FILE --source DIR [--local-link] [--json]\n"
+        "  sdai pack remove <publisher/id> [--json]\n"
+        "  sdai pack outdated --lock FILE [--json]\n"
+        "  sdai pack info <publisher/id> --catalog FILE [--catalog FILE ...] [--json]\n"
+        "  sdai pack search [QUERY] --catalog FILE [--catalog FILE ...] [--json]\n"
         "\nExtension kinds: "
         + ", ".join(item.value for item in ScaffoldKind)
     )
@@ -357,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         "workflow",
         "analyze",
         "execution",
+        "pack",
     }:
         try:
             return _run_managed_command(effective)
