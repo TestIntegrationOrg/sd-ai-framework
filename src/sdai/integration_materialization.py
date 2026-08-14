@@ -20,6 +20,12 @@ INTEGRATION_STATUS_API_VERSION = "sdai.integration-status/v1"
 _STATE_RELATIVE = ".sdai/integrations/install-state.json"
 _JOURNAL_RELATIVE = ".sdai/integrations/operation.json"
 _INTERNAL_ROOT = PurePosixPath(".sdai/integrations")
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+_WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 
 
 class IntegrationMaterializationError(RuntimeError):
@@ -87,10 +93,19 @@ def _validate_sha(value: object, *, label: str) -> str:
 def _safe_relative(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
         raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} must be a portable project-relative path")
+    if value != value.strip():
+        raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} must not contain surrounding whitespace")
     path = PurePosixPath(value)
     parts = value.split("/")
     if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
         raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} must be a portable project-relative path")
+    for part in parts:
+        if part != part.strip() or any(ord(char) < 32 for char in part):
+            raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} contains a non-portable path segment")
+        if any(char in _WINDOWS_FORBIDDEN for char in part) or part.endswith("."):
+            raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} is not portable across filesystems")
+        if part.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+            raise _fail("SDAI-INTEGRATION-MAT-001", f"{label} uses a reserved Windows path segment")
     return path.as_posix()
 
 
@@ -103,7 +118,8 @@ def _path_overlap(left: str, right: str) -> bool:
 
 def _project_path(root: Path, relative: str, *, label: str, allow_missing_leaf: bool = True) -> Path:
     root = root.resolve()
-    candidate = root.joinpath(*PurePosixPath(_safe_relative(relative, label=label)).parts)
+    relative = _safe_relative(relative, label=label)
+    candidate = root.joinpath(*PurePosixPath(relative).parts)
     try:
         ensure_within_project(root, candidate, label=label)
     except PathSafetyError as exc:
@@ -129,19 +145,42 @@ def operation_journal_path(root: Path) -> Path:
     return _project_path(root, _JOURNAL_RELATIVE, label="Integration operation journal")
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _ensure_parent(path: Path, root: Path) -> None:
+    root = root.resolve()
+    missing: list[Path] = []
+    current = path.parent
+    while current != root and not current.exists():
+        missing.append(current)
+        current = current.parent
+    if current.is_symlink() or (current.exists() and not current.is_dir()):
+        raise _fail("SDAI-INTEGRATION-MAT-003", f"unsafe parent for '{path}'")
+    for directory in reversed(missing):
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            pass
+        if directory.is_symlink() or not directory.is_dir():
+            raise _fail("SDAI-INTEGRATION-MAT-003", f"unsafe created parent '{directory}'")
+
+
+def _atomic_write(path: Path, data: bytes, *, root: Path | None = None) -> None:
     if path.is_symlink():
         raise _fail("SDAI-INTEGRATION-MAT-003", f"refusing to replace symlink '{path}'")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if root is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        _ensure_parent(path, root)
     if path.parent.is_symlink():
         raise _fail("SDAI-INTEGRATION-MAT-003", f"refusing to write through symlink parent '{path.parent}'")
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        with temporary.open("wb") as handle:
+        with temporary.open("xb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+    except FileExistsError as exc:
+        raise _fail("SDAI-INTEGRATION-MAT-003", f"temporary atomic-write path already exists for '{path}'") from exc
     except OSError as exc:
         try:
             temporary.unlink(missing_ok=True)
@@ -158,28 +197,23 @@ class ManagedIntegrationFile:
     sha256: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", ProjectionKind(self.kind))
+        try:
+            kind = ProjectionKind(self.kind)
+        except ValueError as exc:
+            raise _fail("SDAI-INTEGRATION-MAT-001", "managed file kind is invalid") from exc
+        object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "source_path", _safe_relative(self.source_path, label="managed source path"))
         object.__setattr__(self, "path", _safe_relative(self.path, label="managed destination path"))
         object.__setattr__(self, "sha256", _validate_sha(self.sha256, label="managed file sha256"))
 
     def as_dict(self) -> dict[str, object]:
-        return {
-            "kind": self.kind.value,
-            "path": self.path,
-            "sha256": self.sha256,
-            "sourcePath": self.source_path,
-        }
+        return {"kind": self.kind.value, "path": self.path, "sha256": self.sha256, "sourcePath": self.source_path}
 
     @classmethod
     def from_dict(cls, value: object) -> "ManagedIntegrationFile":
         if not isinstance(value, Mapping) or set(value) != {"kind", "path", "sha256", "sourcePath"}:
             raise _fail("SDAI-INTEGRATION-MAT-001", "managed file contract is invalid")
-        try:
-            kind = ProjectionKind(value["kind"])
-        except (TypeError, ValueError) as exc:
-            raise _fail("SDAI-INTEGRATION-MAT-001", "managed file kind is invalid") from exc
-        return cls(kind, value["sourcePath"], value["path"], value["sha256"])  # type: ignore[arg-type]
+        return cls(value["kind"], value["sourcePath"], value["path"], value["sha256"])  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -215,11 +249,7 @@ class InstalledIntegration:
             "identity": self.identity,
             "manifestSha256": self.manifest_sha256,
             "preservedPaths": list(self.preserved_paths),
-            "provenance": {
-                "layer": self.provenance_layer,
-                "path": self.provenance_path,
-                "source": self.provenance_source,
-            },
+            "provenance": {"layer": self.provenance_layer, "path": self.provenance_path, "source": self.provenance_source},
             "version": self.version,
         }
 
@@ -316,8 +346,12 @@ class IntegrationOperationJournal:
         if not all(isinstance(value, str) and value for value in (self.integration_id, self.identity)):
             raise _fail("SDAI-INTEGRATION-MAT-007", "operation journal identity is invalid")
         object.__setattr__(self, "manifest_sha256", _validate_sha(self.manifest_sha256, label="journal manifest sha256"))
-        object.__setattr__(self, "writes", tuple(sorted(self.writes, key=lambda item: item.path)))
-        object.__setattr__(self, "deletes", tuple(sorted(self.deletes, key=lambda item: item.path)))
+        writes = tuple(sorted(self.writes, key=lambda item: item.path))
+        deletes = tuple(sorted(self.deletes, key=lambda item: item.path))
+        if len({item.path for item in writes}) != len(writes) or len({item.path for item in deletes}) != len(deletes):
+            raise _fail("SDAI-INTEGRATION-MAT-007", "operation journal contains duplicate paths")
+        object.__setattr__(self, "writes", writes)
+        object.__setattr__(self, "deletes", deletes)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -429,11 +463,11 @@ def _load_journal(root: Path) -> IntegrationOperationJournal | None:
 
 
 def _write_state(root: Path, state: IntegrationInstallState) -> None:
-    _atomic_write(install_state_path(root), state.to_text().encode("utf-8"))
+    _atomic_write(install_state_path(root), state.to_text().encode("utf-8"), root=root)
 
 
 def _write_journal(root: Path, journal: IntegrationOperationJournal) -> None:
-    _atomic_write(operation_journal_path(root), journal.to_text().encode("utf-8"))
+    _atomic_write(operation_journal_path(root), journal.to_text().encode("utf-8"), root=root)
 
 
 def _clear_journal(root: Path) -> None:
@@ -500,8 +534,7 @@ def _projection_files(root: Path, projection: IntegrationProjection) -> tuple[_D
             source_path = PurePosixPath(projection.source, relative).as_posix()
             target_path = PurePosixPath(projection.target, relative).as_posix()
             data = _read_regular_file(child, label=f"projection source '{source_path}'")
-            managed = ManagedIntegrationFile(projection.kind, source_path, target_path, _hash_bytes(data))
-            result.append(_DesiredFile(managed, data))
+            result.append(_DesiredFile(ManagedIntegrationFile(projection.kind, source_path, target_path, _hash_bytes(data)), data))
     return tuple(result)
 
 
@@ -551,29 +584,22 @@ def integration_status(root: Path, resolved: ResolvedIntegration) -> Integration
     desired_by_path = {item.managed.path: item.managed for item in desired}
     previous_by_path = {item.path: item for item in previous.files} if previous else {}
     findings: list[IntegrationStatusFinding] = []
-
     for path in sorted(desired_by_path):
         target = desired_by_path[path]
         old = previous_by_path.get(path)
         presence, actual = _file_hash(root, path)
         if presence == "broken":
-            status = IntegrationFileStatus.BROKEN
-            detail = "destination is unsafe, unreadable, or not a regular file"
+            status, detail = IntegrationFileStatus.BROKEN, "destination is unsafe, unreadable, or not a regular file"
         elif presence == "missing":
-            status = IntegrationFileStatus.MISSING
-            detail = "desired native file is missing"
+            status, detail = IntegrationFileStatus.MISSING, "desired native file is missing"
         elif old is None:
-            status = IntegrationFileStatus.UNMANAGED_CONFLICT
-            detail = "destination exists but is not owned by this Integration"
+            status, detail = IntegrationFileStatus.UNMANAGED_CONFLICT, "destination exists but is not owned by this Integration"
         elif actual != old.sha256:
-            status = IntegrationFileStatus.MODIFIED
-            detail = "managed destination differs from last materialized bytes"
+            status, detail = IntegrationFileStatus.MODIFIED, "managed destination differs from last materialized bytes"
         elif actual != target.sha256:
-            status = IntegrationFileStatus.STALE
-            detail = "managed destination is clean but desired source bytes changed"
+            status, detail = IntegrationFileStatus.STALE, "managed destination is clean but desired source bytes changed"
         else:
-            status = IntegrationFileStatus.EXACT
-            detail = "destination matches desired managed bytes"
+            status, detail = IntegrationFileStatus.EXACT, "destination matches desired managed bytes"
         findings.append(IntegrationStatusFinding(path, status, target.sha256, actual, detail))
 
     if previous is not None:
@@ -581,14 +607,11 @@ def integration_status(root: Path, resolved: ResolvedIntegration) -> Integration
             old = previous_by_path[path]
             presence, actual = _file_hash(root, path)
             if presence == "broken":
-                status = IntegrationFileStatus.BROKEN
-                detail = "obsolete managed destination is unsafe or unreadable"
+                status, detail = IntegrationFileStatus.BROKEN, "obsolete managed destination is unsafe or unreadable"
             elif presence == "present" and actual != old.sha256:
-                status = IntegrationFileStatus.MODIFIED
-                detail = "obsolete managed destination was user/tool modified and must be preserved"
+                status, detail = IntegrationFileStatus.MODIFIED, "obsolete managed destination was user/tool modified and must be preserved"
             else:
-                status = IntegrationFileStatus.STALE
-                detail = "managed destination is obsolete under the desired Integration"
+                status, detail = IntegrationFileStatus.STALE, "managed destination is obsolete under the desired Integration"
             findings.append(IntegrationStatusFinding(path, status, None, actual, detail))
 
     metadata_stale = previous is not None and (
@@ -597,7 +620,11 @@ def integration_status(root: Path, resolved: ResolvedIntegration) -> Integration
     if previous is None and not findings:
         overall = IntegrationFileStatus.MISSING
     else:
-        overall = max((item.status for item in findings), key=lambda status: _STATUS_PRIORITY[status], default=IntegrationFileStatus.EXACT)
+        overall = max(
+            (item.status for item in findings),
+            key=lambda status: _STATUS_PRIORITY[status],
+            default=IntegrationFileStatus.EXACT,
+        )
         if metadata_stale and _STATUS_PRIORITY[overall] < _STATUS_PRIORITY[IntegrationFileStatus.STALE]:
             overall = IntegrationFileStatus.STALE
     return IntegrationStatusReport(
@@ -633,6 +660,25 @@ def _planned_operation(
     )
 
 
+def _journal_already_committed(
+    previous: InstalledIntegration | None,
+    resolved: ResolvedIntegration,
+    desired: tuple[_DesiredFile, ...],
+    stale: IntegrationOperationJournal,
+) -> bool:
+    if previous is None or stale.operation == "remove":
+        return False
+    return (
+        stale.integration_id == resolved.id
+        and stale.identity == resolved.identity
+        and stale.manifest_sha256 == resolved.manifest_sha256
+        and previous.identity == resolved.identity
+        and previous.manifest_sha256 == resolved.manifest_sha256
+        and previous.files == tuple(item.managed for item in desired)
+        and stale.writes == previous.files
+    )
+
+
 def _preflight(
     root: Path,
     previous: InstalledIntegration | None,
@@ -658,9 +704,11 @@ def _preflight(
             continue
         old = previous_by_path.get(path)
         if old is not None:
-            if actual != old.sha256:
-                raise _fail("SDAI-INTEGRATION-MAT-005", f"refusing to overwrite user-modified managed file '{path}'")
-            continue
+            if actual == old.sha256:
+                continue
+            if stale is not None and actual == target.sha256:
+                continue
+            raise _fail("SDAI-INTEGRATION-MAT-005", f"refusing to overwrite user-modified managed file '{path}'")
         if stale is None:
             raise _fail("SDAI-INTEGRATION-MAT-005", f"refusing to overwrite unmanaged file '{path}'")
         if actual != target.sha256:
@@ -678,7 +726,11 @@ def _preflight(
     return tuple(sorted(preserved))
 
 
-def _record_for(resolved: ResolvedIntegration, desired: tuple[_DesiredFile, ...], preserved: tuple[str, ...]) -> InstalledIntegration:
+def _record_for(
+    resolved: ResolvedIntegration,
+    desired: tuple[_DesiredFile, ...],
+    preserved: tuple[str, ...],
+) -> InstalledIntegration:
     provenance = resolved.selected_provenance
     return InstalledIntegration(
         id=resolved.id,
@@ -693,33 +745,41 @@ def _record_for(resolved: ResolvedIntegration, desired: tuple[_DesiredFile, ...]
     )
 
 
+def _has_blocking_modified_destination(report: IntegrationStatusReport) -> bool:
+    return any(
+        finding.status == IntegrationFileStatus.MODIFIED and finding.expected_sha256 is not None
+        for finding in report.findings
+    )
+
+
 def _apply_materialization(root: Path, resolved: ResolvedIntegration, *, requested_operation: str) -> InstalledIntegration:
     state = load_install_state(root)
     previous = _find_installed(state, resolved.id)
     desired = _desired_files(root, resolved)
-    report = integration_status(root, resolved)
     stale = _load_journal(root)
-
-    if report.status == IntegrationFileStatus.EXACT and previous is not None:
-        if stale is not None:
-            journal = _planned_operation(resolved, previous, desired, requested_operation)
-            if stale != journal:
-                raise _fail("SDAI-INTEGRATION-MAT-007", "stale operation journal does not match exact installed state")
-            _clear_journal(root)
-        return previous
-    if report.status in {IntegrationFileStatus.BROKEN, IntegrationFileStatus.UNMANAGED_CONFLICT, IntegrationFileStatus.MODIFIED}:
-        raise _fail("SDAI-INTEGRATION-MAT-005", f"cannot {requested_operation} Integration while status is '{report.status.value}'")
-
     operation = "install" if previous is None else ("repair" if requested_operation == "repair" else "upgrade")
     journal = _planned_operation(resolved, previous, desired, operation)
+
+    if stale is not None and _journal_already_committed(previous, resolved, desired, stale):
+        _clear_journal(root)
+        assert previous is not None
+        return previous
+
+    report = integration_status(root, resolved)
+    if stale is None:
+        if report.status in {IntegrationFileStatus.BROKEN, IntegrationFileStatus.UNMANAGED_CONFLICT}:
+            raise _fail("SDAI-INTEGRATION-MAT-005", f"cannot {requested_operation} Integration while status is '{report.status.value}'")
+        if _has_blocking_modified_destination(report):
+            raise _fail("SDAI-INTEGRATION-MAT-005", "cannot overwrite user-modified managed destination")
+        if report.status == IntegrationFileStatus.EXACT and previous is not None:
+            return previous
+
     preserved = _preflight(root, previous, desired, journal, stale)
     _write_journal(root, journal)
-
     data_by_path = {item.managed.path: item.data for item in desired}
     for managed in journal.writes:
         destination = _project_path(root, managed.path, label="managed Integration destination")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(destination, data_by_path[managed.path])
+        _atomic_write(destination, data_by_path[managed.path], root=root)
 
     for deletion in journal.deletes:
         presence, actual = _file_hash(root, deletion.path)
@@ -754,6 +814,8 @@ def remove_integration(root: Path, integration_id: str) -> tuple[str, ...]:
     if previous is None:
         if stale is not None and stale.integration_id == integration_id and stale.operation == "remove":
             _clear_journal(root)
+        elif stale is not None:
+            raise _fail("SDAI-INTEGRATION-MAT-007", f"incomplete Integration operation for '{stale.integration_id}' must be recovered first")
         return ()
 
     journal = IntegrationOperationJournal(
