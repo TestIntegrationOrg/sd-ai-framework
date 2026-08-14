@@ -344,6 +344,8 @@ class SpecificationStoreManifest:
                 shorter, longer = sorted((left_parts, right_parts), key=len)
                 if longer[: len(shorter)] == shorter:
                     raise _fail("SDAI-STORE-002", "specificationRoots must not overlap")
+        if not isinstance(self.capabilities, (list, tuple)):
+            raise _fail("SDAI-STORE-001", "capabilities must be a non-empty unique list")
         capabilities = tuple(
             sorted(_identifier(item, label="store capability") for item in self.capabilities)
         )

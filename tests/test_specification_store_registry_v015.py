@@ -187,6 +187,21 @@ def test_programmatic_semver_instances_are_revalidated(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("capabilities", ["changes", None])
+def test_programmatic_capabilities_require_a_sequence(
+    capabilities: object,
+) -> None:
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="capabilities must be"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(1, 0, 0),
+            "Invalid programmatic capabilities",
+            roots,
+            capabilities,  # type: ignore[arg-type]
+        )
+
+
 def test_latest_semver_and_registry_json_are_source_order_independent(tmp_path: Path) -> None:
     core = tmp_path / "core"
     repo = tmp_path / "repo"
