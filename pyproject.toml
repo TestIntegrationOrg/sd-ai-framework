@@ -33,7 +33,7 @@ version = {attr = "sdai.__version__"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-sdai = ["builtin_schemas/*.yaml"]
+sdai = ["builtin_schemas/*.yaml", "builtin_integrations/*.integration.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
