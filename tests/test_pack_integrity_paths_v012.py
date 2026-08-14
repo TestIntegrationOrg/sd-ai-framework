@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import sdai.pack_integrity as pack_integrity
 from sdai.pack_integrity import PackContentEntry, PackIntegrityError, build_pack_content_index
 from sdai.pack_manifest import PACK_MANIFEST_API_VERSION, PackManifest
 
@@ -70,7 +71,45 @@ def test_case_insensitive_path_collision_fails_closed_when_filesystem_allows_bot
         build_pack_content_index(tmp_path, _manifest())
 
 
-@pytest.mark.parametrize("path", ["C:/skills/a.md", "/skills/a.md", "skills/../a.md", r"skills\a.md"])
+def test_walk_scan_error_fails_closed_instead_of_omitting_subtree(tmp_path: Path, monkeypatch) -> None:
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "visible.md").write_text("visible", encoding="utf-8")
+
+    def failing_walk(*args, onerror=None, **kwargs):
+        assert onerror is not None
+        onerror(PermissionError(13, "permission denied", str(skills / "private")))
+        return iter(())
+
+    monkeypatch.setattr(pack_integrity.os, "walk", failing_walk)
+
+    with pytest.raises(PackIntegrityError, match="unable to completely scan Pack content.*private"):
+        build_pack_content_index(tmp_path, _manifest())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "C:/skills/a.md",
+        "/skills/a.md",
+        "skills/../a.md",
+        r"skills\a.md",
+        "skills/CON",
+        "skills/con.txt",
+        "skills/PRN.md",
+        "skills/AUX",
+        "skills/NUL.json",
+        "skills/COM1.txt",
+        "skills/LPT9",
+        "skills/rule.",
+        "skills/rule ",
+        "skills/a:b.md",
+        "skills/a?.md",
+        "skills/a*.md",
+        "skills/a|b.md",
+        "skills/a\x1fb.md",
+    ],
+)
 def test_direct_content_entry_rejects_unportable_paths(path: str) -> None:
     with pytest.raises(PackIntegrityError, match="SDAI-PACK-INTEGRITY-002"):
         PackContentEntry(
