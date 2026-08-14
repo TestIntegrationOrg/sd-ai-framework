@@ -129,9 +129,10 @@ def test_builtin_catalog_is_complete_versioned_and_deterministic() -> None:
     assert len(registry) == len(EXPECTED_IDS)
     exact = registry.list_all_exact()
     assert {item.id for item in exact} == EXPECTED_IDS
-    assert [item.identity for item in exact] == sorted(
-        item.identity for item in exact
-    )
+    assert [item.id for item in exact] == sorted(EXPECTED_IDS)
+    assert [item.identity for item in exact] == [
+        f"{integration_id}@1.0.0" for integration_id in sorted(EXPECTED_IDS)
+    ]
     assert all(
         item.selected_provenance.layer == RegistryLayer.BUILTIN for item in exact
     )
