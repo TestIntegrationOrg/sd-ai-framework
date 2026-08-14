@@ -35,6 +35,7 @@ def _manifest_dict() -> dict[str, object]:
             "executable": "acme-agent",
             "argsBeforeInput": ["run", "--mode", "safe mode"],
             "inputMode": "argument",
+            "inputPath": None,
             "argsAfterInput": ["--format", "json"],
             "outputMode": "json-stdout",
             "outputPath": None,
@@ -74,6 +75,7 @@ def test_manifest_canonicalizes_unordered_sets_but_preserves_argv_order() -> Non
     assert first.execution.args_before_input == ("run", "--mode", "safe mode")
     assert first.execution.args_after_input == ("--format", "json")
     assert first.execution.input_mode == IntegrationInputMode.ARGUMENT
+    assert first.execution.input_path is None
     assert first.execution.output_mode == IntegrationOutputMode.JSON_STDOUT
     assert first.to_text().endswith("\n")
 
@@ -141,13 +143,41 @@ def test_file_output_requires_exact_safe_path_and_workspace_write() -> None:
     assert manifest.execution.output_path == ".sdai/integration-output/result.json"
 
 
+def test_file_input_is_explicit_and_requires_workspace_write() -> None:
+    raw = _manifest_dict()
+    raw["execution"]["inputMode"] = "file"  # type: ignore[index]
+    raw["execution"]["inputPath"] = ".sdai/integration-input/request.txt"  # type: ignore[index]
+
+    with pytest.raises(IntegrationManifestError, match="requiresWorkspaceWrite=true"):
+        IntegrationManifest.from_dict(raw)
+
+    raw["security"]["requiresWorkspaceWrite"] = True  # type: ignore[index]
+    manifest = IntegrationManifest.from_dict(raw)
+    assert manifest.execution is not None
+    assert manifest.execution.input_mode == IntegrationInputMode.FILE
+    assert manifest.execution.input_path == ".sdai/integration-input/request.txt"
+
+
+def test_stderr_modes_are_explicit_without_changing_argv_semantics() -> None:
+    raw = _manifest_dict()
+    raw["execution"]["outputMode"] = "json-stderr"  # type: ignore[index]
+
+    manifest = IntegrationManifest.from_dict(raw)
+
+    assert manifest.execution is not None
+    assert manifest.execution.output_mode == IntegrationOutputMode.JSON_STDERR
+    assert manifest.execution.output_path is None
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
         ("id", "Acme"),
         ("id", "acme..agent"),
+        ("id", " acme-agent"),
         ("version", "01.2.3"),
         ("version", "1.2"),
+        ("version", "1.2.3 "),
     ],
 )
 def test_identity_and_version_are_strict(field: str, value: str) -> None:
@@ -278,6 +308,7 @@ def test_execution_and_agent_execution_capability_must_match() -> None:
         "C:\\tools\\acme.exe",
         "../acme-agent",
         "acme-agent;rm",
+        " acme-agent",
     ],
 )
 def test_executable_is_one_portable_token_not_a_shell_command(executable: str) -> None:
@@ -320,7 +351,7 @@ def test_security_environment_is_sorted_and_deduplicated() -> None:
         IntegrationManifest.from_dict(raw)
 
 
-def test_timeout_and_output_path_semantics_are_strict() -> None:
+def test_timeout_and_file_path_semantics_are_strict() -> None:
     raw = _manifest_dict()
     raw["execution"]["timeoutSeconds"] = True  # type: ignore[index]
     with pytest.raises(IntegrationManifestError, match="must be an integer"):
@@ -328,6 +359,11 @@ def test_timeout_and_output_path_semantics_are_strict() -> None:
 
     raw = _manifest_dict()
     raw["execution"]["outputPath"] = "unexpected.json"  # type: ignore[index]
+    with pytest.raises(IntegrationManifestError, match="must be null"):
+        IntegrationManifest.from_dict(raw)
+
+    raw = _manifest_dict()
+    raw["execution"]["inputPath"] = "unexpected.txt"  # type: ignore[index]
     with pytest.raises(IntegrationManifestError, match="must be null"):
         IntegrationManifest.from_dict(raw)
 
@@ -352,3 +388,23 @@ def test_load_manifest_reads_utf8_and_rejects_symlink_manifest(tmp_path: Path) -
         pytest.skip(f"symlinks unavailable on this platform: {exc}")
     with pytest.raises(IntegrationManifestError, match="must not be a symlink"):
         load_integration_manifest(link, root=root)
+
+
+def test_load_manifest_rejects_symlink_ancestor(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    real = root / "real"
+    real.mkdir(parents=True)
+    manifest = real / "integration.yaml"
+    manifest.write_text(
+        yaml.safe_dump(_manifest_dict(), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+        newline="\n",
+    )
+    linked = root / "linked"
+    try:
+        linked.symlink_to(real.name, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+    with pytest.raises(IntegrationManifestError, match="symlink components"):
+        load_integration_manifest(linked / "integration.yaml", root=root)
