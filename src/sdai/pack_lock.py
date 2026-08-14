@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Iterable, Mapping
 import unicodedata
@@ -21,6 +22,7 @@ class PackLockError(RuntimeError):
 
 
 _HASH_PREFIX = "sha256:"
+_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
 _LOCK_KEYS = frozenset({"apiVersion", "roots", "packages"})
 _ENTRY_KEYS = frozenset(
     {
@@ -90,6 +92,16 @@ def _text(value: object, *, label: str) -> str:
     return unicodedata.normalize("NFC", value.strip())
 
 
+def _identifier(value: object, *, label: str) -> str:
+    text = _text(value, label=label)
+    if not _IDENTIFIER_RE.fullmatch(text):
+        raise _fail(
+            "SDAI-PACK-LOCK-001",
+            f"{label} '{text}' is not a portable lowercase identifier",
+        )
+    return text
+
+
 def _hash(value: object, *, label: str) -> str:
     text = _text(value, label=label)
     if not text.startswith(_HASH_PREFIX):
@@ -113,14 +125,38 @@ def _parse_identity(value: object, *, label: str) -> tuple[str, str, SemVer]:
     if text.count("@") != 1 or text.count("/") != 1:
         raise _fail("SDAI-PACK-LOCK-001", f"{label} '{text}' is not publisher/id@version")
     coordinate, version_text = text.rsplit("@", 1)
-    publisher, pack_id = coordinate.split("/", 1)
-    if not publisher or not pack_id:
-        raise _fail("SDAI-PACK-LOCK-001", f"{label} '{text}' is not publisher/id@version")
+    publisher_raw, pack_id_raw = coordinate.split("/", 1)
+    publisher = _identifier(publisher_raw, label=f"{label} publisher")
+    pack_id = _identifier(pack_id_raw, label=f"{label} id")
     try:
         version = SemVer.parse(version_text)
     except PackManifestError as exc:
         raise _fail("SDAI-PACK-LOCK-001", f"{label} '{text}' has an invalid version") from exc
     return publisher, pack_id, version
+
+
+def _reject_cycles(graph: Mapping[str, tuple[str, ...]]) -> None:
+    visiting: list[str] = []
+    active: set[str] = set()
+    finished: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in finished:
+            return
+        if node in active:
+            start = visiting.index(node)
+            cycle = visiting[start:] + [node]
+            raise _fail("SDAI-PACK-LOCK-005", "dependency cycle: " + " -> ".join(cycle))
+        active.add(node)
+        visiting.append(node)
+        for dependency in graph.get(node, ()):
+            visit(dependency)
+        visiting.pop()
+        active.remove(node)
+        finished.add(node)
+
+    for coordinate in sorted(graph):
+        visit(coordinate)
 
 
 @dataclass(frozen=True)
@@ -130,6 +166,8 @@ class PackCandidate:
     content_sha256: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.manifest, PackManifest):
+            raise _fail("SDAI-PACK-LOCK-002", "candidate manifest must be a PackManifest")
         object.__setattr__(self, "source", _text(self.source, label="candidate source"))
         object.__setattr__(
             self,
@@ -183,8 +221,8 @@ class PackLockEntry:
     def from_dict(cls, value: object) -> "PackLockEntry":
         raw = _mapping(value, label="lock package")
         _keys(raw, expected=_ENTRY_KEYS, label="lock package")
-        publisher = _text(raw["publisher"], label="lock package publisher")
-        pack_id = _text(raw["id"], label="lock package id")
+        publisher = _identifier(raw["publisher"], label="lock package publisher")
+        pack_id = _identifier(raw["id"], label="lock package id")
         try:
             version = SemVer.parse(raw["version"])
         except PackManifestError as exc:
@@ -235,6 +273,7 @@ class PackLock:
                 "SDAI-PACK-LOCK-001",
                 "lock roots reference missing package(s): " + ", ".join(missing_roots),
             )
+        graph: dict[str, tuple[str, ...]] = {}
         for entry in self.packages:
             missing = sorted(set(entry.dependencies) - available)
             if missing:
@@ -243,6 +282,11 @@ class PackLock:
                     f"lock package '{entry.identity}' references missing dependency package(s): "
                     + ", ".join(missing),
                 )
+            dependency_coordinates = tuple(
+                sorted(dependency.rsplit("@", 1)[0] for dependency in entry.dependencies)
+            )
+            graph[entry.coordinate] = dependency_coordinates
+        _reject_cycles(graph)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -319,6 +363,13 @@ def _candidate_universe(candidates: Iterable[PackCandidate]) -> dict[str, tuple[
     for candidate in candidates:
         previous = exact_seen.get(candidate.identity)
         if previous is not None:
+            identical = (
+                previous.source == candidate.source
+                and previous.content_sha256 == candidate.content_sha256
+                and previous.manifest.sha256 == candidate.manifest.sha256
+            )
+            if identical:
+                continue
             raise _fail(
                 "SDAI-PACK-LOCK-002",
                 f"candidate identity '{candidate.identity}' is ambiguous across sources/hashes",
@@ -369,7 +420,6 @@ def _solve(
     universe: Mapping[str, tuple[PackCandidate, ...]],
     selected: dict[str, PackCandidate],
     constraints: dict[str, tuple[VersionConstraint, ...]],
-    fixed_roots: frozenset[str],
 ) -> dict[str, PackCandidate]:
     for coordinate, candidate in sorted(selected.items()):
         required = constraints.get(coordinate, ())
@@ -395,7 +445,7 @@ def _solve(
             existing = next_constraints.get(dependency.coordinate, ())
             next_constraints[dependency.coordinate] = (*existing, dependency.version)
         try:
-            return _solve(universe, next_selected, next_constraints, fixed_roots)
+            return _solve(universe, next_selected, next_constraints)
         except PackLockError as exc:
             if first_failure is None:
                 first_failure = exc
@@ -412,30 +462,6 @@ def _dependency_graph(selected: Mapping[str, PackCandidate]) -> dict[str, tuple[
         dependencies = tuple(sorted(dependency.coordinate for dependency in candidate.manifest.dependencies))
         graph[coordinate] = dependencies
     return graph
-
-
-def _reject_cycles(graph: Mapping[str, tuple[str, ...]]) -> None:
-    visiting: list[str] = []
-    active: set[str] = set()
-    finished: set[str] = set()
-
-    def visit(node: str) -> None:
-        if node in finished:
-            return
-        if node in active:
-            start = visiting.index(node)
-            cycle = visiting[start:] + [node]
-            raise _fail("SDAI-PACK-LOCK-005", "dependency cycle: " + " -> ".join(cycle))
-        active.add(node)
-        visiting.append(node)
-        for dependency in graph.get(node, ()):
-            visit(dependency)
-        visiting.pop()
-        active.remove(node)
-        finished.add(node)
-
-    for coordinate in sorted(graph):
-        visit(coordinate)
 
 
 def resolve_pack_lock(
@@ -467,7 +493,7 @@ def resolve_pack_lock(
                 dependency.version,
             )
 
-    resolved = _solve(universe, selected, constraints, frozenset(root_coordinates))
+    resolved = _solve(universe, selected, constraints)
     graph = _dependency_graph(resolved)
     _reject_cycles(graph)
 
@@ -514,20 +540,27 @@ def compare_pack_lock(current: PackLock, expected: PackLock) -> PackLockFreshnes
     )
 
 
+def pack_lock_file_sha256(path: Path) -> str:
+    if path.is_symlink():
+        raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
+    if not path.is_file():
+        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' must be an existing file")
+    try:
+        return _HASH_PREFIX + sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise _fail("SDAI-PACK-LOCK-006", f"unable to hash Pack lock '{path}'") from exc
+
+
 def load_pack_lock(path: Path) -> PackLock:
     if path.is_symlink():
         raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
     if not path.is_file():
-        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' does not exist")
+        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' does not exist or is not a file")
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise _fail("SDAI-PACK-LOCK-006", f"unable to read Pack lock '{path}' as UTF-8") from exc
     return PackLock.from_json(text)
-
-
-def _file_sha256(path: Path) -> str:
-    return _HASH_PREFIX + sha256(path.read_bytes()).hexdigest()
 
 
 def write_pack_lock(
@@ -538,11 +571,19 @@ def write_pack_lock(
 ) -> Path:
     if path.is_symlink():
         raise _fail("SDAI-PACK-LOCK-006", "Pack lock path must not be a symlink")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not path.is_file():
+        raise _fail("SDAI-PACK-LOCK-006", f"Pack lock '{path}' exists but is not a file")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _fail("SDAI-PACK-LOCK-006", f"unable to create Pack lock directory '{path.parent}'") from exc
     target_bytes = lock.to_text().encode("utf-8")
 
     if path.exists():
-        current_bytes = path.read_bytes()
+        try:
+            current_bytes = path.read_bytes()
+        except OSError as exc:
+            raise _fail("SDAI-PACK-LOCK-006", f"unable to read existing Pack lock '{path}'") from exc
         if current_bytes == target_bytes:
             return path
         current_sha = _HASH_PREFIX + sha256(current_bytes).hexdigest()
