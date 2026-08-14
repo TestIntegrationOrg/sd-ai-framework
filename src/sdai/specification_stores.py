@@ -54,6 +54,8 @@ _WINDOWS_RESERVED = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
     | {f"LPT{index}" for index in range(1, 10)}
+    | {f"COM{suffix}" for suffix in ("¹", "²", "³")}
+    | {f"LPT{suffix}" for suffix in ("¹", "²", "³")}
 )
 _WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 _TOP_LEVEL_KEYS = frozenset({"apiVersion", "kind", "metadata", "spec"})
@@ -241,9 +243,12 @@ def _thaw(value: object) -> object:
 
 
 def _version(value: object) -> SemVer:
+    candidate = str(value) if isinstance(value, SemVer) else value
+    if isinstance(candidate, str) and len(candidate) > 256:
+        raise _fail("SDAI-STORE-003", "SpecificationStore version exceeds 256 characters")
     try:
-        return SemVer.parse(str(value)) if isinstance(value, SemVer) else SemVer.parse(value)
-    except PackManifestError as exc:
+        return SemVer.parse(candidate)
+    except (PackManifestError, ValueError) as exc:
         raise _fail("SDAI-STORE-003", f"invalid SpecificationStore version {value!r}") from exc
 
 

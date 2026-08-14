@@ -136,6 +136,8 @@ def test_optional_metadata_string_values_are_nfc_normalized(tmp_path: Path) -> N
         ({"one": "specs", "two": "specs/current"}, "must not overlap"),
         ({"one": "Specs", "two": "specs/current"}, "must not overlap"),
         ({"one": "Specs", "two": "specs"}, "path collision"),
+        ({"current": "COM¹/private"}, "reserved Windows segment"),
+        ({"current": "lpt³/private"}, "reserved Windows segment"),
     ],
 )
 def test_manifest_rejects_unsafe_colliding_or_overlapping_roots(
@@ -185,6 +187,12 @@ def test_programmatic_semver_instances_are_revalidated(tmp_path: Path) -> None:
             roots,
             ("current-specifications",),
         )
+
+
+def test_oversized_semver_is_reported_as_store_domain_error(tmp_path: Path) -> None:
+    _store(tmp_path, version=f"{'1' * 5000}.0.0")
+    with pytest.raises(SpecificationStoreError, match="version exceeds 256 characters"):
+        load_specification_store_manifest(tmp_path)
 
 
 @pytest.mark.parametrize("capabilities", ["changes", None])
