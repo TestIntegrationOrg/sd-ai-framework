@@ -14,7 +14,7 @@ SDAI's shared project skill source remains:
 
 When a harness has a distinct project-native skill directory, its builtin Integration mirrors the canonical corpus into that directory. The projection is byte-preserving and managed by the Integration install-state contract; unmanaged or user-modified native files are never silently replaced.
 
-Tools that already consume `.agents/skills` natively do not need a redundant second copy. `generic-agents` exists for projects that want SDAI to *create* the universal layout from a neutral managed source:
+Tools that already consume `.agents/skills` natively do not need a redundant second skill copy. `generic-agents` exists for projects that want SDAI to *create* the universal layout from a neutral managed source:
 
 ```text
 .sdai/integration-assets/agents/skills  ->  .agents/skills
@@ -22,7 +22,9 @@ Tools that already consume `.agents/skills` natively do not need a redundant sec
 
 The source and target deliberately differ because v1 projections are real managed copies, not aliases or no-op declarations.
 
-## Shipped base Integrations
+## Shipped harness Integrations
+
+Every harness requested by #154 has an explicit manifest. Where a harness already consumes the universal skills directory, the manifest manages a different verified project-native context surface rather than making a meaningless self-copy.
 
 | Integration | Native project surface | What SDAI ships | Current level |
 |---|---|---|---|
@@ -40,16 +42,16 @@ The source and target deliberately differ because v1 projections are real manage
 | `opencode` | `.opencode/skills` | Skills | Native |
 | `kimi-code` | `.kimi-code/skills` | Skills | Native |
 | `factory-droid` | `.factory/skills` | Skills | Native |
+| `goose` | `.goosehints` | Optional managed project context; skills remain shared via `.agents/skills` | Native shared |
+| `zed` | `AGENTS.md` | Optional managed project instructions; skills remain shared via `.agents/skills` | Native shared |
 | `generic-agents` | `.agents/skills` | Universal Agent Skills bootstrap | Portable |
 
-### Shared-native consumers
+### Goose and Zed shared-native semantics
 
-Two requested harnesses are intentionally **not** represented by fake duplicate skill manifests:
+- **Goose** consumes the universal `.agents/skills` layout, so its manifest does not duplicate skills. It maps a project-provided native `.goosehints` asset from `.sdai/integration-assets/goose/.goosehints` to `.goosehints`. If a repository already owns `.goosehints`, managed materialization fails closed instead of overwriting it.
+- **Zed Agent** consumes and protects project `.agents/skills` directly. Its manifest optionally maps `.sdai/integration-assets/zed/AGENTS.md` to the verified project `AGENTS.md` instruction surface. Existing unmanaged `AGENTS.md` content is never silently adopted or replaced.
 
-- **Goose** consumes the universal `.agents/skills` layout; use the canonical project source directly or `generic-agents` when SDAI should materialize that layout. Goose also supports `.goosehints` context, but converting an arbitrary SDAI agent/rule format into `.goosehints` would require transformation semantics that Integration v1 deliberately does not pretend to provide.
-- **Zed Agent** protects and consumes project `.agents/skills` directly and supports project `AGENTS.md`. Use the canonical layout or `generic-agents`. A no-op `.agents/skills -> .agents/skills` manifest would violate v1's source/target ownership model and add no value.
-
-This is classified as **native shared support**, not unsupported support. The absence of a redundant tool-specific manifest is deliberate.
+Projects that need only shared skills can skip the Goose/Zed context manifests and use the canonical `.agents/skills` source directly.
 
 ## Optional native companions
 
@@ -104,7 +106,7 @@ Replace only manifest data: executable, argv, I/O mode, timeout, security requir
 The v1 catalog does **not** claim more than the underlying harness exposes safely:
 
 - Provider-specific subagent files are not generated from `.sdai/agents/*.agent.md` when the schemas differ. Use an optional native-format asset projection instead.
-- Shared-native `.agents/skills` consumers are not given redundant self-copy manifests.
+- Shared-native `.agents/skills` consumers are not given redundant self-copy skill projections.
 - Tool settings, MCP configuration, hooks, permission databases, credentials, and user-home configuration are outside project-native v1 materialization unless a later version defines an explicit governed contract for them.
 - Only the four already-audited SDAI CLI providers ship executable declarations in this slice. Other harnesses remain projection-only until their non-interactive invocation and safety modes are independently verified.
 - A manifest describes requirements; it never widens effective SDAI policy.
