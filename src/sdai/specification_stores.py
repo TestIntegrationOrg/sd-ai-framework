@@ -16,13 +16,14 @@ from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
 from sdai.pack_manifest import PackManifestError, SemVer
-from sdai.text import TextEncodingError, read_utf8_text
+from sdai.text import TextEncodingError
 
 
 SPECIFICATION_STORE_MANIFEST_API_VERSION = "sdai.specification-store/v1"
 SPECIFICATION_STORE_REGISTRY_API_VERSION = "sdai.specification-store-registry/v1"
 SPECIFICATION_STORE_RESOLUTION_API_VERSION = "sdai.specification-store-resolution/v1"
 SPECIFICATION_STORE_MANIFEST_PATH = ".sdai-store/store.yaml"
+SPECIFICATION_STORE_MANIFEST_MAX_BYTES = 1024 * 1024
 
 
 class SpecificationStoreError(RuntimeError):
@@ -325,6 +326,21 @@ def _source_label(value: object) -> str:
     return _text(value, label="store source label", maximum=512)
 
 
+def _read_manifest_text(path: Path) -> str:
+    with path.open("rb") as stream:
+        data = stream.read(SPECIFICATION_STORE_MANIFEST_MAX_BYTES + 1)
+    if len(data) > SPECIFICATION_STORE_MANIFEST_MAX_BYTES:
+        raise _fail(
+            "SDAI-STORE-001",
+            "SpecificationStore manifest exceeds the 1 MiB input limit",
+        )
+    try:
+        decoded = data.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise TextEncodingError("SpecificationStore manifest is not valid UTF-8") from exc
+    return decoded.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _validate_layout(store_root: Path, roots: tuple["SpecificationRoot", ...]) -> None:
     if store_root.is_symlink():
         raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a symlink")
@@ -519,7 +535,7 @@ def load_specification_store_manifest(store_root: Path) -> SpecificationStoreMan
             f"SpecificationStore manifest not found at {SPECIFICATION_STORE_MANIFEST_PATH}",
         )
     try:
-        raw = yaml.load(read_utf8_text(manifest_path), Loader=_UniqueKeyLoader)
+        raw = yaml.load(_read_manifest_text(manifest_path), Loader=_UniqueKeyLoader)
     except (
         OSError,
         OverflowError,

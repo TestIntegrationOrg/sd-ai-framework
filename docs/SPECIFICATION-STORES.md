@@ -26,7 +26,7 @@ spec:
 
 The identifier and capabilities are portable lowercase identifiers. The version is strict SemVer. Descriptions and optional finite-JSON metadata are NFC-normalized UTF-8. Specification roots are unique, non-overlapping, project-relative POSIX paths and must resolve to existing directories below the store root without symlink components. Store metadata cannot itself be declared as specification content.
 
-Unknown or duplicate YAML fields, invalid semantic versions, absolute/traversal/Windows-unsafe paths, case-colliding roots, symlink redirection, missing roots, non-finite values, and oversized optional metadata fail closed.
+Unknown or duplicate YAML fields, manifests larger than 1 MiB, invalid semantic versions, absolute/traversal/Windows-unsafe paths, case-colliding roots, symlink redirection, missing roots, non-finite values, and oversized optional metadata fail closed. The manifest input is byte-bounded before UTF-8 decoding or YAML construction.
 
 `SpecificationStoreManifest.to_json()` is the canonical semantic representation. Its SHA-256 is independent of YAML formatting, mapping order, absolute machine paths, and source discovery order.
 

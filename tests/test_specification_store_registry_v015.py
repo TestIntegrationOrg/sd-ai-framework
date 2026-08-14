@@ -8,6 +8,7 @@ import yaml
 from sdai.pack_manifest import SemVer
 from sdai.specification_stores import (
     SPECIFICATION_STORE_MANIFEST_API_VERSION,
+    SPECIFICATION_STORE_MANIFEST_MAX_BYTES,
     SPECIFICATION_STORE_REGISTRY_API_VERSION,
     SPECIFICATION_STORE_RESOLUTION_API_VERSION,
     SpecificationStoreError,
@@ -280,6 +281,13 @@ def test_invalid_utf8_is_reported_as_store_domain_error(tmp_path: Path) -> None:
     path = _store(tmp_path)
     path.write_bytes(b"apiVersion: \xff")
     with pytest.raises(SpecificationStoreError, match="manifest YAML is malformed"):
+        load_specification_store_manifest(tmp_path)
+
+
+def test_oversized_manifest_is_rejected_before_yaml_parsing(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    path.write_bytes(b"#" * (SPECIFICATION_STORE_MANIFEST_MAX_BYTES + 1))
+    with pytest.raises(SpecificationStoreError, match="1 MiB input limit"):
         load_specification_store_manifest(tmp_path)
 
 
