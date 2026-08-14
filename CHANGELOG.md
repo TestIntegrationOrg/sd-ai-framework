@@ -6,10 +6,13 @@ All notable SD-AI Framework changes should be recorded here. The project version
 
 ### Added
 - Canonical nested Workflow Engine 2 overlay edits with `insert-before`, `insert-after`, `replace`, and `remove`, legacy operation compatibility, path/ambiguity handling, transactional source-order-independent application, and operation-level pre/post graph provenance.
+- Bounded Workflow Engine 2 execution for sequence, conditional, switch, parallel, fan-out, fan-in, foreach, and bounded-while nodes, with deterministic branch/item/iteration identities and source-ordered aggregation.
+- Durable workflow leaf checkpoints on the existing 0.9 execution ledger, including evidence-bound completion, crash-safe dispatch reuse, approval pause/resume, bounded retry history, cancellation, and stale-plan invalidation.
 
 ### Security
 - Enforce `requiresWorkspaceWrite: false` and `workspace_write: false` as a read-only boundary across the complete project workspace for Integration and safe-command execution, restoring created, modified, deleted, directory, and symlink mutations before returning a stable policy violation.
 - Prevent lower overlays from indirectly removing nested organization/core gates and from adding workspace-writing branches beneath concurrent control nodes.
+- Reject concurrent Workflow Engine 2 subtrees that can write the workspace until an explicit governed write-permit strategy exists; all runtime item, iteration, and concurrency bounds fail closed.
 
 ## Unreleased — 0.10 traceability graph + typed evidence
 

@@ -52,6 +52,7 @@ class WorkflowNodeKind(StrEnum):
     VALIDATE = "validate"
     QUALITY_GATE = "quality-gate"
     PLUGIN = "plugin"
+    SAFE_COMMAND = "safe-command"
 
 
 _CONTROL_KINDS = frozenset(
@@ -636,6 +637,43 @@ class _GraphBuilder:
         index: int,
         parent: str,
     ) -> str:
+        raw_kind = (
+            str(raw.get("type") or raw.get("kind") or "").strip()
+            if isinstance(raw, Mapping)
+            else ""
+        )
+        if raw_kind == WorkflowNodeKind.SAFE_COMMAND.value:
+            from sdai.workflow_operational_steps import (
+                WorkflowOperationalStepError,
+                normalize_workflow_operational_step,
+            )
+
+            try:
+                operational = normalize_workflow_operational_step(raw, index=index)
+            except WorkflowOperationalStepError as exc:
+                raise _fail("SDAI-WF2-002", str(exc)) from exc
+            self._register_id(operational.id)
+            path = self._path(parent, operational.id)
+            self.nodes.append(
+                WorkflowGraphNode(
+                    path=path,
+                    id=operational.id,
+                    kind=operational.kind.value,
+                    parent=parent,
+                    index=index,
+                    config_json=_canonical_json(
+                        {
+                            "operationalStep": operational.as_dict(),
+                            "requiresWorkspaceWrite": bool(
+                                operational.safe_command
+                                and operational.safe_command.requires_workspace_write
+                            ),
+                        }
+                    ),
+                )
+            )
+            self.edges.append(WorkflowGraphEdge(parent, path, "contains"))
+            return path
         try:
             step = _parse_step(raw, index)
         except WorkflowConfigError as exc:
@@ -983,11 +1021,20 @@ def load_workflow_graph(
     uses_typed_inputs = "inputs" in data or "input_values" in data or bool(input_values)
     composed_steps = list(composition.steps)
     uses_plugin = _contains_kind(composed_steps, frozenset({StepKind.PLUGIN.value}))
+    uses_safe_command = _contains_kind(
+        composed_steps,
+        frozenset({WorkflowNodeKind.SAFE_COMMAND.value}),
+    )
     uses_v9 = _uses_v9_features(composed_steps)
     if (uses_components or uses_typed_inputs) and (version is None or version < 6):
         raise _fail("SDAI-WF2-002", "workflow components/typed inputs require workflow version 6 or newer")
     if uses_plugin and (version is None or version < 8):
         raise _fail("SDAI-WF2-002", "plugin workflow steps require workflow version 8 or newer")
+    if uses_safe_command and (version is None or version < WORKFLOW_ENGINE2_MIN_VERSION):
+        raise _fail(
+            "SDAI-WF2-002",
+            f"safe-command workflow steps require workflow version {WORKFLOW_ENGINE2_MIN_VERSION} or newer",
+        )
     if uses_v9 and (version is None or version < WORKFLOW_ENGINE2_MIN_VERSION):
         raise _fail(
             "SDAI-WF2-002",

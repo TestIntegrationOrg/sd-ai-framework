@@ -131,7 +131,7 @@ This slice delegates legacy leaf parsing to the existing workflow contracts so t
 
 Plugin input **values** are not emitted into canonical graph JSON. The node exposes the plugin ID, sorted input keys, and an input-value SHA-256 binding instead.
 
-`safe-command` is intentionally not added here; it belongs to #164 so executable leaf security can be reviewed independently from structural graph parsing.
+`safe-command` is graph-readable for workflow version 9 and newer. Its graph node embeds the normalized operational-step contract and an explicit `requiresWorkspaceWrite` flag, so execution planning can enforce concurrency policy without reparsing YAML.
 
 ## Examples
 
@@ -174,4 +174,4 @@ steps:
     strategy: all-success
 ```
 
-The graph contract validates and explains this structure only. Execution ordering, branch expansion, checkpoints, fan-in result aggregation, approvals, cancellation, and resume are implemented in later Workflow Engine 2 slices rather than hidden inside parsing.
+The graph contract remains a pure validation and explanation layer. `workflow_execution.execute_workflow_graph(...)` consumes the resolved graph for bounded execution, durable checkpoints, fan-in aggregation, approvals, cancellation, and resume; those runtime decisions are not hidden inside parsing.
