@@ -20,13 +20,11 @@ _CONTRACTS = {
 
 _EVIDENCE_TESTS = (
     "tests/test_verify_engine_v011.py",
-    "tests/test_verify_cli_v011.py",
-    "tests/test_verification_v011.py",
+    "tests/test_verification_contract_v011.py",
     "tests/test_convergence_v011.py",
-    "tests/test_convergence_cli_v011.py",
     "tests/test_isolated_tasks_v011.py",
     "tests/test_isolated_review_hardening_v011.py",
-    "tests/test_isolated_workspace_edgecases_v011.py",
+    "tests/test_isolated_workspace_edges_v011.py",
     "tests/test_completion_barrier_v011.py",
     "tests/test_completion_barrier_hardening_v011.py",
     "tests/test_model_routing_v011.py",
