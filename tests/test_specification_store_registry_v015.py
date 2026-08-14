@@ -315,6 +315,33 @@ def test_malformed_programmatic_semver_is_reported_as_store_domain_error() -> No
         )
 
 
+def test_unrenderable_programmatic_semver_is_reported_as_store_domain_error() -> None:
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="invalid SpecificationStore version"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(10**5000, 0, 0),
+            "Unrenderable programmatic version",
+            roots,
+            ("current-specifications",),
+        )
+
+
+def test_large_root_sets_use_bounded_overlap_validation() -> None:
+    roots = tuple(
+        SpecificationRoot(f"root-{index}", f"specs-{index}")
+        for index in range(10_000)
+    )
+    manifest = SpecificationStoreManifest(
+        "platform-specs",
+        SemVer(1, 0, 0),
+        "Large non-overlapping root set",
+        roots,
+        ("current-specifications",),
+    )
+    assert len(manifest.specification_roots) == 10_000
+
+
 def test_oversized_semver_is_reported_as_store_domain_error(tmp_path: Path) -> None:
     _store(tmp_path, version=f"{'1' * 5000}.0.0")
     with pytest.raises(SpecificationStoreError, match="version exceeds 256 characters"):

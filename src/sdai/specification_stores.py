@@ -303,7 +303,7 @@ def _version(value: object) -> SemVer:
             raise _fail("SDAI-STORE-003", "SpecificationStore version exceeds 256 characters")
         return SemVer.parse(candidate)
     except (PackManifestError, TypeError, ValueError) as exc:
-        raise _fail("SDAI-STORE-003", f"invalid SpecificationStore version {value!r}") from exc
+        raise _fail("SDAI-STORE-003", "invalid SpecificationStore version") from exc
 
 
 def _version_compare(left: SemVer, right: SemVer) -> int:
@@ -416,13 +416,13 @@ class SpecificationStoreManifest:
         path_keys = [item.path.casefold() for item in roots]
         if len(set(path_keys)) != len(path_keys):
             raise _fail("SDAI-STORE-002", "specificationRoots contain a path collision")
-        for left_index, left in enumerate(roots):
-            left_parts = tuple(part.casefold() for part in PurePosixPath(left.path).parts)
-            for right in roots[left_index + 1 :]:
-                right_parts = tuple(part.casefold() for part in PurePosixPath(right.path).parts)
-                shorter, longer = sorted((left_parts, right_parts), key=len)
-                if longer[: len(shorter)] == shorter:
-                    raise _fail("SDAI-STORE-002", "specificationRoots must not overlap")
+        path_parts = sorted(
+            tuple(part.casefold() for part in PurePosixPath(item.path).parts)
+            for item in roots
+        )
+        for parent, candidate in zip(path_parts, path_parts[1:], strict=False):
+            if candidate[: len(parent)] == parent:
+                raise _fail("SDAI-STORE-002", "specificationRoots must not overlap")
         if not isinstance(self.capabilities, (list, tuple)):
             raise _fail("SDAI-STORE-001", "capabilities must be a non-empty unique list")
         capabilities = tuple(
