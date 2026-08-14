@@ -323,9 +323,28 @@ def test_manifest_rejects_missing_root_and_symlink_redirection(tmp_path: Path) -
         current.symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symlink creation is unavailable on this platform")
-    with pytest.raises(SpecificationStoreError, match="symlink component"):
+    with pytest.raises(SpecificationStoreError, match="filesystem redirect"):
         load_specification_store_manifest(tmp_path)
     assert path.is_file()
+
+
+def test_manifest_rejects_windows_junction_redirection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _store(tmp_path)
+    junction = tmp_path / ".sdai-store"
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda self: self == junction,
+        raising=False,
+    )
+    with pytest.raises(SpecificationStoreError, match="manifest path.*filesystem redirects"):
+        load_specification_store_manifest(tmp_path)
+    monkeypatch.setattr(Path, "is_junction", lambda self: self == tmp_path)
+    with pytest.raises(SpecificationStoreError, match="root must not be a filesystem redirect"):
+        load_specification_store_manifest(tmp_path)
 
 
 def test_invalid_utf8_is_reported_as_store_domain_error(tmp_path: Path) -> None:

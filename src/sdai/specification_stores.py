@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
+import stat
 from types import MappingProxyType
 from typing import Iterable, Mapping
 import unicodedata
@@ -378,9 +379,29 @@ def _read_manifest_text(path: Path) -> str:
     return decoded.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _is_filesystem_redirect(path: Path, *, label: str) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if is_junction is not None and is_junction():
+            return True
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except FileNotFoundError:
+            return False
+        reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+        return bool(attributes & reparse_point)
+    except OSError as exc:
+        raise _fail(
+            "SDAI-STORE-002",
+            f"{label} redirect status could not be verified",
+        ) from exc
+
+
 def _validate_layout(store_root: Path, roots: tuple["SpecificationRoot", ...]) -> None:
-    if store_root.is_symlink():
-        raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a symlink")
+    if _is_filesystem_redirect(store_root, label="SpecificationStore root"):
+        raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a filesystem redirect")
     if not store_root.exists() or not store_root.is_dir():
         raise _fail("SDAI-STORE-002", "SpecificationStore root must be an existing directory")
     resolved_root = store_root.resolve()
@@ -388,10 +409,10 @@ def _validate_layout(store_root: Path, roots: tuple["SpecificationRoot", ...]) -
         candidate = resolved_root
         for part in PurePosixPath(root.path).parts:
             candidate = candidate / part
-            if candidate.is_symlink():
+            if _is_filesystem_redirect(candidate, label=f"specification root '{root.path}'"):
                 raise _fail(
                     "SDAI-STORE-002",
-                    f"specification root '{root.path}' contains a symlink component",
+                    f"specification root '{root.path}' contains a filesystem redirect",
                 )
         if not candidate.exists() or not candidate.is_dir():
             raise _fail(
@@ -560,14 +581,17 @@ def load_specification_store_manifest(store_root: Path) -> SpecificationStoreMan
             "SDAI-STORE-002",
             "SpecificationStore root must be a valid local path",
         ) from exc
-    if root.is_symlink():
-        raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a symlink")
+    if _is_filesystem_redirect(root, label="SpecificationStore root"):
+        raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a filesystem redirect")
     manifest_path = root / SPECIFICATION_STORE_MANIFEST_PATH
     candidate = root
     for part in PurePosixPath(SPECIFICATION_STORE_MANIFEST_PATH).parts:
         candidate = candidate / part
-        if candidate.is_symlink():
-            raise _fail("SDAI-STORE-002", "SpecificationStore manifest path must not contain symlinks")
+        if _is_filesystem_redirect(candidate, label="SpecificationStore manifest path"):
+            raise _fail(
+                "SDAI-STORE-002",
+                "SpecificationStore manifest path must not contain filesystem redirects",
+            )
     if not manifest_path.exists() or not manifest_path.is_file():
         raise _fail(
             "SDAI-STORE-002",
