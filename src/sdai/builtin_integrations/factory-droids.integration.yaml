@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: factory-droids
+version: 1.0.0
+displayName: Factory Custom Droids
+description: Project optional Factory custom Droids sourced from neutral SDAI integration assets.
+capabilities:
+  - agent-files
+projections:
+  - kind: agent-file
+    source: .sdai/integration-assets/factory/droids
+    target: .factory/droids
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
