@@ -14,6 +14,7 @@ from sdai.pack_certification import (
     ProducerMetadata,
     resolve_pack_certification_policy,
 )
+from sdai.pack_eval_suite import PackEvalCaseSpec, PackEvalSuite
 from sdai.pack_integrity import build_pack_content_index
 from sdai.pack_manifest import PACK_MANIFEST_API_VERSION, load_pack_manifest
 
@@ -54,6 +55,18 @@ def _policy():
     )
 
 
+def _suite():
+    return PackEvalSuite(
+        (PackEvalCaseSpec("quality-case", "quality", "sha256:" + "b" * 64),)
+    )
+
+
+def _write_suite(path: Path):
+    suite = _suite()
+    path.write_text(suite.to_json(), encoding="utf-8")
+    return suite
+
+
 def test_certification_cli_reports_certified_json(tmp_path: Path, capsys) -> None:
     project = tmp_path / "project"
     artifact = tmp_path / "café-artifact"
@@ -62,13 +75,15 @@ def test_certification_cli_reports_certified_json(tmp_path: Path, capsys) -> Non
     policy = _policy()
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(policy.to_json(), encoding="utf-8")
+    suite_path = tmp_path / "suite.json"
+    suite = _write_suite(suite_path)
     resolved = resolve_pack_certification_policy(repository=policy)
     evidence = PackEvalEvidence(
         pack_identity=manifest.identity,
         manifest_sha256=manifest.sha256,
         content_sha256=content.sha256,
         policy_sha256=resolved.sha256,
-        suite_sha256="sha256:" + "a" * 64,
+        suite_sha256=suite.sha256,
         cases=(PackEvalCaseResult("quality-case", "quality", "sha256:" + "b" * 64, 9000, True),),
         producer=ProducerMetadata("mock", "deterministic-v1", "sdai-test"),
     )
@@ -77,7 +92,7 @@ def test_certification_cli_reports_certified_json(tmp_path: Path, capsys) -> Non
 
     code = main([
         "pack", "certification",
-        "--source", str(artifact),
+        "--source", str(artifact), "--suite", str(suite_path),
         "--repository-policy", str(policy_path),
         "--evidence", str(evidence_path),
         "--json", "--path", str(project),
@@ -99,9 +114,11 @@ def test_certification_cli_missing_or_malformed_evidence_returns_four(tmp_path: 
     _artifact(artifact)
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(_policy().to_json(), encoding="utf-8")
+    suite_path = tmp_path / "suite.json"
+    _write_suite(suite_path)
 
     code = main([
-        "pack", "certification", "--source", str(artifact),
+        "pack", "certification", "--source", str(artifact), "--suite", str(suite_path),
         "--repository-policy", str(policy_path), "--json", "--path", str(project),
     ])
     captured = capsys.readouterr()
@@ -112,7 +129,7 @@ def test_certification_cli_missing_or_malformed_evidence_returns_four(tmp_path: 
     broken = tmp_path / "broken.json"
     broken.write_text('{"apiVersion":"broken"', encoding="utf-8")
     code = main([
-        "pack", "certification", "--source", str(artifact),
+        "pack", "certification", "--source", str(artifact), "--suite", str(suite_path),
         "--repository-policy", str(policy_path), "--evidence", str(broken),
         "--json", "--path", str(project),
     ])
@@ -129,6 +146,8 @@ def test_certification_cli_detects_stale_evidence_after_policy_change(tmp_path: 
     artifact = tmp_path / "artifact"
     _project(project)
     manifest, content = _artifact(artifact)
+    suite_path = tmp_path / "suite.json"
+    suite = _write_suite(suite_path)
     old_policy = _policy()
     old_resolved = resolve_pack_certification_policy(repository=old_policy)
     evidence = PackEvalEvidence(
@@ -136,8 +155,8 @@ def test_certification_cli_detects_stale_evidence_after_policy_change(tmp_path: 
         manifest_sha256=manifest.sha256,
         content_sha256=content.sha256,
         policy_sha256=old_resolved.sha256,
-        suite_sha256="sha256:" + "c" * 64,
-        cases=(PackEvalCaseResult("quality-case", "quality", "sha256:" + "d" * 64, 10000, True),),
+        suite_sha256=suite.sha256,
+        cases=(PackEvalCaseResult("quality-case", "quality", "sha256:" + "b" * 64, 10000, True),),
         producer=ProducerMetadata("provider-one", "model-one", "runner"),
     )
     evidence_path = tmp_path / "evidence.json"
@@ -150,7 +169,7 @@ def test_certification_cli_detects_stale_evidence_after_policy_change(tmp_path: 
     changed_path.write_text(changed.to_json(), encoding="utf-8")
 
     code = main([
-        "pack", "certification", "--source", str(artifact),
+        "pack", "certification", "--source", str(artifact), "--suite", str(suite_path),
         "--repository-policy", str(changed_path), "--evidence", str(evidence_path),
         "--json", "--path", str(project),
     ])
