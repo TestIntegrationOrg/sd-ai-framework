@@ -446,7 +446,7 @@ def test_release_gate_rejects_symlink_ancestry_when_platform_supports_symlinks(
     assert report.status == IntegrationFileStatus.BROKEN
     with pytest.raises(
         IntegrationMaterializationError,
-        match="SDAI-INTEGRATION-MAT-005.*broken",
+        match="SDAI-INTEGRATION-MAT-003.*escapes the project root",
     ):
         materialize_integration(project, resolved)
     assert list(outside.iterdir()) == []
