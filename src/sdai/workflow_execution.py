@@ -116,6 +116,7 @@ class WorkflowLeafInvocation:
     dispatch_id: str
     attempt: int
     context: dict[str, object]
+    planning_binding: str | None = None
 
 
 WorkflowLeafExecutor = Callable[[WorkflowLeafInvocation], WorkflowLeafOutcome]
@@ -179,7 +180,7 @@ class _Halt(RuntimeError):
         self.error = error
 
 
-def _default_leaf_executor(invocation: WorkflowLeafInvocation) -> WorkflowLeafOutcome:
+def default_workflow_leaf_executor(invocation: WorkflowLeafInvocation) -> WorkflowLeafOutcome:
     node = invocation.node
     if node.kind == WorkflowNodeKind.DETERMINISTIC.value:
         return WorkflowLeafOutcome(
@@ -508,7 +509,26 @@ class _WorkflowExecutor:
         context: dict[str, object],
         identity: str,
     ) -> WorkflowNodeExecution:
-        task_id, context_sha = self._task_id(identity, context)
+        planning_binding: str | None = None
+        planner = getattr(self.leaf_executor, "planning_binding", None)
+        if callable(planner):
+            try:
+                candidate = planner(node)
+            except Exception as exc:
+                raise _fail(
+                    "SDAI-WF2-EXEC-009",
+                    f"leaf planning failed for '{node.path}': {exc}",
+                ) from exc
+            if candidate is not None and (not isinstance(candidate, str) or not candidate):
+                raise _fail("SDAI-WF2-EXEC-009", "leaf planning binding must be a string or null")
+            planning_binding = candidate
+        task_context: Mapping[str, object] = context
+        if planning_binding is not None:
+            task_context = {
+                "context": context,
+                "leafPlanningBinding": planning_binding,
+            }
+        task_id, context_sha = self._task_id(identity, task_context)
         state = self.ledger.reconstruct()
         current = state.task_map().get(task_id)
         registration = self._registration(task_id)
@@ -521,6 +541,8 @@ class _WorkflowExecutor:
             "nodeKind": node.kind,
             "contextSha256": context_sha,
         }
+        if planning_binding is not None:
+            expected_registration["leafPlanningBinding"] = planning_binding
         if current is None:
             self._retire_conflicting_tasks(identity, task_id)
             self.ledger.append_event(
@@ -561,7 +583,14 @@ class _WorkflowExecutor:
             self._check_cancelled()
             dispatch_id = "wf-dispatch-" + sha256(f"{task_id}:{attempt}".encode("utf-8")).hexdigest()[:24]
             outcome = self.leaf_executor(
-                WorkflowLeafInvocation(node, identity, dispatch_id, attempt, dict(context))
+                WorkflowLeafInvocation(
+                    node,
+                    identity,
+                    dispatch_id,
+                    attempt,
+                    dict(context),
+                    planning_binding,
+                )
             )
             if not isinstance(outcome, WorkflowLeafOutcome):
                 raise _fail("SDAI-WF2-EXEC-004", "leaf executor must return WorkflowLeafOutcome")
@@ -653,7 +682,11 @@ class _WorkflowExecutor:
                 maximum = node.config.get("maxConcurrency")
                 if not isinstance(maximum, int) or maximum < 1 or maximum > 32:
                     raise _fail("SDAI-WF2-EXEC-003", f"parallel node '{path}' has invalid concurrency bound")
-                writable = [child for child in node.children if self._subtree_requires_write(child)]
+                writable = (
+                    [child for child in node.children if self._subtree_requires_write(child)]
+                    if maximum > 1
+                    else []
+                )
                 if writable:
                     raise _fail(
                         "SDAI-WF2-EXEC-003",
@@ -689,7 +722,7 @@ class _WorkflowExecutor:
                 concurrency = node.config.get("maxConcurrency")
                 if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 32:
                     raise _fail("SDAI-WF2-EXEC-003", f"fan-out node '{path}' has invalid concurrency bound")
-                if self._subtree_requires_write(node.children[0]):
+                if concurrency > 1 and self._subtree_requires_write(node.children[0]):
                     raise _fail(
                         "SDAI-WF2-EXEC-003",
                         f"fan-out node '{path}' cannot concurrently execute workspace-write branches",
@@ -831,7 +864,7 @@ def execute_workflow_graph(
         return _WorkflowExecutor(
             resolution,
             ledger,
-            leaf_executor or _default_leaf_executor,
+            leaf_executor or default_workflow_leaf_executor,
             cancelled,
         ).execute()
     except ExecutionLedgerError as exc:

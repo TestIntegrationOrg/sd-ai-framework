@@ -1,0 +1,16 @@
+apiVersion: sdai/v1
+kind: PluginStep
+metadata:
+  id: evidence-summary
+  version: 1.0.0
+spec:
+  publisher: sdai
+  executor: evidence-summary
+  permissions:
+    filesystem:
+      read: []
+      write: []
+    network: false
+    environment: []
+    commands: []
+    workspace_write: false

@@ -486,6 +486,7 @@ class WorkflowGraphResolution:
     mandatory_steps: tuple[str, ...]
     graph: WorkflowGraph
     _input_values_json: str
+    _plugin_inputs_json: str
 
     @property
     def input_values(self) -> dict[str, object]:
@@ -496,6 +497,12 @@ class WorkflowGraphResolution:
     @property
     def public_inputs(self) -> dict[str, object]:
         value = json.loads(self.public_inputs_json)
+        assert isinstance(value, dict)
+        return value
+
+    @property
+    def plugin_inputs(self) -> dict[str, dict[str, object]]:
+        value = json.loads(self._plugin_inputs_json)
         assert isinstance(value, dict)
         return value
 
@@ -531,6 +538,7 @@ class _GraphBuilder:
     edges: list[WorkflowGraphEdge]
     seen_ids: set[str]
     fan_in_nodes: list[tuple[str, tuple[str, ...]]]
+    plugin_inputs: dict[str, dict[str, object]]
 
     def _register_id(self, step_id: str) -> None:
         if step_id in self.seen_ids:
@@ -682,6 +690,8 @@ class _GraphBuilder:
             raise _fail("SDAI-WF2-003", f"parallel step '{step.id}' must be parsed as control flow")
         self._register_id(step.id)
         path = self._path(parent, step.id)
+        if step.kind == StepKind.PLUGIN:
+            self.plugin_inputs[path] = dict(step.plugin_input_values)
         self.nodes.append(
             WorkflowGraphNode(
                 path=path,
@@ -1049,7 +1059,7 @@ def load_workflow_graph(
             f"workflow '{name}' must define validation_mode as light, standard, or critical",
         ) from exc
 
-    builder = _GraphBuilder(version, [], [], set(), [])
+    builder = _GraphBuilder(version, [], [], set(), [], {})
     top_paths = builder._children(composed_steps, parent="$root", label=f"workflow '{name}'")
     builder.nodes.append(
         WorkflowGraphNode(
@@ -1118,4 +1128,5 @@ def load_workflow_graph(
         mandatory_steps=mandatory,
         graph=graph,
         _input_values_json=_canonical_json(raw_inputs),
+        _plugin_inputs_json=_canonical_json(builder.plugin_inputs),
     )

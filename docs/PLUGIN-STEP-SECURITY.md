@@ -40,6 +40,8 @@ Compatibility location:
 .sdai/extensions/plugin-steps/<id>.yaml
 ```
 
+Workflow Engine 2 layered discovery and plan binding are specified in `PLUGIN-STEP-REGISTRY-V2.md`. The repository paths above remain backward-compatible inputs to the repository layer.
+
 If both locations define the same ID, loading fails closed.
 
 ```yaml

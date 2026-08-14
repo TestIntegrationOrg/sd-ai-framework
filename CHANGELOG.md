@@ -9,11 +9,14 @@ All notable SD-AI Framework changes should be recorded here. The project version
 - Bounded Workflow Engine 2 execution for sequence, conditional, switch, parallel, fan-out, fan-in, foreach, and bounded-while nodes, with deterministic branch/item/iteration identities and source-ordered aggregation.
 - Durable workflow leaf checkpoints on the existing 0.9 execution ledger, including evidence-bound completion, crash-safe dispatch reuse, approval pause/resume, bounded retry history, cancellation, and stale-plan invalidation.
 - Versioned `workflow graph`, `workflow resolve`, `workflow validate`, `workflow status`, and `workflow resume` library/CLI surfaces with canonical JSON, stable automation exit classes, effective leaf permission plans, output-redacted durable status, and explainable next work.
+- Layered Workflow Engine 2 PluginStep registration across core, verified installed Packs, organization, repository, and user sources, with deterministic SemVer resolution, provenance, authoritative locks, canonical manifest hashes, and an extension-first built-in sample.
+- Trusted PluginStep execution adapter for bounded control-flow leaves, binding durable task identity to the exact manifest, executor, publisher, private input hash, effective permissions, and policy sources so changed plans cannot reuse stale completion.
 
 ### Security
 - Enforce `requiresWorkspaceWrite: false` and `workspace_write: false` as a read-only boundary across the complete project workspace for Integration and safe-command execution, restoring created, modified, deleted, directory, and symlink mutations before returning a stable policy violation.
 - Prevent lower overlays from indirectly removing nested organization/core gates and from adding workspace-writing branches beneath concurrent control nodes.
 - Reject concurrent Workflow Engine 2 subtrees that can write the workspace until an explicit governed write-permit strategy exists; all runtime item, iteration, and concurrency bounds fail closed.
+- Keep manifest discovery separate from executable registration: PluginStep YAML cannot import code, Pack bytes must match managed install evidence, core/org locks cannot be bypassed, and lower policies cannot widen network, environment, filesystem, command, or workspace-write permissions.
 
 ## Unreleased — 0.10 traceability graph + typed evidence
 

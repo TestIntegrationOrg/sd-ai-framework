@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from hashlib import sha256
 import json
 from pathlib import Path
 import time
@@ -222,10 +221,12 @@ class Orchestrator:
                 "executor": plan.plugin.executor,
                 "source": plan.plugin.source,
             },
+            "manifest_sha256": plan.plugin.manifest_sha256,
+            "plan_sha256": plan.sha256,
             "effective_permissions": plan.permissions.as_dict(),
             "policy_sources": list(plan.policy_sources),
             "input_keys": sorted(plan.inputs),
-            "input_sha256": "sha256:" + sha256(plan.to_json().encode("utf-8")).hexdigest(),
+            "input_sha256": plan.input_sha256,
         }
 
     def _persist_plugin_evidence(
