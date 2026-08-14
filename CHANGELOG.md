@@ -2,6 +2,11 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — 0.14 Workflow Engine 2 hardening
+
+### Security
+- Enforce `requiresWorkspaceWrite: false` and `workspace_write: false` as a read-only boundary across the complete project workspace for Integration and safe-command execution, restoring created, modified, deleted, directory, and symlink mutations before returning a stable policy violation.
+
 ## Unreleased — 0.10 traceability graph + typed evidence
 
 ### Added

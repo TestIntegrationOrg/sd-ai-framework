@@ -35,7 +35,12 @@ def _policy(*, workspace_write: bool = True, protected_paths: tuple[str, ...] = 
     )
 
 
-def _resolved(*, output_path: str | None = None) -> ResolvedIntegration:
+def _resolved(
+    *,
+    output_path: str | None = None,
+    script: str = "print('ok')",
+    workspace_write: bool | None = None,
+) -> ResolvedIntegration:
     output_mode = "file" if output_path else "stdout"
     manifest = IntegrationManifest.from_dict(
         {
@@ -48,7 +53,7 @@ def _resolved(*, output_path: str | None = None) -> ResolvedIntegration:
             "projections": [],
             "execution": {
                 "executable": "python",
-                "argsBeforeInput": ["-c", "print('ok')"],
+                "argsBeforeInput": ["-c", script],
                 "inputMode": "none",
                 "inputPath": None,
                 "argsAfterInput": [],
@@ -58,7 +63,7 @@ def _resolved(*, output_path: str | None = None) -> ResolvedIntegration:
             },
             "security": {
                 "requiresNetwork": False,
-                "requiresWorkspaceWrite": bool(output_path),
+                "requiresWorkspaceWrite": bool(output_path) if workspace_write is None else workspace_write,
                 "environment": [],
             },
         }
@@ -129,3 +134,35 @@ def test_policy_protected_path_is_rechecked_after_plan_creation(tmp_path: Path) 
             project_root=tmp_path,
             policy=tightened,
         )
+
+
+def test_read_only_integration_restores_all_workspace_mutations(tmp_path: Path) -> None:
+    existing = tmp_path / "existing.txt"
+    deleted = tmp_path / "deleted.txt"
+    existing_directory = tmp_path / "existing-directory"
+    existing.write_text("original", encoding="utf-8")
+    deleted.write_text("preserve", encoding="utf-8")
+    existing_directory.mkdir()
+    script = (
+        "from pathlib import Path; "
+        "Path('existing.txt').write_text('changed', encoding='utf-8'); "
+        "Path('deleted.txt').unlink(); "
+        "Path('existing-directory').rmdir(); "
+        "Path('new.txt').write_text('new', encoding='utf-8'); "
+        "Path('new-empty-directory').mkdir()"
+    )
+    resolved = _resolved(script=script, workspace_write=False)
+    request = IntegrationExecutionRequest.create(resolved, "")
+    policy = _policy(workspace_write=True)
+    plan = build_integration_execution_plan(resolved, request, policy)
+
+    result = execute_integration_plan(plan, request, project_root=tmp_path, policy=policy)
+
+    assert result.status == IntegrationExecutionStatus.POLICY_VIOLATION
+    assert result.error is not None
+    assert result.error.code == "SDAI-INTEGRATION-EXEC-009"
+    assert existing.read_text(encoding="utf-8") == "original"
+    assert deleted.read_text(encoding="utf-8") == "preserve"
+    assert existing_directory.is_dir()
+    assert not (tmp_path / "new.txt").exists()
+    assert not (tmp_path / "new-empty-directory").exists()

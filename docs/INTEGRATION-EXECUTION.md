@@ -24,7 +24,7 @@ Planning fails when:
 - a required environment-variable name is outside the effective policy allowlist, or
 - a declared runtime input/output file overlaps a protected SDAI/source-of-truth path.
 
-Execution rechecks workspace-write and environment policy immediately before launch so a previously built plan cannot bypass a later policy tightening. `WorkspaceMutationGuard` remains active during the external process and restores/rejects changes to protected paths.
+Execution rechecks workspace-write and environment policy immediately before launch so a previously built plan cannot bypass a later policy tightening. `WorkspaceMutationGuard` remains active during the external process. Integrations declaring `requiresWorkspaceWrite: true` may change ordinary project files but protected paths are restored and rejected. Integrations declaring `requiresWorkspaceWrite: false` are guarded across the entire project: created, modified, deleted, directory, and symlink mutations are restored and return `policy-violation`.
 
 ## No shell interpolation
 
@@ -98,7 +98,7 @@ Current error families are:
 - `SDAI-INTEGRATION-EXEC-006` — cancellation.
 - `SDAI-INTEGRATION-EXEC-007` — non-zero exit status.
 - `SDAI-INTEGRATION-EXEC-008` — malformed/invalid output.
-- `SDAI-INTEGRATION-EXEC-009` — protected-path mutation detected and restored.
+- `SDAI-INTEGRATION-EXEC-009` — protected-path or read-only-workspace mutation detected and restored.
 
 ## Extension-first rule
 
