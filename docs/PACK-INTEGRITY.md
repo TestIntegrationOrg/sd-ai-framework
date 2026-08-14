@@ -24,17 +24,22 @@ The content index intentionally does not include the manifest itself. The signed
 
 Adding, deleting, or changing any regular file under a declared content root changes the content SHA-256. Empty directories are not content truth.
 
-## Path safety
+A content index is produced only after a complete walk. Any filesystem scan/traversal error is surfaced as `PackIntegrityError`; SDAI never treats an unreadable or omitted subtree as a valid complete Pack inventory.
+
+## Path safety and cross-platform portability
 
 Integrity walking is stricter than ordinary file discovery. SDAI rejects:
 
 - absolute, drive-qualified, backslash, `.`/`..`, or NUL content paths,
+- Windows-forbidden filename characters and control characters,
+- path segments ending in a dot or space,
+- Windows reserved device names such as `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, and `LPT1`–`LPT9`, including names with extensions,
 - symlinked content files,
 - symlinked content directories,
 - declared roots that resolve through aliases, and
 - resolved paths that escape the Pack root or traverse a symlink/reparse-point style alias.
 
-The walker does not follow links. These rules keep the signed byte set Pack-owned and portable across supported operating systems.
+The walker does not follow links. These checks apply even when a Pack is authored on Linux, preventing Linux from signing a file set that cannot be represented with the same names on supported Windows environments.
 
 ## Signed payload
 
