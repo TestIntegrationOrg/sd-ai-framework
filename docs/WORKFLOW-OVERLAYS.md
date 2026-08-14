@@ -1,6 +1,6 @@
-# Workflow Inheritance, Overlays, and Safe Lifecycle Hooks
+# Workflow Engine 2 Inheritance, Overlays, and Safe Lifecycle Hooks
 
-SDAI 0.8 resolves workflow customization in this order:
+SDAI 0.8 introduced the compatibility pipeline below. SDAI 0.14 extends its overlay stage to edit nested Workflow Engine 2 graphs without changing the established layer order:
 
 ```text
 base workflow / inheritance
@@ -87,7 +87,7 @@ workflow: enterprise
 required_steps:
   - org-security-approval
 operations:
-  - op: add-before
+  - op: insert-before
     target: delivery-approval
     step:
       id: org-security-approval
@@ -102,18 +102,20 @@ hooks:
       mode: advisory
 ```
 
-Supported operation types are:
+Canonical Workflow Engine 2 operation types are:
 
 ```text
-prepend
-append
-add-before
-add-after
+insert-before
+insert-after
 replace
-disable
+remove
 ```
 
-`replace` must retain the target step ID. Multiple replace/disable mutations of the same target in the same layer fail instead of relying on file-order last-write behavior.
+Legacy `prepend`, `append`, `add-before`, `add-after`, and `disable` operations remain compatible; `add-before`/`add-after`/`disable` normalize to `insert-before`/`insert-after`/`remove`.
+
+Targets may use a globally unambiguous step ID or an exact canonical path such as `pipeline/checks/unit`, `decision/$then/review`, `selector/$case/0/validate`, or `loop/$body/build`. Ambiguous IDs fail with the candidate canonical paths. `replace` must retain the target step ID. Multiple replace/remove mutations of the same canonical target in one layer fail even when one uses an ID and another uses a path.
+
+Documents are ordered by layer, inheritance target, and overlay ID rather than filename. Each operation is applied to an isolated graph copy, and any invalid operation rejects the complete resolution. This makes successful output independent of source enumeration/filename order and prevents partial application.
 
 ## Organization non-weakening
 
@@ -129,6 +131,8 @@ The following automatically become organization-mandated:
 
 Repository and user overlays cannot replace or disable those steps.
 
+The same rule applies to a parent control node containing a mandatory step; removing or replacing the parent cannot erase the nested requirement indirectly.
+
 `required_steps` is accepted only from the organization layer.
 
 ## Protected workflow semantics
@@ -138,7 +142,7 @@ Even when no explicit organization overlay exists, repository/user overlays cann
 - approval steps
 - quality-gate steps
 - validation steps
-- parallel groups
+- parallel/fan-out groups
 - security-capability agent steps
 
 For other replaceable agent steps, lower layers cannot:
@@ -148,6 +152,8 @@ For other replaceable agent steps, lower layers cannot:
 - widen `advisory` execution to `workspace-write`
 
 A lower layer may make a `workspace-write` agent more restrictive by replacing it with the same agent/capability in `advisory` mode.
+
+Overlay operations cannot introduce a workspace-writing branch beneath a concurrent `parallel` or `fan-out` node, including insertion into an existing concurrent node.
 
 For deterministic steps, lower layers cannot replace the action with a different action.
 
@@ -236,6 +242,7 @@ Explain output includes:
 - effective validation mode/version
 - organization-mandated step IDs
 - overlay layer, ID, target, source, and operations
+- per-operation canonical target plus pre/post resolved-graph SHA-256, and overlay-level pre/post graph hashes
 - lifecycle hook point, anchor, layer, source, and inserted step IDs
 - typed inputs and components from #75
 - final parsed workflow steps
