@@ -267,6 +267,47 @@ def test_overlay_cannot_insert_writer_into_existing_parallel(tmp_path: Path) -> 
         load_workflow_graph(tmp_path, "nested", environ={})
 
 
+def test_overlay_cannot_add_second_writer_to_already_writable_parallel(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        [
+            {
+                "id": "writers",
+                "type": "parallel",
+                "steps": [
+                    {
+                        "id": "existing-writer",
+                        "type": "agent",
+                        "agent": "developer",
+                        "capability": "coding",
+                        "mode": "workspace-write",
+                    }
+                ],
+            }
+        ],
+    )
+    _overlay(
+        tmp_path / ".sdai" / "workflow-overlays" / "second-writer.yaml",
+        "repo-second-writer",
+        [
+            {
+                "op": "insert-after",
+                "target": "writers/existing-writer",
+                "step": {
+                    "id": "second-writer",
+                    "type": "agent",
+                    "agent": "developer",
+                    "capability": "coding",
+                    "mode": "workspace-write",
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(WorkflowGraphError, match="SDAI-WFOVER-004.*workspace-writing concurrent branch"):
+        load_workflow_graph(tmp_path, "nested", environ={})
+
+
 def test_nested_overlay_steps_cannot_hide_provider_or_shell_fields(tmp_path: Path) -> None:
     _workflow(tmp_path, [{"id": "validate", "type": "validate"}])
     _overlay(

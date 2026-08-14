@@ -342,7 +342,7 @@ def _walk_steps(steps: list[object], *, parent: str = "$root") -> tuple[_StepLoc
     return tuple(result)
 
 
-def _contains_workspace_write(raw: object) -> bool:
+def _declares_workspace_write(raw: object) -> bool:
     if not isinstance(raw, Mapping):
         return False
     kind = _step_type(raw)
@@ -353,6 +353,12 @@ def _contains_workspace_write(raw: object) -> bool:
     if kind == "plugin":
         # Plugin permissions are resolved from the trusted registry rather than the
         # raw step. An overlay cannot prove the plugin read-only at graph-edit time.
+        return True
+    return False
+
+
+def _contains_workspace_write(raw: object) -> bool:
+    if _declares_workspace_write(raw):
         return True
     for nested_parent, children in _nested_step_lists(raw, path="step"):
         del nested_parent
@@ -735,16 +741,15 @@ def _graph_hash(steps: list[object]) -> str:
     return "sha256:" + sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _writable_concurrent_paths(steps: list[object]) -> set[str]:
+def _writable_concurrent_branches(steps: list[object]) -> set[tuple[str, str]]:
+    locations = _walk_steps(steps)
+    concurrent = [item for item in locations if _step_type(item.step) in _CONCURRENT_STEP_TYPES]
+    writers = [item for item in locations if _declares_workspace_write(item.step)]
     return {
-        item.path
-        for item in _walk_steps(steps)
-        if _step_type(item.step) in _CONCURRENT_STEP_TYPES
-        and any(
-            _contains_workspace_write(child)
-            for _, children in _nested_step_lists(item.step, path=item.path)
-            for child in children
-        )
+        (parent.path, writer.path)
+        for parent in concurrent
+        for writer in writers
+        if writer.path.startswith(parent.path + "/")
     }
 
 
@@ -1008,7 +1013,7 @@ def resolve_workflow_data(
                     )
                 mutated_targets[document.layer].add(canonical_target)
             pre_hash = _graph_hash(steps)
-            writable_concurrent_before = _writable_concurrent_paths(steps)
+            writable_concurrent_before = _writable_concurrent_branches(steps)
             label, resolved_target, inserted_step = _apply_operation(
                 steps,
                 operation,
@@ -1017,13 +1022,13 @@ def resolve_workflow_data(
                 protected_anchors=protected_anchors,
             )
             newly_writable_concurrent = sorted(
-                _writable_concurrent_paths(steps) - writable_concurrent_before
+                _writable_concurrent_branches(steps) - writable_concurrent_before
             )
             if newly_writable_concurrent:
                 raise _fail(
                     "SDAI-WFOVER-004",
                     "overlay operation cannot add workspace-writing concurrent branch under "
-                    f"'{newly_writable_concurrent[0]}'",
+                    f"'{newly_writable_concurrent[0][0]}'",
                 )
             post_hash = _graph_hash(steps)
             operation_labels.append(label)
