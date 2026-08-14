@@ -392,7 +392,7 @@ def _is_filesystem_redirect(path: Path, *, label: str) -> bool:
             return False
         reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
         return bool(attributes & reparse_point)
-    except OSError as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         raise _fail(
             "SDAI-STORE-002",
             f"{label} redirect status could not be verified",

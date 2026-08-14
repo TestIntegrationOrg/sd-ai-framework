@@ -269,6 +269,19 @@ def test_invalid_programmatic_root_inputs_use_store_domain_errors() -> None:
         build_specification_store_registry(None)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("root", [Path("invalid\x00root"), Path("invalid\ud800root")])
+def test_invalid_filesystem_path_text_uses_store_domain_errors(root: Path) -> None:
+    with pytest.raises(SpecificationStoreError, match="SDAI-STORE-002"):
+        load_specification_store_manifest(root)
+    source = SpecificationStoreSource(
+        root,
+        SpecificationStoreLayer.REPO,
+        "programmatic source",
+    )
+    with pytest.raises(SpecificationStoreError, match="SDAI-STORE-002"):
+        build_specification_store_registry((source,))
+
+
 @pytest.mark.parametrize(
     "roots, message",
     [
