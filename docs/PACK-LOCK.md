@@ -70,13 +70,23 @@ changed:publisher/id
 changed:roots
 ```
 
-It never silently updates the existing lock.
+A parent entry is also `changed` when one of its exact dependency identities changes. Comparison never silently updates the existing lock.
 
-## Atomic writes
+## Atomic and coordinated writes
 
 `write_pack_lock()` writes canonical UTF-8 JSON plus one trailing newline through a same-directory temporary file, flushes/fsyncs the temporary file, and replaces the target atomically with `os.replace`.
 
-Writing identical bytes is an idempotent no-op.
+All SDAI lock writers coordinate the complete **read → expected-hash check → temporary write → replace** critical section with an operating-system exclusive lock on a stable sibling guard file:
+
+```text
+.<lock-file-name>.write-lock
+```
+
+POSIX uses `flock`; Windows uses the corresponding byte-range file lock. The guard file intentionally remains present so concurrent and later processes continue locking the same stable filesystem object. A symlinked guard fails closed.
+
+This coordination prevents two SDAI writers that start from the same old hash from both committing updates: one writer succeeds; the next writer reacquires the guard, observes the new exact bytes, and fails its stale-hash check. Non-cooperating external processes that overwrite the file outside SDAI are outside this lock protocol, but the next SDAI operation will observe their bytes/hash rather than treating them as the expected state.
+
+Writing identical bytes is an idempotent no-op once the guard is held.
 
 Replacing a different existing lock requires `expected_current_sha256`. This value is the SHA-256 of the **exact current file bytes**, including the trailing newline, not `PackLock.sha256`. Use:
 
@@ -85,7 +95,7 @@ expected = pack_lock_file_sha256(path)
 write_pack_lock(path, new_lock, expected_current_sha256=expected)
 ```
 
-This provides an explicit optimistic stale-write guard and prevents an ordinary re-resolution call from silently mutating an existing lock.
+This stale-write guard is evaluated while holding the exclusive write guard. It prevents an ordinary re-resolution call from silently mutating an existing lock and prevents cooperating concurrent SDAI writers from losing an intervening update.
 
 Lock paths that are symlinks are rejected. Directories and unreadable/non-file targets also fail with controlled Pack-lock errors.
 
