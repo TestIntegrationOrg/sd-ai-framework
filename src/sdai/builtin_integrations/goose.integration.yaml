@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: goose
+version: 1.0.0
+displayName: Goose
+description: Optional project Goose context file sourced from neutral SDAI integration assets; skills remain shared through .agents/skills.
+capabilities:
+  - agent-files
+projections:
+  - kind: agent-file
+    source: .sdai/integration-assets/goose/.goosehints
+    target: .goosehints
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
