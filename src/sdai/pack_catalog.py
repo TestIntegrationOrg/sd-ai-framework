@@ -108,15 +108,21 @@ def canonical_catalog_source(value: object) -> str:
     text = _text(value, label="catalog source")
     if any(ord(char) < 32 or char.isspace() for char in text) or "\\" in text:
         raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' is not portable")
-    parsed = urlsplit(text)
-    if not parsed.scheme or not re.fullmatch(r"[a-z][a-z0-9+.-]*", parsed.scheme):
+
+    raw_scheme, separator, _ = text.partition(":")
+    if separator != ":" or not re.fullmatch(r"[a-z][a-z0-9+.-]*", raw_scheme):
         raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' must use a lowercase URI scheme")
+
+    parsed = urlsplit(text)
     if parsed.fragment:
         raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' must not contain a fragment")
     if parsed.username is not None or parsed.password is not None:
         raise _fail("SDAI-PACK-CATALOG-001", "catalog source must not embed credentials")
-    if parsed.scheme in {"http", "https", "catalog"} and not parsed.netloc:
-        raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' requires an authority")
+    if parsed.scheme in {"http", "https", "catalog"}:
+        if not parsed.netloc:
+            raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' requires an authority")
+        if parsed.netloc != parsed.netloc.lower():
+            raise _fail("SDAI-PACK-CATALOG-001", f"catalog source '{text}' must use a lowercase authority")
     return text
 
 
