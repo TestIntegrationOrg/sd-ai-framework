@@ -321,6 +321,12 @@ def test_layered_graph_safe_execution_pause_status_resume_and_idempotency(
                 project_root=project,
                 policy=policy,
             )
+            if result.status != "succeeded":
+                return WorkflowLeafOutcome(
+                    WorkflowExecutionStatus.FAILED,
+                    error=f"safe command returned {result.status}",
+                )
+            assert result.output == {"value": SECRET}
             return WorkflowLeafOutcome(
                 WorkflowExecutionStatus.SUCCEEDED,
                 result.output,
