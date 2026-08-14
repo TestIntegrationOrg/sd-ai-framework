@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: generic-agents
+version: 1.0.0
+displayName: Generic .agents Layout
+description: Bootstrap the universal project Agent Skills layout from neutral SDAI integration assets.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .sdai/integration-assets/agents/skills
+    target: .agents/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

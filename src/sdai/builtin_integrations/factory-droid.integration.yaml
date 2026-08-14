@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: factory-droid
+version: 1.0.0
+displayName: Factory Droid
+description: Mirror canonical Agent Skills into Factory's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .factory/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: rovo-dev
+version: 1.0.0
+displayName: Atlassian Rovo Dev
+description: Mirror canonical Agent Skills into Rovo Dev's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .rovodev/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

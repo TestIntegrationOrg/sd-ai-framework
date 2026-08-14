@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: kimi-code
+version: 1.0.0
+displayName: Kimi Code CLI
+description: Mirror canonical Agent Skills into Kimi Code's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .kimi-code/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

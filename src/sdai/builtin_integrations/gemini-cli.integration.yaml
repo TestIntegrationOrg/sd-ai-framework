@@ -1,0 +1,35 @@
+apiVersion: sdai.integration-manifest/v1
+id: gemini-cli
+version: 1.0.0
+displayName: Gemini CLI
+description: Project skill projection plus safe advisory Gemini CLI execution.
+capabilities:
+  - agent-execution
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .gemini/skills
+execution:
+  executable: gemini
+  argsBeforeInput:
+    - -p
+    - Follow the SD-AI task supplied on stdin.
+    - --output-format
+    - text
+    - --approval-mode
+    - plan
+  inputMode: stdin
+  inputPath: null
+  argsAfterInput: []
+  outputMode: stdout
+  outputPath: null
+  timeoutSeconds: 600
+security:
+  requiresNetwork: true
+  requiresWorkspaceWrite: false
+  environment:
+    - GEMINI_API_KEY
+    - GOOGLE_API_KEY
+    - GOOGLE_APPLICATION_CREDENTIALS
+    - GOOGLE_CLOUD_PROJECT
