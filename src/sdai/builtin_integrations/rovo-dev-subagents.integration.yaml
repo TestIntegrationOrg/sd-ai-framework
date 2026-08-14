@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: rovo-dev-subagents
+version: 1.0.0
+displayName: Rovo Dev Subagents
+description: Project optional Rovo Dev subagents sourced from neutral SDAI integration assets.
+capabilities:
+  - agent-files
+projections:
+  - kind: agent-file
+    source: .sdai/integration-assets/rovo-dev/subagents
+    target: .rovodev/subagents
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
