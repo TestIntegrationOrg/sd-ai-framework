@@ -211,7 +211,7 @@ def test_lock_round_trip_rejects_corruption_duplicate_keys_and_noncanonical_orde
         PackLock.from_dict(corrupt)
 
 
-def test_compare_lock_reports_changed_missing_extra_and_roots() -> None:
+def test_compare_lock_reports_transitive_entry_changes() -> None:
     root = _candidate(
         "acme",
         "root",
@@ -226,7 +226,7 @@ def test_compare_lock_reports_changed_missing_extra_and_roots() -> None:
     assert status.outdated is True
     assert status.current_sha256 == first.sha256
     assert status.expected_sha256 == second.sha256
-    assert status.differences == ("changed:acme/library",)
+    assert status.differences == ("changed:acme/library", "changed:acme/root")
 
 
 def test_atomic_lock_write_is_idempotent_and_requires_explicit_stale_replacement(tmp_path: Path) -> None:
@@ -257,12 +257,12 @@ def test_atomic_lock_write_is_idempotent_and_requires_explicit_stale_replacement
 
 def test_atomic_lock_write_rejects_concurrent_change_and_symlink_target(tmp_path: Path) -> None:
     path = tmp_path / "packs.lock.json"
-    root = _candidate("acme", "root", "1.0.0")
-    first = resolve_pack_lock([root], [])
+    first = resolve_pack_lock([_candidate("acme", "root", "1.0.0")], [])
+    second = resolve_pack_lock([_candidate("acme", "root", "1.0.1")], [])
     write_pack_lock(path, first)
 
     with pytest.raises(PackLockError, match="changed concurrently"):
-        write_pack_lock(path, first, expected_current_sha256=_digest("not-current"))
+        write_pack_lock(path, second, expected_current_sha256=_digest("not-current"))
 
     target = tmp_path / "real-lock.json"
     target.write_text(first.to_text(), encoding="utf-8", newline="\n")
