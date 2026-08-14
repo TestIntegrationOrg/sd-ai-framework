@@ -6,7 +6,7 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
-from typing import Mapping
+from typing import Mapping, TypeVar
 import unicodedata
 
 import yaml
@@ -127,6 +127,7 @@ _PROJECTION_CAPABILITY = {
     ProjectionKind.COMMAND: IntegrationCapability.COMMANDS,
     ProjectionKind.AGENT_FILE: IntegrationCapability.AGENT_FILES,
 }
+_EnumT = TypeVar("_EnumT", bound=StrEnum)
 
 
 def _fail(code: str, message: str) -> IntegrationManifestError:
@@ -195,8 +196,19 @@ def _text(value: object, *, label: str, allow_empty: bool = False) -> str:
     return normalized
 
 
+def _exact_text(value: object, *, label: str, code: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise _fail(code, f"{label} must be a non-empty string")
+    normalized = unicodedata.normalize("NFC", value)
+    if "\x00" in normalized:
+        raise _fail(code, f"{label} must not contain NUL")
+    if normalized != normalized.strip():
+        raise _fail(code, f"{label} must not contain surrounding whitespace")
+    return normalized
+
+
 def _identifier(value: object, *, label: str) -> str:
-    text = _text(value, label=label)
+    text = _exact_text(value, label=label, code="SDAI-INTEGRATION-001")
     if not _IDENTIFIER_RE.fullmatch(text):
         raise _fail(
             "SDAI-INTEGRATION-001",
@@ -205,7 +217,7 @@ def _identifier(value: object, *, label: str) -> str:
     return text
 
 
-def _enum(value: object, enum_type: type[StrEnum], *, label: str) -> StrEnum:
+def _enum(value: object, enum_type: type[_EnumT], *, label: str) -> _EnumT:
     if not isinstance(value, str):
         raise _fail("SDAI-INTEGRATION-001", f"{label} must be a string")
     try:
@@ -219,7 +231,7 @@ def _enum(value: object, enum_type: type[StrEnum], *, label: str) -> StrEnum:
 
 
 def _portable_relative_path(value: object, *, label: str) -> str:
-    text = _text(value, label=label)
+    text = _exact_text(value, label=label, code="SDAI-INTEGRATION-002")
     if "\\" in text:
         raise _fail(
             "SDAI-INTEGRATION-002",
@@ -237,6 +249,11 @@ def _portable_relative_path(value: object, *, label: str) -> str:
             f"{label} '{text}' contains an unsafe path segment",
         )
     for part in parts:
+        if part != part.strip():
+            raise _fail(
+                "SDAI-INTEGRATION-002",
+                f"{label} '{text}' contains non-portable segment whitespace",
+            )
         if any(ord(char) < 32 for char in part):
             raise _fail(
                 "SDAI-INTEGRATION-002",
@@ -247,10 +264,10 @@ def _portable_relative_path(value: object, *, label: str) -> str:
                 "SDAI-INTEGRATION-002",
                 f"{label} '{text}' is not portable across Windows and POSIX filesystems",
             )
-        if part.endswith((" ", ".")):
+        if part.endswith("."):
             raise _fail(
                 "SDAI-INTEGRATION-002",
-                f"{label} '{text}' contains a non-portable trailing space or dot",
+                f"{label} '{text}' contains a non-portable trailing dot",
             )
         reserved_stem = part.split(".", 1)[0].upper()
         if reserved_stem in _WINDOWS_RESERVED:
@@ -262,7 +279,11 @@ def _portable_relative_path(value: object, *, label: str) -> str:
 
 
 def _executable(value: object) -> str:
-    text = _text(value, label="execution.executable")
+    text = _exact_text(
+        value,
+        label="execution.executable",
+        code="SDAI-INTEGRATION-003",
+    )
     if any(char.isspace() for char in text):
         raise _fail(
             "SDAI-INTEGRATION-003",
@@ -274,7 +295,12 @@ def _executable(value: object) -> str:
             "execution.executable must be a portable command name or project-relative executable path",
         )
     parts = text.split("/")
-    if any(part in {"", ".", ".."} or not _EXECUTABLE_SEGMENT_RE.fullmatch(part) for part in parts):
+    if any(
+        part in {"", ".", ".."}
+        or not _EXECUTABLE_SEGMENT_RE.fullmatch(part)
+        or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        for part in parts
+    ):
         raise _fail(
             "SDAI-INTEGRATION-003",
             "execution.executable must be a portable command name or project-relative executable path",
@@ -345,7 +371,7 @@ class IntegrationProjection:
         raw = _mapping(value, label="integration projection")
         _keys(raw, expected=_PROJECTION_KEYS, label="integration projection")
         return cls(
-            kind=_enum(raw["kind"], ProjectionKind, label="projection kind"),  # type: ignore[arg-type]
+            kind=_enum(raw["kind"], ProjectionKind, label="projection kind"),
             source=_portable_relative_path(raw["source"], label="projection source"),
             target=_portable_relative_path(raw["target"], label="projection target"),
         )
@@ -399,9 +425,9 @@ class IntegrationExecution:
         return cls(
             executable=_executable(raw["executable"]),
             args_before_input=_argument_list(raw["argsBeforeInput"], label="execution.argsBeforeInput"),
-            input_mode=input_mode,  # type: ignore[arg-type]
+            input_mode=input_mode,
             args_after_input=_argument_list(raw["argsAfterInput"], label="execution.argsAfterInput"),
-            output_mode=output_mode,  # type: ignore[arg-type]
+            output_mode=output_mode,
             output_path=output_path,
             timeout_seconds=timeout_seconds,
         )
@@ -484,10 +510,10 @@ class IntegrationManifest:
         capabilities_raw = raw["capabilities"]
         if not isinstance(capabilities_raw, list) or not capabilities_raw:
             raise _fail("SDAI-INTEGRATION-001", "capabilities must be a non-empty list")
-        capabilities: list[IntegrationCapability] = []
-        for index, item in enumerate(capabilities_raw):
-            capability = _enum(item, IntegrationCapability, label=f"capabilities[{index}]")
-            capabilities.append(capability)  # type: ignore[arg-type]
+        capabilities = [
+            _enum(item, IntegrationCapability, label=f"capabilities[{index}]")
+            for index, item in enumerate(capabilities_raw)
+        ]
         if len(set(capabilities)) != len(capabilities):
             raise _fail("SDAI-INTEGRATION-001", "capabilities must not contain duplicates")
         capabilities_tuple = tuple(sorted(capabilities, key=lambda item: item.value))
@@ -536,14 +562,23 @@ class IntegrationManifest:
             )
 
         security = IntegrationSecurity.from_dict(raw["security"])
-        if execution is not None and execution.output_mode == IntegrationOutputMode.FILE and not security.requires_workspace_write:
+        if (
+            execution is not None
+            and execution.output_mode == IntegrationOutputMode.FILE
+            and not security.requires_workspace_write
+        ):
             raise _fail(
                 "SDAI-INTEGRATION-004",
                 "file output requires security.requiresWorkspaceWrite=true",
             )
 
+        version_text = _exact_text(
+            raw["version"],
+            label="version",
+            code="SDAI-INTEGRATION-001",
+        )
         try:
-            version = SemVer.parse(raw["version"])
+            version = SemVer.parse(version_text)
         except PackManifestError as exc:
             raise _fail("SDAI-INTEGRATION-001", "version must be a valid semantic version") from exc
 
@@ -596,6 +631,21 @@ def load_integration_manifest(path: Path, *, root: Path | None = None) -> Integr
             f"Integration manifest '{manifest_input}' does not exist",
         )
 
+    root_absolute = Path(root_input.absolute())
+    manifest_absolute = Path(manifest_input.absolute())
+    try:
+        lexical_relative = manifest_absolute.relative_to(root_absolute)
+    except ValueError as exc:
+        raise _fail("SDAI-INTEGRATION-002", "Integration manifest escapes its root") from exc
+    current = root_absolute
+    for part in lexical_relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise _fail(
+                "SDAI-INTEGRATION-002",
+                "Integration manifest path must not contain symlink components",
+            )
+
     root_resolved = root_input.resolve()
     try:
         safe_manifest = ensure_within_project(
@@ -605,16 +655,6 @@ def load_integration_manifest(path: Path, *, root: Path | None = None) -> Integr
         )
     except RuntimeError as exc:
         raise _fail("SDAI-INTEGRATION-002", "Integration manifest escapes its root") from exc
-
-    relative = safe_manifest.resolve(strict=False).relative_to(root_resolved)
-    current = root_resolved
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise _fail(
-                "SDAI-INTEGRATION-002",
-                "Integration manifest path must not contain symlink components",
-            )
 
     try:
         text = safe_manifest.read_text(encoding="utf-8", errors="strict")
