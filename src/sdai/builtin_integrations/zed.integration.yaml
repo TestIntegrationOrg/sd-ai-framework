@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: zed
+version: 1.0.0
+displayName: Zed Agent
+description: Optional managed project AGENTS.md for Zed; skills remain shared through .agents/skills.
+capabilities:
+  - agent-files
+projections:
+  - kind: agent-file
+    source: .sdai/integration-assets/zed/AGENTS.md
+    target: AGENTS.md
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
