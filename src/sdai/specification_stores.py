@@ -66,6 +66,7 @@ _SPEC_OPTIONAL_KEYS = frozenset({"metadata"})
 _PORTABLE_PATH_MAX_BYTES = 4096
 _PORTABLE_PATH_MAX_SEGMENT_BYTES = 255
 _PORTABLE_PATH_MAX_SEGMENTS = 64
+_STORE_METADATA_MAX_BYTES = 65536
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -231,29 +232,46 @@ def _normalize_json(
     ancestors: frozenset[int] = frozenset(),
     depth: int = 0,
     nodes: list[int] | None = None,
+    bytes_used: list[int] | None = None,
 ) -> object:
     if nodes is None:
         nodes = [0]
+    if bytes_used is None:
+        bytes_used = [0]
+
+    def charge(size: int) -> None:
+        bytes_used[0] += size
+        if bytes_used[0] > _STORE_METADATA_MAX_BYTES:
+            raise _fail(
+                "SDAI-STORE-001",
+                f"{label} exceeds {_STORE_METADATA_MAX_BYTES} UTF-8 bytes",
+            )
+
     nodes[0] += 1
     if nodes[0] > 100_000:
         raise _fail("SDAI-STORE-001", f"{label} exceeds the maximum value count")
     if depth > 64:
         raise _fail("SDAI-STORE-001", f"{label} exceeds the maximum nesting depth")
     if value is None or isinstance(value, (bool, int)):
+        charge(len(_canonical_json(value).encode("utf-8")))
         return value
     if isinstance(value, str):
         if "\x00" in value or _contains_surrogate(value):
             raise _fail("SDAI-STORE-001", f"{label} contains invalid Unicode text")
-        return unicodedata.normalize("NFC", value)
+        normalized_text = unicodedata.normalize("NFC", value)
+        charge(len(_canonical_json(normalized_text).encode("utf-8")))
+        return normalized_text
     if isinstance(value, float):
         if value != value or value in {float("inf"), float("-inf")}:
             raise _fail("SDAI-STORE-001", f"{label} contains a non-finite number")
+        charge(len(_canonical_json(value).encode("utf-8")))
         return value
     if isinstance(value, list):
         identity = id(value)
         if identity in ancestors:
             raise _fail("SDAI-STORE-001", f"{label} contains a recursive value")
         descendants = ancestors | {identity}
+        charge(2 + max(0, len(value) - 1))
         return [
             _normalize_json(
                 item,
@@ -261,6 +279,7 @@ def _normalize_json(
                 ancestors=descendants,
                 depth=depth + 1,
                 nodes=nodes,
+                bytes_used=bytes_used,
             )
             for item in value
         ]
@@ -271,6 +290,7 @@ def _normalize_json(
         if identity in ancestors:
             raise _fail("SDAI-STORE-001", f"{label} contains a recursive value")
         descendants = ancestors | {identity}
+        charge(2 + max(0, len(value) - 1))
         normalized: dict[str, object] = {}
         for key in sorted(value):
             canonical_key = unicodedata.normalize("NFC", key)
@@ -284,12 +304,14 @@ def _normalize_json(
                     "SDAI-STORE-001",
                     f"{label} contains Unicode-normalization-colliding keys",
                 )
+            charge(len(_canonical_json(canonical_key).encode("utf-8")) + 1)
             normalized[canonical_key] = _normalize_json(
                 value[key],
                 label=f"{label}.{key}",
                 ancestors=descendants,
                 depth=depth + 1,
                 nodes=nodes,
+                bytes_used=bytes_used,
             )
         return normalized
     raise _fail("SDAI-STORE-001", f"{label} must contain only JSON-compatible values")
@@ -448,8 +470,11 @@ class SpecificationStoreManifest:
         normalized_metadata = _normalize_json(self.metadata, label="store metadata")
         if not isinstance(normalized_metadata, Mapping):
             raise _fail("SDAI-STORE-001", "store metadata must be a mapping")
-        if len(_canonical_json(normalized_metadata).encode("utf-8")) > 65536:
-            raise _fail("SDAI-STORE-001", "store metadata exceeds 65536 UTF-8 bytes")
+        if len(_canonical_json(normalized_metadata).encode("utf-8")) > _STORE_METADATA_MAX_BYTES:
+            raise _fail(
+                "SDAI-STORE-001",
+                f"store metadata exceeds {_STORE_METADATA_MAX_BYTES} UTF-8 bytes",
+            )
         object.__setattr__(self, "id", store_id)
         object.__setattr__(self, "version", version)
         object.__setattr__(self, "description", description)

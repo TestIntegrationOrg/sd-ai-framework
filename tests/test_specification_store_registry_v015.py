@@ -195,11 +195,30 @@ def test_alias_expanded_metadata_value_count_is_bounded() -> None:
     for _ in range(17):
         shared = [shared, shared]
     roots = (SpecificationRoot("current", "specs/current"),)
-    with pytest.raises(SpecificationStoreError, match="maximum value count"):
+    with pytest.raises(
+        SpecificationStoreError,
+        match="maximum value count|exceeds 65536 UTF-8 bytes",
+    ):
         SpecificationStoreManifest(
             "platform-specs",
             SemVer(1, 0, 0),
             "Expanded metadata",
+            roots,
+            ("current-specifications",),
+            {"expanded": shared},
+        )
+
+
+def test_alias_expanded_metadata_bytes_are_bounded_during_normalization() -> None:
+    shared: object = "x" * 16384
+    for _ in range(15):
+        shared = [shared, shared]
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="exceeds 65536 UTF-8 bytes"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(1, 0, 0),
+            "Byte-expanded metadata",
             roots,
             ("current-specifications",),
             {"expanded": shared},
