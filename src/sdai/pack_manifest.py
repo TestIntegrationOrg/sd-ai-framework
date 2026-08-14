@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import total_ordering
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
+import unicodedata
 
 import yaml
 
@@ -97,7 +97,7 @@ def _non_empty_string(value: object, *, label: str) -> str:
         raise _fail("SDAI-PACK-001", f"{label} must be a non-empty string")
     if "\x00" in value:
         raise _fail("SDAI-PACK-001", f"{label} must not contain NUL")
-    return value.strip()
+    return unicodedata.normalize("NFC", value.strip())
 
 
 def _identifier(value: object, *, label: str) -> str:
@@ -114,7 +114,7 @@ def _string_list(
     value: object,
     *,
     label: str,
-    validator: callable | None = None,
+    validator: Callable[[str], str] | None = None,
     allow_empty: bool = True,
 ) -> tuple[str, ...]:
     if not isinstance(value, list):
@@ -137,12 +137,11 @@ def _portable_relative_path(value: str) -> str:
         raise _fail("SDAI-PACK-002", f"content root '{value}' must use POSIX '/' separators")
     if re.match(r"^[A-Za-z]:", value):
         raise _fail("SDAI-PACK-002", f"content root '{value}' must be repository-relative")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise _fail("SDAI-PACK-002", f"content root '{value}' contains an unsafe path segment")
     path = PurePosixPath(value)
     if path.is_absolute():
         raise _fail("SDAI-PACK-002", f"content root '{value}' must be repository-relative")
-    parts = path.parts
-    if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise _fail("SDAI-PACK-002", f"content root '{value}' contains an unsafe path segment")
     return path.as_posix()
 
 
@@ -152,7 +151,6 @@ def _api_version(value: str) -> str:
     return value
 
 
-@total_ordering
 @dataclass(frozen=True)
 class SemVer:
     major: int
@@ -185,21 +183,7 @@ class SemVer:
             value += "+" + ".".join(self.build)
         return value
 
-    @property
-    def precedence_key(self) -> tuple[int, int, int, tuple[tuple[int, object], ...]]:
-        if not self.prerelease:
-            prerelease_key: tuple[tuple[int, object], ...] = ((2, ""),)
-        else:
-            items: list[tuple[int, object]] = []
-            for identifier in self.prerelease:
-                if identifier.isdigit():
-                    items.append((0, int(identifier)))
-                else:
-                    items.append((1, identifier))
-            prerelease_key = tuple(items)
-        return (self.major, self.minor, self.patch, prerelease_key)
-
-    def _compare_precedence(self, other: "SemVer") -> int:
+    def compare_precedence(self, other: "SemVer") -> int:
         left_core = (self.major, self.minor, self.patch)
         right_core = (other.major, other.minor, other.patch)
         if left_core != right_core:
@@ -223,19 +207,9 @@ class SemVer:
         return -1 if len(self.prerelease) < len(other.prerelease) else 1
 
     def same_precedence(self, other: "SemVer") -> bool:
-        return self._compare_precedence(other) == 0
+        return self.compare_precedence(other) == 0
 
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, SemVer):
-            return NotImplemented
-        comparison = self._compare_precedence(other)
-        if comparison != 0:
-            return comparison < 0
-        return self.build < other.build
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, SemVer):
-            return False
+    def exactly_equals(self, other: "SemVer") -> bool:
         return (
             self.major,
             self.minor,
@@ -249,6 +223,11 @@ class SemVer:
             other.prerelease,
             other.build,
         )
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self.compare_precedence(other) < 0
 
 
 @dataclass(frozen=True)
@@ -271,10 +250,10 @@ class VersionComparator:
         return f"{self.operator}{self.version}"
 
     def matches(self, candidate: SemVer) -> bool:
-        comparison = candidate._compare_precedence(self.version)
+        comparison = candidate.compare_precedence(self.version)
         if self.operator == "=":
             if self.version.build:
-                return candidate == self.version
+                return candidate.exactly_equals(self.version)
             return comparison == 0
         if self.operator == ">":
             return comparison > 0
@@ -498,17 +477,22 @@ def validate_pack_layout(pack_root: Path, manifest: PackManifest) -> None:
 
 
 def load_pack_manifest(path: Path, *, pack_root: Path | None = None) -> PackManifest:
-    if path.is_symlink():
-        raise _fail("SDAI-PACK-002", "Pack manifest must not be a symlink")
-    if not path.is_file():
-        raise _fail("SDAI-PACK-001", f"Pack manifest '{path}' does not exist")
+    cwd = Path.cwd()
+    root_input = pack_root if pack_root is not None else (path.parent if path.is_absolute() else cwd / path.parent)
+    if not root_input.is_absolute():
+        root_input = cwd / root_input
+    manifest_input = path if path.is_absolute() else ((root_input / path) if pack_root is not None else cwd / path)
 
-    root = pack_root if pack_root is not None else path.parent
-    if root.is_symlink():
+    if manifest_input.is_symlink():
+        raise _fail("SDAI-PACK-002", "Pack manifest must not be a symlink")
+    if not manifest_input.is_file():
+        raise _fail("SDAI-PACK-001", f"Pack manifest '{manifest_input}' does not exist")
+    if root_input.is_symlink():
         raise _fail("SDAI-PACK-002", "Pack root must not be a symlink")
-    root_resolved = root.resolve()
+
+    root_resolved = root_input.resolve()
     try:
-        safe_manifest = ensure_within_project(root_resolved, path, label="Pack manifest")
+        safe_manifest = ensure_within_project(root_resolved, manifest_input, label="Pack manifest")
     except RuntimeError as exc:
         raise _fail("SDAI-PACK-002", "Pack manifest escapes the Pack root") from exc
 
@@ -520,5 +504,5 @@ def load_pack_manifest(path: Path, *, pack_root: Path | None = None) -> PackMani
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise _fail("SDAI-PACK-001", f"unable to read Pack manifest '{safe_manifest}' as UTF-8 YAML") from exc
     manifest = PackManifest.from_dict(raw)
-    validate_pack_layout(root, manifest)
+    validate_pack_layout(root_input, manifest)
     return manifest
