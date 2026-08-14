@@ -13,10 +13,7 @@ import time
 from typing import Callable, Mapping
 
 from sdai.execution_guard import ProtectedPathViolation, WorkspaceMutationGuard
-from sdai.integration_manifest import (
-    IntegrationInputMode,
-    IntegrationOutputMode,
-)
+from sdai.integration_manifest import IntegrationInputMode, IntegrationOutputMode
 from sdai.integration_registry import ResolvedIntegration
 from sdai.path_safety import PathSafetyError, ensure_within_project
 from sdai.policy import EffectiveConfiguration
@@ -104,22 +101,6 @@ def _matches_protected_path(relative: str, patterns: tuple[str, ...]) -> bool:
     )
 
 
-def _ensure_runtime_binding(
-    resolved: ResolvedIntegration,
-    request: "IntegrationExecutionRequest",
-) -> None:
-    if request.integration_identity != resolved.identity:
-        raise _fail(
-            "SDAI-INTEGRATION-EXEC-001",
-            "execution request Integration identity does not match the resolved Integration",
-        )
-    if request.manifest_sha256 != resolved.manifest_sha256:
-        raise _fail(
-            "SDAI-INTEGRATION-EXEC-001",
-            "execution request manifest hash does not match the resolved Integration",
-        )
-
-
 @dataclass(frozen=True)
 class IntegrationExecutionRequest:
     integration_identity: str
@@ -127,6 +108,14 @@ class IntegrationExecutionRequest:
     input_sha256: str
     input_bytes: int
     _input_text: str = field(repr=False, compare=True)
+
+    def __post_init__(self) -> None:
+        payload = _input_bytes(self._input_text)
+        if self.input_sha256 != _sha256_bytes(payload) or self.input_bytes != len(payload):
+            raise _fail(
+                "SDAI-INTEGRATION-EXEC-001",
+                "execution request input hash/length does not match the private runtime input",
+            )
 
     @classmethod
     def create(
@@ -148,8 +137,6 @@ class IntegrationExecutionRequest:
         return self._input_text
 
     def as_dict(self) -> dict[str, object]:
-        """Return the explainable request without serializing raw user input."""
-
         return {
             "apiVersion": INTEGRATION_EXECUTION_REQUEST_API_VERSION,
             "inputBytes": self.input_bytes,
@@ -210,18 +197,13 @@ class IntegrationExecutionPlan:
         return _sha256_bytes(self.to_json().encode("utf-8"))
 
     def runtime_argv(self, request: IntegrationExecutionRequest) -> tuple[str, ...]:
-        if request.integration_identity != self.integration_identity:
-            raise _fail("SDAI-INTEGRATION-EXEC-001", "request identity does not match execution plan")
-        if request.manifest_sha256 != self.manifest_sha256:
-            raise _fail("SDAI-INTEGRATION-EXEC-001", "request manifest hash does not match execution plan")
-        if request.input_sha256 != self.input_sha256 or request.input_bytes != self.input_bytes:
-            raise _fail("SDAI-INTEGRATION-EXEC-001", "request input does not match execution plan")
-
+        _validate_request_against_plan(self, request)
         argv = [self.executable, *self.args_before_input]
         if self.input_mode == IntegrationInputMode.ARGUMENT:
             argv.append(request.input_text)
         elif self.input_mode == IntegrationInputMode.FILE:
-            assert self.input_path is not None
+            if self.input_path is None:
+                raise _fail("SDAI-INTEGRATION-EXEC-001", "file input plan is missing inputPath")
             argv.append(self.input_path)
         argv.extend(self.args_after_input)
         return tuple(argv)
@@ -272,6 +254,38 @@ class IntegrationExecutionResult:
         return _canonical_json(self.as_dict())
 
 
+def _validate_request_against_resolved(
+    resolved: ResolvedIntegration,
+    request: IntegrationExecutionRequest,
+) -> None:
+    if request.integration_identity != resolved.identity:
+        raise _fail(
+            "SDAI-INTEGRATION-EXEC-001",
+            "execution request Integration identity does not match the resolved Integration",
+        )
+    if request.manifest_sha256 != resolved.manifest_sha256:
+        raise _fail(
+            "SDAI-INTEGRATION-EXEC-001",
+            "execution request manifest hash does not match the resolved Integration",
+        )
+
+
+def _validate_request_against_plan(
+    plan: IntegrationExecutionPlan,
+    request: IntegrationExecutionRequest,
+) -> None:
+    payload = _input_bytes(request.input_text)
+    actual_sha = _sha256_bytes(payload)
+    if actual_sha != request.input_sha256 or len(payload) != request.input_bytes:
+        raise _fail("SDAI-INTEGRATION-EXEC-001", "runtime input no longer matches execution request")
+    if request.integration_identity != plan.integration_identity:
+        raise _fail("SDAI-INTEGRATION-EXEC-001", "request identity does not match execution plan")
+    if request.manifest_sha256 != plan.manifest_sha256:
+        raise _fail("SDAI-INTEGRATION-EXEC-001", "request manifest hash does not match execution plan")
+    if request.input_sha256 != plan.input_sha256 or request.input_bytes != plan.input_bytes:
+        raise _fail("SDAI-INTEGRATION-EXEC-001", "request input does not match execution plan")
+
+
 def build_integration_execution_plan(
     resolved: ResolvedIntegration,
     request: IntegrationExecutionRequest,
@@ -279,20 +293,15 @@ def build_integration_execution_plan(
 ) -> IntegrationExecutionPlan:
     """Build an explainable plan while keeping raw input and environment values private."""
 
-    _ensure_runtime_binding(resolved, request)
+    _validate_request_against_resolved(resolved, request)
     execution = resolved.manifest.execution
     if execution is None:
         raise _fail(
             "SDAI-INTEGRATION-EXEC-001",
             f"Integration '{resolved.identity}' does not declare agent execution",
         )
-
     if execution.input_mode == IntegrationInputMode.NONE and request.input_bytes:
-        raise _fail(
-            "SDAI-INTEGRATION-EXEC-001",
-            "inputMode 'none' does not accept runtime input",
-        )
-
+        raise _fail("SDAI-INTEGRATION-EXEC-001", "inputMode 'none' does not accept runtime input")
     if resolved.manifest.security.requires_workspace_write and not policy.workspace_write:
         raise _fail(
             "SDAI-INTEGRATION-EXEC-002",
@@ -309,10 +318,7 @@ def build_integration_execution_plan(
                 + ", ".join(blocked),
             )
 
-    for label, relative in (
-        ("inputPath", execution.input_path),
-        ("outputPath", execution.output_path),
-    ):
+    for label, relative in (("inputPath", execution.input_path), ("outputPath", execution.output_path)):
         if relative is not None and _matches_protected_path(relative, policy.protected_paths):
             raise _fail(
                 "SDAI-INTEGRATION-EXEC-002",
@@ -351,10 +357,7 @@ def _runtime_path(project_root: Path, relative: str, *, label: str) -> Path:
     for part in Path(relative).parts:
         current = current / part
         if current.is_symlink():
-            raise _fail(
-                "SDAI-INTEGRATION-EXEC-003",
-                f"{label} must not contain symlink components",
-            )
+            raise _fail("SDAI-INTEGRATION-EXEC-003", f"{label} must not contain symlink components")
     return candidate
 
 
@@ -372,7 +375,7 @@ def _mkdir_runtime_parents(path: Path, project_root: Path) -> list[Path]:
     return missing
 
 
-def _cleanup_runtime_path(path: Path | None, created_dirs: list[Path]) -> None:
+def _cleanup_owned_runtime_path(path: Path | None, created_dirs: list[Path]) -> None:
     if path is not None:
         try:
             if path.is_symlink() or path.is_file():
@@ -509,6 +512,31 @@ def _error_result(
     )
 
 
+def _runtime_environment(
+    plan: IntegrationExecutionPlan,
+    policy: EffectiveConfiguration,
+    source: Mapping[str, str] | None,
+) -> dict[str, str]:
+    environment = build_provider_environment(
+        "integration",
+        profile_allowlist=plan.environment_names,
+        policy_allowlist=policy.environment_allowlist,
+    )
+    if source is None:
+        return environment
+
+    allowed_names = set(plan.environment_names)
+    if policy.environment_allowlist is not None:
+        allowed_names.intersection_update(policy.environment_allowlist)
+    for name in allowed_names:
+        if name in source:
+            value = source[name]
+            if not isinstance(value, str):
+                raise _fail("SDAI-INTEGRATION-EXEC-003", f"environment value for '{name}' must be a string")
+            environment[name] = value
+    return environment
+
+
 def execute_integration_plan(
     plan: IntegrationExecutionPlan,
     request: IntegrationExecutionRequest,
@@ -519,18 +547,9 @@ def execute_integration_plan(
     environment: Mapping[str, str] | None = None,
     popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
 ) -> IntegrationExecutionResult:
-    """Execute one policy-checked Integration plan with direct argv subprocess semantics.
+    """Execute one policy-checked Integration plan with direct argv subprocess semantics."""
 
-    Raw user input and environment values are runtime-only. They never appear in the
-    canonical plan or result. The function revalidates policy immediately before launch,
-    so a stale plan cannot bypass a newly tightened environment/workspace policy.
-    """
-
-    if request.integration_identity != plan.integration_identity or request.manifest_sha256 != plan.manifest_sha256:
-        raise _fail("SDAI-INTEGRATION-EXEC-001", "request does not match Integration execution plan")
-    if request.input_sha256 != plan.input_sha256 or request.input_bytes != plan.input_bytes:
-        raise _fail("SDAI-INTEGRATION-EXEC-001", "request input does not match Integration execution plan")
-
+    _validate_request_against_plan(plan, request)
     if plan.requires_workspace_write and not policy.workspace_write:
         raise _fail("SDAI-INTEGRATION-EXEC-002", "effective SDAI policy no longer permits workspace-write")
     if policy.environment_allowlist is not None:
@@ -540,11 +559,16 @@ def execute_integration_plan(
                 "SDAI-INTEGRATION-EXEC-002",
                 "effective SDAI policy no longer permits Integration environment name(s): " + ", ".join(blocked),
             )
+    for label, relative in (("inputPath", plan.input_path), ("outputPath", plan.output_path)):
+        if relative is not None and _matches_protected_path(relative, policy.protected_paths):
+            raise _fail(
+                "SDAI-INTEGRATION-EXEC-002",
+                f"execution.{label} '{relative}' is now protected by effective SDAI policy",
+            )
 
     root = project_root.resolve()
     if not root.is_dir():
         raise _fail("SDAI-INTEGRATION-EXEC-003", "project root must be an existing directory")
-
     if cancellation is not None and cancellation.is_cancelled:
         return _error_result(
             plan,
@@ -554,49 +578,39 @@ def execute_integration_plan(
             message="Integration execution was cancelled before launch",
         )
 
-    input_path: Path | None = None
-    output_path: Path | None = None
+    owned_input_path: Path | None = None
+    owned_output_path: Path | None = None
     input_dirs: list[Path] = []
     output_dirs: list[Path] = []
 
     try:
         if plan.input_path is not None:
-            input_path = _runtime_path(root, plan.input_path, label="Integration input file")
-            if input_path.exists() or input_path.is_symlink():
+            candidate = _runtime_path(root, plan.input_path, label="Integration input file")
+            if candidate.exists() or candidate.is_symlink():
                 raise _fail("SDAI-INTEGRATION-EXEC-003", "Integration input file already exists")
-            input_dirs = _mkdir_runtime_parents(input_path, root)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            fd = os.open(input_path, flags, 0o600)
+            input_dirs = _mkdir_runtime_parents(candidate, root)
             try:
-                os.write(fd, _input_bytes(request.input_text))
-            finally:
-                os.close(fd)
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except OSError:
+                raise
+            owned_input_path = candidate
+            with os.fdopen(fd, "wb", closefd=True) as handle:
+                handle.write(_input_bytes(request.input_text))
+                handle.flush()
 
         if plan.output_path is not None:
-            output_path = _runtime_path(root, plan.output_path, label="Integration output file")
-            if output_path.exists() or output_path.is_symlink():
+            candidate = _runtime_path(root, plan.output_path, label="Integration output file")
+            if candidate.exists() or candidate.is_symlink():
                 raise _fail("SDAI-INTEGRATION-EXEC-003", "Integration output file already exists")
-            output_dirs = _mkdir_runtime_parents(output_path, root)
+            output_dirs = _mkdir_runtime_parents(candidate, root)
+            # Absence has been proven. If the process creates this exact path, SDAI owns
+            # that ephemeral output for this execution and may clean it after capture.
+            owned_output_path = candidate
 
         argv = list(plan.runtime_argv(request))
         argv[0] = _resolve_executable(root, argv[0])
         stdin_bytes = _input_bytes(request.input_text) if plan.input_mode == IntegrationInputMode.STDIN else None
-
-        if environment is None:
-            runtime_environment = build_provider_environment(
-                "integration",
-                profile_allowlist=plan.environment_names,
-                policy_allowlist=policy.environment_allowlist,
-            )
-        else:
-            allowed_names = set(plan.environment_names)
-            if policy.environment_allowlist is not None:
-                allowed_names.intersection_update(policy.environment_allowlist)
-            runtime_environment = {
-                name: value
-                for name, value in environment.items()
-                if name in allowed_names or name in {"PATH", "HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR", "SYSTEMROOT", "WINDIR", "PATHEXT"}
-            }
+        runtime_environment = _runtime_environment(plan, policy, environment)
 
         try:
             with WorkspaceMutationGuard(root, policy.protected_paths):
@@ -662,11 +676,12 @@ def execute_integration_plan(
 
         try:
             if plan.output_mode == IntegrationOutputMode.FILE:
-                assert output_path is not None
-                if output_path.is_symlink() or not output_path.is_file():
-                    raise _fail("SDAI-INTEGRATION-EXEC-008", "Integration output file was not produced as a regular file")
-                data = output_path.read_bytes()
-                output = _normalize_output(IntegrationOutputMode.STDOUT, data)
+                if owned_output_path is None or owned_output_path.is_symlink() or not owned_output_path.is_file():
+                    raise _fail(
+                        "SDAI-INTEGRATION-EXEC-008",
+                        "Integration output file was not produced as a regular file",
+                    )
+                output = _normalize_output(IntegrationOutputMode.STDOUT, owned_output_path.read_bytes())
             elif plan.output_mode in {IntegrationOutputMode.STDERR, IntegrationOutputMode.JSON_STDERR}:
                 output = _normalize_output(plan.output_mode, stderr)
             else:
@@ -707,5 +722,5 @@ def execute_integration_plan(
             message=f"Integration runtime file operation failed: {exc.__class__.__name__}",
         )
     finally:
-        _cleanup_runtime_path(output_path, output_dirs)
-        _cleanup_runtime_path(input_path, input_dirs)
+        _cleanup_owned_runtime_path(owned_output_path, output_dirs)
+        _cleanup_owned_runtime_path(owned_input_path, input_dirs)
