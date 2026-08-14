@@ -11,8 +11,11 @@ import yaml
 
 from sdai.pack_integrity import (
     IntegrityStatus,
+    PackContentEntry,
+    PackContentIndex,
     PackIntegrityError,
     PackSignatureEvidence,
+    PackSignaturePayload,
     SignatureStatus,
     build_pack_content_index,
     build_pack_signature_payload,
@@ -116,11 +119,6 @@ def test_content_index_is_canonical_utf8_and_input_file_order_independent(tmp_pa
 
 def test_signature_payload_binds_pack_publisher_manifest_and_content() -> None:
     manifest = PackManifest.from_dict(_raw_manifest())
-    root = Path(".")
-    # Build a content index directly from canonical entries via a real workspace in
-    # the integration tests; this assertion focuses on payload field binding.
-    from sdai.pack_integrity import PackContentEntry, PackContentIndex
-
     content = PackContentIndex(
         (
             PackContentEntry(
@@ -138,7 +136,18 @@ def test_signature_payload_binds_pack_publisher_manifest_and_content() -> None:
     assert payload.content_sha256 == content.sha256
     assert payload.to_bytes() == payload.to_json().encode("utf-8")
     assert json.loads(payload.to_json())["apiVersion"] == "sdai.pack-signature-payload/v1"
-    assert root == Path(".")
+
+
+def test_signature_payload_rejects_internal_publisher_identity_mismatch() -> None:
+    digest = "sha256:" + "1" * 64
+
+    with pytest.raises(PackIntegrityError, match="packIdentity publisher.*does not match"):
+        PackSignaturePayload(
+            pack_identity="acme/secure-coding@1.2.3",
+            publisher="other-publisher",
+            manifest_sha256=digest,
+            content_sha256=digest,
+        )
 
 
 def test_valid_signature_is_cryptographically_verified_but_trust_is_not_evaluated(tmp_path: Path) -> None:
@@ -220,10 +229,8 @@ def test_wrong_publisher_cannot_become_verified_even_with_valid_signature_for_ev
     _, manifest = _workspace(tmp_path)
     original = _evidence(tmp_path, manifest)
     payload = original.payload()
-    from sdai.pack_integrity import PackSignaturePayload
-
     wrong_payload = PackSignaturePayload(
-        pack_identity=payload.pack_identity,
+        pack_identity="other-publisher/secure-coding@1.2.3",
         publisher="other-publisher",
         manifest_sha256=payload.manifest_sha256,
         content_sha256=payload.content_sha256,
@@ -247,6 +254,7 @@ def test_wrong_publisher_cannot_become_verified_even_with_valid_signature_for_ev
     assert report.publisher_bound is False
     assert report.verified is False
     assert "publisher-mismatch" in report.reasons
+    assert "pack-identity-mismatch" in report.reasons
 
 
 def test_wrong_key_invalid_signature_unsupported_algorithm_and_backend_error_fail_closed(tmp_path: Path) -> None:
