@@ -18,6 +18,9 @@ All notable SD-AI Framework changes should be recorded here. The project version
 - Reject concurrent Workflow Engine 2 subtrees that can write the workspace until an explicit governed write-permit strategy exists; all runtime item, iteration, and concurrency bounds fail closed.
 - Keep manifest discovery separate from executable registration: PluginStep YAML cannot import code, Pack bytes must match managed install evidence, core/org locks cannot be bypassed, and lower policies cannot widen network, environment, filesystem, command, or workspace-write permissions.
 
+### Release gate
+The 0.14 implementation slice is complete only when the integrated layered graph → overlay → canonical resolution → safe execution-plan → durable pause/status/resume journey passes on the exact candidate head. The normal unfiltered suite must remain green on Ubuntu and Windows for Python 3.11 and 3.12, including every historical 0.6–0.13 release gate, with no unresolved actionable review finding. `docs/V0.14-RELEASE-EVIDENCE.md` records the acceptance evidence. Package/tag publication remains a separate intentional release action.
+
 ## Unreleased — 0.10 traceability graph + typed evidence
 
 ### Added
