@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: qwen-code-commands
+version: 1.0.0
+displayName: Qwen Code Commands
+description: Project optional native Qwen Code commands sourced from neutral SDAI integration assets.
+capabilities:
+  - commands
+projections:
+  - kind: command
+    source: .sdai/integration-assets/qwen-code/commands
+    target: .qwen/commands
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
