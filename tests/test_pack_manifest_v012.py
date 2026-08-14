@@ -176,7 +176,6 @@ def test_manifest_rejects_unknown_invalid_and_duplicate_truth(mutator, message: 
         "/absolute/skills",
         "C:/absolute/skills",
         r"skills\windows",
-        "skills/\x00bad",
     ],
 )
 def test_manifest_content_roots_fail_closed_on_unportable_paths(path: str) -> None:
@@ -184,6 +183,14 @@ def test_manifest_content_roots_fail_closed_on_unportable_paths(path: str) -> No
     raw["contentRoots"] = [path]
 
     with pytest.raises(PackManifestError, match="SDAI-PACK-002"):
+        PackManifest.from_dict(raw)
+
+
+def test_manifest_content_root_with_nul_fails_before_path_resolution() -> None:
+    raw = _manifest()
+    raw["contentRoots"] = ["skills/\x00bad"]
+
+    with pytest.raises(PackManifestError, match="SDAI-PACK-001.*NUL"):
         PackManifest.from_dict(raw)
 
 
