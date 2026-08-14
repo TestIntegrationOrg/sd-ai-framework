@@ -125,6 +125,28 @@ def test_optional_metadata_string_values_are_nfc_normalized(tmp_path: Path) -> N
     assert manifest.as_dict()["spec"]["metadata"]["owner"] == "équipe"  # type: ignore[index]
 
 
+def test_recursive_yaml_metadata_is_reported_as_store_domain_error(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    manifest = path.read_text(encoding="utf-8")
+    recursive = manifest.replace(
+        "  metadata: {}\n",
+        "  metadata:\n    cycle: &cycle\n      - *cycle\n",
+    )
+    assert recursive != manifest
+    path.write_text(recursive, encoding="utf-8")
+    with pytest.raises(SpecificationStoreError, match="contains a recursive value"):
+        load_specification_store_manifest(tmp_path)
+
+
+def test_deeply_nested_metadata_is_bounded(tmp_path: Path) -> None:
+    metadata: object = "leaf"
+    for _ in range(66):
+        metadata = [metadata]
+    _store(tmp_path, metadata={"nested": metadata})  # type: ignore[arg-type]
+    with pytest.raises(SpecificationStoreError, match="maximum nesting depth"):
+        load_specification_store_manifest(tmp_path)
+
+
 @pytest.mark.parametrize(
     "roots, message",
     [
@@ -184,6 +206,18 @@ def test_programmatic_semver_instances_are_revalidated(tmp_path: Path) -> None:
             "platform-specs",
             SemVer(-1, 0, 0),
             "Invalid programmatic version",
+            roots,
+            ("current-specifications",),
+        )
+
+
+def test_malformed_programmatic_semver_is_reported_as_store_domain_error() -> None:
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="invalid SpecificationStore version"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(1, 0, 0, (1,), ()),  # type: ignore[arg-type]
+            "Malformed programmatic version",
             roots,
             ("current-specifications",),
         )

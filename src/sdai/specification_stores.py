@@ -194,7 +194,15 @@ def _portable_relative_path(value: object, *, label: str) -> str:
     return path.as_posix()
 
 
-def _normalize_json(value: object, *, label: str) -> object:
+def _normalize_json(
+    value: object,
+    *,
+    label: str,
+    ancestors: frozenset[int] = frozenset(),
+    depth: int = 0,
+) -> object:
+    if depth > 64:
+        raise _fail("SDAI-STORE-001", f"{label} exceeds the maximum nesting depth")
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, str):
@@ -206,10 +214,26 @@ def _normalize_json(value: object, *, label: str) -> object:
             raise _fail("SDAI-STORE-001", f"{label} contains a non-finite number")
         return value
     if isinstance(value, list):
-        return [_normalize_json(item, label=f"{label}[]") for item in value]
+        identity = id(value)
+        if identity in ancestors:
+            raise _fail("SDAI-STORE-001", f"{label} contains a recursive value")
+        descendants = ancestors | {identity}
+        return [
+            _normalize_json(
+                item,
+                label=f"{label}[]",
+                ancestors=descendants,
+                depth=depth + 1,
+            )
+            for item in value
+        ]
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) and key for key in value):
             raise _fail("SDAI-STORE-001", f"{label} keys must be non-empty strings")
+        identity = id(value)
+        if identity in ancestors:
+            raise _fail("SDAI-STORE-001", f"{label} contains a recursive value")
+        descendants = ancestors | {identity}
         normalized: dict[str, object] = {}
         for key in sorted(value):
             canonical_key = unicodedata.normalize("NFC", key)
@@ -221,6 +245,8 @@ def _normalize_json(value: object, *, label: str) -> object:
             normalized[canonical_key] = _normalize_json(
                 value[key],
                 label=f"{label}.{key}",
+                ancestors=descendants,
+                depth=depth + 1,
             )
         return normalized
     raise _fail("SDAI-STORE-001", f"{label} must contain only JSON-compatible values")
@@ -243,12 +269,12 @@ def _thaw(value: object) -> object:
 
 
 def _version(value: object) -> SemVer:
-    candidate = str(value) if isinstance(value, SemVer) else value
-    if isinstance(candidate, str) and len(candidate) > 256:
-        raise _fail("SDAI-STORE-003", "SpecificationStore version exceeds 256 characters")
     try:
+        candidate = str(value) if isinstance(value, SemVer) else value
+        if isinstance(candidate, str) and len(candidate) > 256:
+            raise _fail("SDAI-STORE-003", "SpecificationStore version exceeds 256 characters")
         return SemVer.parse(candidate)
-    except (PackManifestError, ValueError) as exc:
+    except (PackManifestError, TypeError, ValueError) as exc:
         raise _fail("SDAI-STORE-003", f"invalid SpecificationStore version {value!r}") from exc
 
 
