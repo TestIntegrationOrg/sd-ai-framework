@@ -198,6 +198,35 @@ class PackLockEntry:
     content_sha256: str
     dependencies: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "publisher", _identifier(self.publisher, label="lock package publisher"))
+        object.__setattr__(self, "id", _identifier(self.id, label="lock package id"))
+        if not isinstance(self.version, SemVer):
+            raise _fail("SDAI-PACK-LOCK-001", "lock package version must be a SemVer")
+        object.__setattr__(self, "source", _text(self.source, label="lock package source"))
+        object.__setattr__(
+            self,
+            "manifest_sha256",
+            _hash(self.manifest_sha256, label="lock package manifestSha256"),
+        )
+        object.__setattr__(
+            self,
+            "content_sha256",
+            _hash(self.content_sha256, label="lock package contentSha256"),
+        )
+        canonical_dependencies: list[str] = []
+        for index, dependency in enumerate(self.dependencies):
+            publisher, pack_id, version = _parse_identity(
+                dependency,
+                label=f"lock package dependency[{index}]",
+            )
+            canonical_dependencies.append(_identity(publisher, pack_id, version))
+        if len(set(canonical_dependencies)) != len(canonical_dependencies):
+            raise _fail("SDAI-PACK-LOCK-001", "lock package dependencies must not contain duplicates")
+        if canonical_dependencies != sorted(canonical_dependencies):
+            raise _fail("SDAI-PACK-LOCK-001", "lock package dependencies must be canonically sorted")
+        object.__setattr__(self, "dependencies", tuple(canonical_dependencies))
+
     @property
     def coordinate(self) -> str:
         return _coordinate(self.publisher, self.id)
@@ -221,8 +250,6 @@ class PackLockEntry:
     def from_dict(cls, value: object) -> "PackLockEntry":
         raw = _mapping(value, label="lock package")
         _keys(raw, expected=_ENTRY_KEYS, label="lock package")
-        publisher = _identifier(raw["publisher"], label="lock package publisher")
-        pack_id = _identifier(raw["id"], label="lock package id")
         try:
             version = SemVer.parse(raw["version"])
         except PackManifestError as exc:
@@ -230,25 +257,14 @@ class PackLockEntry:
         dependencies_raw = raw["dependencies"]
         if not isinstance(dependencies_raw, list):
             raise _fail("SDAI-PACK-LOCK-001", "lock package dependencies must be a list")
-        dependencies: list[str] = []
-        for index, dependency in enumerate(dependencies_raw):
-            dep_publisher, dep_id, dep_version = _parse_identity(
-                dependency,
-                label=f"lock package dependency[{index}]",
-            )
-            dependencies.append(_identity(dep_publisher, dep_id, dep_version))
-        if len(set(dependencies)) != len(dependencies):
-            raise _fail("SDAI-PACK-LOCK-001", "lock package dependencies must not contain duplicates")
-        if dependencies != sorted(dependencies):
-            raise _fail("SDAI-PACK-LOCK-001", "lock package dependencies must be canonically sorted")
         return cls(
-            publisher=publisher,
-            id=pack_id,
+            publisher=raw["publisher"],  # type: ignore[arg-type]
+            id=raw["id"],  # type: ignore[arg-type]
             version=version,
-            source=_text(raw["source"], label="lock package source"),
-            manifest_sha256=_hash(raw["manifestSha256"], label="lock package manifestSha256"),
-            content_sha256=_hash(raw["contentSha256"], label="lock package contentSha256"),
-            dependencies=tuple(dependencies),
+            source=raw["source"],  # type: ignore[arg-type]
+            manifest_sha256=raw["manifestSha256"],  # type: ignore[arg-type]
+            content_sha256=raw["contentSha256"],  # type: ignore[arg-type]
+            dependencies=tuple(dependencies_raw),  # type: ignore[arg-type]
         )
 
 
@@ -258,6 +274,12 @@ class PackLock:
     packages: tuple[PackLockEntry, ...]
 
     def __post_init__(self) -> None:
+        canonical_roots: list[str] = []
+        for index, root in enumerate(self.roots):
+            publisher, pack_id, version = _parse_identity(root, label=f"lock root[{index}]")
+            canonical_roots.append(_identity(publisher, pack_id, version))
+        if tuple(canonical_roots) != self.roots:
+            raise _fail("SDAI-PACK-LOCK-001", "lock roots must use canonical exact identities")
         identities = [entry.identity for entry in self.packages]
         coordinates = [entry.coordinate for entry in self.packages]
         if len(set(identities)) != len(identities) or len(set(coordinates)) != len(coordinates):
@@ -282,10 +304,9 @@ class PackLock:
                     f"lock package '{entry.identity}' references missing dependency package(s): "
                     + ", ".join(missing),
                 )
-            dependency_coordinates = tuple(
+            graph[entry.coordinate] = tuple(
                 sorted(dependency.rsplit("@", 1)[0] for dependency in entry.dependencies)
             )
-            graph[entry.coordinate] = dependency_coordinates
         _reject_cycles(graph)
 
     def as_dict(self) -> dict[str, object]:
@@ -416,6 +437,15 @@ def _matching_candidates(
     return matches
 
 
+def _dependency_graph(selected: Mapping[str, PackCandidate]) -> dict[str, tuple[str, ...]]:
+    graph: dict[str, tuple[str, ...]] = {}
+    for coordinate, candidate in sorted(selected.items()):
+        graph[coordinate] = tuple(
+            sorted(dependency.coordinate for dependency in candidate.manifest.dependencies)
+        )
+    return graph
+
+
 def _solve(
     universe: Mapping[str, tuple[PackCandidate, ...]],
     selected: dict[str, PackCandidate],
@@ -432,6 +462,7 @@ def _solve(
 
     unresolved = sorted(set(constraints) - set(selected))
     if not unresolved:
+        _reject_cycles(_dependency_graph(selected))
         return selected
     coordinate = unresolved[0]
     candidates = _matching_candidates(coordinate, constraints[coordinate], universe)
@@ -454,14 +485,6 @@ def _solve(
     if first_failure is not None:
         raise first_failure
     raise _fail("SDAI-PACK-LOCK-004", f"unable to resolve '{coordinate}'")
-
-
-def _dependency_graph(selected: Mapping[str, PackCandidate]) -> dict[str, tuple[str, ...]]:
-    graph: dict[str, tuple[str, ...]] = {}
-    for coordinate, candidate in sorted(selected.items()):
-        dependencies = tuple(sorted(dependency.coordinate for dependency in candidate.manifest.dependencies))
-        graph[coordinate] = dependencies
-    return graph
 
 
 def resolve_pack_lock(
@@ -494,8 +517,6 @@ def resolve_pack_lock(
             )
 
     resolved = _solve(universe, selected, constraints)
-    graph = _dependency_graph(resolved)
-    _reject_cycles(graph)
 
     entries: list[PackLockEntry] = []
     for coordinate, candidate in sorted(resolved.items()):
