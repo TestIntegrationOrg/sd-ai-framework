@@ -26,6 +26,12 @@ class IntegrationRegistryError(RuntimeError):
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
 _MANIFEST_SUFFIXES = (".integration.yaml", ".integration.yml", ".integration.json")
 _LOCKABLE_LAYERS = frozenset({RegistryLayer.BUILTIN, RegistryLayer.ORG})
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+_WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 
 
 def _fail(code: str, message: str) -> IntegrationRegistryError:
@@ -78,10 +84,29 @@ def _relative_manifest_path(value: str) -> str:
     if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
         raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path must be a safe POSIX relative path")
     normalized = unicodedata.normalize("NFC", value)
+    if normalized != normalized.strip():
+        raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path must not contain surrounding whitespace")
     path = PurePosixPath(normalized)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in normalized.split("/")):
+    parts = normalized.split("/")
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
         raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path must be a safe POSIX relative path")
+    for part in parts:
+        if part != part.strip() or any(ord(char) < 32 for char in part):
+            raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path contains a non-portable segment")
+        if any(char in _WINDOWS_FORBIDDEN for char in part) or part.endswith("."):
+            raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path is not portable across filesystems")
+        if part.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+            raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance path uses a reserved Windows segment")
     return path.as_posix()
+
+
+def _sha256(value: str) -> str:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance hash must be a SHA-256 digest")
+    digest = value.removeprefix("sha256:")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise _fail("SDAI-INTEGRATION-REG-001", "manifest provenance hash must be a lowercase SHA-256 digest")
+    return value
 
 
 def _version(value: str | SemVer) -> SemVer:
@@ -120,12 +145,15 @@ class IntegrationSource:
 
     def __post_init__(self) -> None:
         layer = _layer(self.layer)
+        if not isinstance(self.locked, bool):
+            raise _fail("SDAI-INTEGRATION-REG-001", "Integration source locked must be a boolean")
         if self.locked and layer not in _LOCKABLE_LAYERS:
             allowed = ", ".join(item.value for item in sorted(_LOCKABLE_LAYERS, key=lambda item: item.priority))
             raise _fail(
                 "SDAI-INTEGRATION-REG-005",
                 f"locked Integration sources are allowed only in authoritative layers: {allowed}",
             )
+        object.__setattr__(self, "root", Path(self.root))
         object.__setattr__(self, "layer", layer)
         object.__setattr__(self, "source", _source_label(self.source))
 
@@ -137,6 +165,17 @@ class IntegrationProvenance:
     path: str
     manifest_sha256: str
     locked: bool
+
+    def __post_init__(self) -> None:
+        layer = _layer(self.layer)
+        if not isinstance(self.locked, bool):
+            raise _fail("SDAI-INTEGRATION-REG-001", "Integration provenance locked must be a boolean")
+        if self.locked and layer not in _LOCKABLE_LAYERS:
+            raise _fail("SDAI-INTEGRATION-REG-005", "Integration provenance lock is not authoritative")
+        object.__setattr__(self, "layer", layer)
+        object.__setattr__(self, "source", _source_label(self.source))
+        object.__setattr__(self, "path", _relative_manifest_path(self.path))
+        object.__setattr__(self, "manifest_sha256", _sha256(self.manifest_sha256))
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -204,6 +243,15 @@ class IntegrationRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, dict[str, dict[RegistryLayer, IntegrationRegistration]]] = {}
 
+    def _copy_entries(self) -> dict[str, dict[str, dict[RegistryLayer, IntegrationRegistration]]]:
+        return {
+            integration_id: {
+                version: dict(layer_entries)
+                for version, layer_entries in versions.items()
+            }
+            for integration_id, versions in self._entries.items()
+        }
+
     def register(
         self,
         manifest: IntegrationManifest,
@@ -218,6 +266,8 @@ class IntegrationRegistry:
         layer = _layer(layer)
         source = _source_label(source)
         path = _relative_manifest_path(path)
+        if not isinstance(locked, bool):
+            raise _fail("SDAI-INTEGRATION-REG-001", "registry locked must be a boolean")
         if locked and layer not in _LOCKABLE_LAYERS:
             allowed = ", ".join(item.value for item in sorted(_LOCKABLE_LAYERS, key=lambda item: item.priority))
             raise _fail(
@@ -322,10 +372,7 @@ class IntegrationRegistry:
 
     def list_versions(self, integration_id: str) -> tuple[ResolvedIntegration, ...]:
         integration_id = _integration_id(integration_id)
-        versions = [
-            _version(value)
-            for value in self._entries.get(integration_id, {})
-        ]
+        versions = [_version(value) for value in self._entries.get(integration_id, {})]
         versions.sort(key=cmp_to_key(_version_compare), reverse=True)
         return tuple(
             resolved
@@ -396,8 +443,10 @@ class IntegrationRegistry:
     def list_all_exact(self) -> tuple[ResolvedIntegration, ...]:
         results: list[ResolvedIntegration] = []
         for integration_id in sorted(self._entries):
-            for version in sorted(self._entries[integration_id]):
-                resolved = self._resolve_exact(integration_id, _version(version))
+            versions = [_version(value) for value in self._entries[integration_id]]
+            versions.sort(key=cmp_to_key(_version_compare), reverse=True)
+            for version in versions:
+                resolved = self._resolve_exact(integration_id, version)
                 if resolved is not None:
                     results.append(resolved)
         return tuple(results)
@@ -462,11 +511,18 @@ def register_integration_source(
     registry: IntegrationRegistry,
     source: IntegrationSource,
 ) -> tuple[IntegrationRegistration, ...]:
+    """Atomically load/register all manifests from one source root."""
+
+    loaded = tuple(
+        (load_integration_manifest(path, root=source.root), relative)
+        for path, relative in discover_integration_manifests(source)
+    )
+    staged = IntegrationRegistry()
+    staged._entries = registry._copy_entries()
     registrations: list[IntegrationRegistration] = []
-    for path, relative in discover_integration_manifests(source):
-        manifest = load_integration_manifest(path, root=source.root)
+    for manifest, relative in loaded:
         registrations.append(
-            registry.register(
+            staged.register(
                 manifest,
                 layer=source.layer,
                 source=source.source,
@@ -474,6 +530,7 @@ def register_integration_source(
                 locked=source.locked,
             )
         )
+    registry._entries = staged._entries
     return tuple(registrations)
 
 
@@ -487,6 +544,8 @@ def build_integration_registry(sources: Iterable[IntegrationSource]) -> Integrat
     """
 
     normalized = tuple(sources)
+    if not all(isinstance(source, IntegrationSource) for source in normalized):
+        raise _fail("SDAI-INTEGRATION-REG-001", "all registry sources must be IntegrationSource values")
     registry = IntegrationRegistry()
     for source in sorted(normalized, key=_source_sort_key):
         register_integration_source(registry, source)
