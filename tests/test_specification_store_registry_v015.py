@@ -5,13 +5,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sdai.pack_manifest import SemVer
 from sdai.specification_stores import (
     SPECIFICATION_STORE_MANIFEST_API_VERSION,
     SPECIFICATION_STORE_REGISTRY_API_VERSION,
     SPECIFICATION_STORE_RESOLUTION_API_VERSION,
     SpecificationStoreError,
     SpecificationStoreLayer,
+    SpecificationStoreManifest,
     SpecificationStoreSource,
+    SpecificationRoot,
     build_specification_store_registry,
     load_specification_store_manifest,
 )
@@ -129,7 +132,9 @@ def test_optional_metadata_string_values_are_nfc_normalized(tmp_path: Path) -> N
         ({"current": "/absolute"}, "portable relative path"),
         ({"current": "specs\\current"}, "portable relative path"),
         ({"current": ".sdai-store/private"}, "cannot contain store metadata"),
+        ({"current": ".SDAI-STORE/private"}, "cannot contain store metadata"),
         ({"one": "specs", "two": "specs/current"}, "must not overlap"),
+        ({"one": "Specs", "two": "specs/current"}, "must not overlap"),
         ({"one": "Specs", "two": "specs"}, "path collision"),
     ],
 )
@@ -161,6 +166,25 @@ def test_manifest_rejects_missing_root_and_symlink_redirection(tmp_path: Path) -
     with pytest.raises(SpecificationStoreError, match="symlink component"):
         load_specification_store_manifest(tmp_path)
     assert path.is_file()
+
+
+def test_invalid_utf8_is_reported_as_store_domain_error(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    path.write_bytes(b"apiVersion: \xff")
+    with pytest.raises(SpecificationStoreError, match="manifest YAML is malformed"):
+        load_specification_store_manifest(tmp_path)
+
+
+def test_programmatic_semver_instances_are_revalidated(tmp_path: Path) -> None:
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="invalid SpecificationStore version"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(-1, 0, 0),
+            "Invalid programmatic version",
+            roots,
+            ("current-specifications",),
+        )
 
 
 def test_latest_semver_and_registry_json_are_source_order_independent(tmp_path: Path) -> None:

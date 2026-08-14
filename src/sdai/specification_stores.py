@@ -16,7 +16,7 @@ from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
 from sdai.pack_manifest import PackManifestError, SemVer
-from sdai.text import read_utf8_text
+from sdai.text import TextEncodingError, read_utf8_text
 
 
 SPECIFICATION_STORE_MANIFEST_API_VERSION = "sdai.specification-store/v1"
@@ -242,7 +242,7 @@ def _thaw(value: object) -> object:
 
 def _version(value: object) -> SemVer:
     try:
-        return value if isinstance(value, SemVer) else SemVer.parse(value)
+        return SemVer.parse(str(value)) if isinstance(value, SemVer) else SemVer.parse(value)
     except PackManifestError as exc:
         raise _fail("SDAI-STORE-003", f"invalid SpecificationStore version {value!r}") from exc
 
@@ -304,7 +304,8 @@ class SpecificationRoot:
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _identifier(self.id, label="specification root id"))
         path = _portable_relative_path(self.path, label=f"specification root '{self.id}' path")
-        if path == ".sdai-store" or path.startswith(".sdai-store/"):
+        portable_key = path.casefold()
+        if portable_key == ".sdai-store" or portable_key.startswith(".sdai-store/"):
             raise _fail("SDAI-STORE-002", "specification roots cannot contain store metadata")
         object.__setattr__(self, "path", path)
 
@@ -336,11 +337,12 @@ class SpecificationStoreManifest:
         path_keys = [item.path.casefold() for item in roots]
         if len(set(path_keys)) != len(path_keys):
             raise _fail("SDAI-STORE-002", "specificationRoots contain a path collision")
-        for left in roots:
-            for right in roots:
-                if left is right:
-                    continue
-                if PurePosixPath(left.path) in PurePosixPath(right.path).parents:
+        for left_index, left in enumerate(roots):
+            left_parts = tuple(part.casefold() for part in PurePosixPath(left.path).parts)
+            for right in roots[left_index + 1 :]:
+                right_parts = tuple(part.casefold() for part in PurePosixPath(right.path).parts)
+                shorter, longer = sorted((left_parts, right_parts), key=len)
+                if longer[: len(shorter)] == shorter:
                     raise _fail("SDAI-STORE-002", "specificationRoots must not overlap")
         capabilities = tuple(
             sorted(_identifier(item, label="store capability") for item in self.capabilities)
@@ -447,7 +449,7 @@ def load_specification_store_manifest(store_root: Path) -> SpecificationStoreMan
         )
     try:
         raw = yaml.load(read_utf8_text(manifest_path), Loader=_UniqueKeyLoader)
-    except (yaml.YAMLError, UnicodeError) as exc:
+    except (OSError, TextEncodingError, yaml.YAMLError) as exc:
         raise _fail("SDAI-STORE-001", "SpecificationStore manifest YAML is malformed") from exc
     manifest = SpecificationStoreManifest.from_dict(raw)
     _validate_layout(root, manifest.specification_roots)
