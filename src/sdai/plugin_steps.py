@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cmp_to_key
+from hashlib import sha256
 import json
 import math
 import os
@@ -17,6 +19,9 @@ from sdai.extensions.manifests import (
     ExtensionManifestError,
     parse_extension_manifest,
 )
+from sdai.extensions.registry import RegistryLayer
+from sdai.pack_lifecycle import load_install_state
+from sdai.pack_manifest import PackManifestError, SemVer
 from sdai.path_safety import PathSafetyError, ensure_within_project
 from sdai.text import TextEncodingError, read_utf8_text
 
@@ -35,6 +40,12 @@ _DOS_DEVICE = re.compile(
     re.IGNORECASE,
 )
 _TRUSTED_COMMAND_PATH_ENV = "SDAI_PLUGIN_TRUSTED_COMMAND_PATH"
+_ORG_PLUGIN_ROOTS_ENV = "SDAI_ORG_PLUGIN_STEP_ROOTS"
+_USER_PLUGIN_ROOTS_ENV = "SDAI_USER_PLUGIN_STEP_ROOTS"
+_ORG_PLUGIN_LOCKS_ENV = "SDAI_ORG_PLUGIN_STEP_LOCKS"
+PLUGIN_REGISTRY_API_VERSION = "sdai.plugin-step-registry/v2"
+PLUGIN_RESOLUTION_API_VERSION = "sdai.plugin-step-resolution/v2"
+PLUGIN_EXECUTION_PLAN_API_VERSION = "sdai.plugin-execution-plan/v2"
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,10 @@ class PluginManifest:
     executor: str
     permissions: PluginPermissions
     source: str
+    manifest_sha256: str
+    source_layer: RegistryLayer = RegistryLayer.REPO
+    source_label: str = "repository"
+    locked: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -76,7 +91,76 @@ class PluginManifest:
             "executor": self.executor,
             "permissions": self.permissions.as_dict(),
             "source": self.source,
+            "manifestSha256": self.manifest_sha256,
+            "provenance": {
+                "layer": self.source_layer.value,
+                "locked": self.locked,
+                "source": self.source_label,
+            },
         }
+
+
+@dataclass(frozen=True)
+class PluginManifestSource:
+    root: Path
+    layer: RegistryLayer
+    source: str
+    locked_plugins: tuple[str, ...] = ()
+    allowed_files: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer, RegistryLayer):
+            object.__setattr__(self, "layer", RegistryLayer(self.layer))
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise _fail("SDAI-PLUGIN-007", "plugin source label must be non-empty")
+        locks = tuple(sorted(_safe_id(item, "locked plugin id") for item in self.locked_plugins))
+        if locks and self.layer not in {RegistryLayer.BUILTIN, RegistryLayer.ORG}:
+            raise _fail("SDAI-PLUGIN-009", "only builtin/org plugin sources may declare locks")
+        object.__setattr__(self, "root", Path(self.root))
+        object.__setattr__(self, "source", self.source.strip())
+        object.__setattr__(self, "locked_plugins", locks)
+
+
+@dataclass(frozen=True)
+class PluginRegistration:
+    manifest: PluginManifest
+    version: SemVer
+
+    @property
+    def identity(self) -> str:
+        return f"{self.manifest.id}@{self.version}"
+
+
+@dataclass(frozen=True)
+class ResolvedPlugin:
+    registration: PluginRegistration
+    provenance: tuple[PluginManifest, ...]
+
+    @property
+    def manifest(self) -> PluginManifest:
+        return self.registration.manifest
+
+    def as_dict(self) -> dict[str, object]:
+        provenance: list[dict[str, object]] = []
+        for item in self.provenance:
+            value = item.as_dict()["provenance"]
+            assert isinstance(value, dict)
+            provenance.append(
+                {
+                    **value,
+                    "path": item.source,
+                    "manifestSha256": item.manifest_sha256,
+                }
+            )
+        return {
+            "apiVersion": PLUGIN_RESOLUTION_API_VERSION,
+            "identity": self.registration.identity,
+            "manifest": self.manifest.as_dict(),
+            "provenance": provenance,
+        }
+
+    def to_json(self) -> str:
+        return _canonical_json(self.as_dict())
 
 
 @dataclass(frozen=True)
@@ -101,24 +185,35 @@ class PluginExecutionPlan:
     permissions: PluginPermissions
     policy_sources: tuple[str, ...]
 
-    def as_dict(self) -> dict[str, object]:
+    @property
+    def input_sha256(self) -> str:
+        return _hash_json(self.inputs)
+
+    def _body(self) -> dict[str, object]:
         return {
-            "version": 1,
+            "apiVersion": PLUGIN_EXECUTION_PLAN_API_VERSION,
             "plugin": self.plugin.as_dict(),
-            "step_id": self.step_id,
-            "inputs": self.inputs,
-            "effective_permissions": self.permissions.as_dict(),
-            "policy_sources": list(self.policy_sources),
+            "pluginManifestSha256": self.plugin.manifest_sha256,
+            "executorId": self.plugin.executor,
+            "publisher": self.plugin.publisher,
+            "stepId": self.step_id,
+            "inputKeys": sorted(self.inputs),
+            "inputSha256": self.input_sha256,
+            "effectivePermissions": self.permissions.as_dict(),
+            "policySources": list(self.policy_sources),
         }
 
+    def as_dict(self) -> dict[str, object]:
+        body = self._body()
+        body["planSha256"] = _hash_json(body)
+        return body
+
+    @property
+    def sha256(self) -> str:
+        return _hash_json(self._body())
+
     def to_json(self) -> str:
-        return json.dumps(
-            self.as_dict(),
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=False,
-            allow_nan=False,
-        )
+        return _canonical_json(self.as_dict())
 
 
 @dataclass(frozen=True)
@@ -196,6 +291,23 @@ EXECUTORS = PluginExecutorRegistry()
 
 def _fail(code: str, message: str) -> PluginStepError:
     return PluginStepError(f"{code}: {message}")
+
+
+def _canonical_json(value: object) -> str:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise _fail("SDAI-PLUGIN-001", "plugin data must be canonical finite JSON") from exc
+
+
+def _hash_json(value: object) -> str:
+    return "sha256:" + sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _safe_id(value: object, label: str) -> str:
@@ -313,39 +425,62 @@ def _parse_permissions(raw: object, label: str) -> PluginPermissions:
     )
 
 
-def _plugin_path(root: Path, plugin_id: str) -> Path:
-    candidates = (
-        root / ".sdai" / "plugin-steps" / f"{plugin_id}.yaml",
-        root / ".sdai" / "extensions" / "plugin-steps" / f"{plugin_id}.yaml",
+def _source_manifest_paths(source: PluginManifestSource) -> tuple[Path, ...]:
+    root = source.root.resolve()
+    if source.root.is_symlink() or not root.is_dir():
+        raise _fail("SDAI-PLUGIN-007", f"plugin source '{source.source}' must be a regular directory")
+    directories = (
+        root / ".sdai" / "plugin-steps",
+        root / ".sdai" / "extensions" / "plugin-steps",
+        root / "plugin-steps",
+        root / "extensions" / "plugin-steps",
+        root
+        if root.name in {"plugin-steps", "builtin_plugin_steps"}
+        else root / ".sdai-plugin-source-unused",
     )
-    existing = [
-        ensure_within_project(root, path, label="plugin step manifest")
-        for path in candidates
-        if path.exists()
-    ]
-    if len(existing) > 1:
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' exists in more than one location",
-        )
-    if not existing:
-        raise _fail("SDAI-PLUGIN-001", f"plugin '{plugin_id}' does not exist")
-    path = existing[0]
-    if path.is_symlink() or not path.is_file():
-        raise _fail(
-            "SDAI-PLUGIN-001",
-            f"plugin '{plugin_id}' must be a regular non-symlink file",
-        )
-    return path
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    allowed = None if source.allowed_files is None else set(source.allowed_files)
+    for directory in directories:
+        if not directory.exists() or directory in seen:
+            continue
+        seen.add(directory)
+        current = root
+        symlinked = False
+        for part in directory.relative_to(root).parts:
+            current = current / part
+            if current.is_symlink():
+                symlinked = True
+                break
+        if symlinked or directory.is_symlink() or not directory.is_dir():
+            raise _fail("SDAI-PLUGIN-007", f"plugin source directory is unsafe: {directory}")
+        for path in sorted(
+            (*directory.glob("*.yaml"), *directory.glob("*.yml")),
+            key=lambda item: (item.name.casefold(), item.name),
+        ):
+            relative = path.relative_to(root).as_posix()
+            if allowed is not None and relative not in allowed:
+                continue
+            paths.append(path)
+    return tuple(paths)
 
 
-def load_plugin_manifest(project_root: Path, plugin_id: str) -> PluginManifest:
-    root = project_root.resolve()
-    plugin_id = _safe_id(plugin_id, "plugin id")
-    path = _plugin_path(root, plugin_id)
-    source = path.relative_to(root).as_posix()
+def _load_plugin_manifest_file(
+    source_registration: PluginManifestSource,
+    path: Path,
+) -> PluginManifest:
+    root = source_registration.root.resolve()
     try:
-        raw = yaml.safe_load(read_utf8_text(path)) or {}
+        safe = path.resolve(strict=True)
+        safe.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise _fail("SDAI-PLUGIN-007", "plugin manifest escaped its source root") from exc
+    if path.is_symlink() or safe.is_symlink() or not safe.is_file():
+        raise _fail("SDAI-PLUGIN-007", "plugin manifest must be a regular non-symlink file")
+    source = safe.relative_to(root).as_posix()
+    plugin_id = _safe_id(path.stem, "plugin filename")
+    try:
+        raw = yaml.safe_load(read_utf8_text(safe)) or {}
     except (OSError, TextEncodingError, yaml.YAMLError) as exc:
         raise _fail(
             "SDAI-PLUGIN-001",
@@ -391,7 +526,243 @@ def load_plugin_manifest(project_root: Path, plugin_id: str) -> PluginManifest:
         executor,
         permissions,
         source,
+        _hash_json(raw),
+        source_registration.layer,
+        source_registration.source,
+        plugin_id in source_registration.locked_plugins,
     )
+
+
+def _version_compare(left: SemVer, right: SemVer) -> int:
+    precedence = left.compare_precedence(right)
+    if precedence:
+        return precedence
+    if str(left) == str(right):
+        return 0
+    return -1 if str(left) < str(right) else 1
+
+
+class PluginStepRegistry:
+    """Layered manifest registry; executable implementations remain separately trusted."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, dict[str, dict[RegistryLayer, PluginRegistration]]] = {}
+
+    def register(self, registration: PluginRegistration) -> None:
+        manifest = registration.manifest
+        versions = self._entries.setdefault(manifest.id, {})
+        for layers in versions.values():
+            for layer, existing in layers.items():
+                if existing.manifest.locked and manifest.source_layer.priority > layer.priority:
+                    raise _fail(
+                        "SDAI-PLUGIN-009",
+                        f"plugin '{manifest.id}' is locked by {layer.value}:{existing.manifest.source_label}",
+                    )
+                if manifest.locked and layer.priority > manifest.source_layer.priority:
+                    raise _fail(
+                        "SDAI-PLUGIN-009",
+                        f"plugin '{manifest.id}' lock cannot override an existing higher layer",
+                    )
+        version = str(registration.version)
+        layers = versions.setdefault(version, {})
+        if manifest.source_layer in layers:
+            existing = layers[manifest.source_layer]
+            raise _fail(
+                "SDAI-PLUGIN-008",
+                f"plugin '{manifest.id}' exists in more than one location in "
+                f"{manifest.source_layer.value}: {existing.manifest.source} and {manifest.source}",
+            )
+        if layers and any(
+            item.manifest.manifest_sha256 != manifest.manifest_sha256
+            for item in layers.values()
+        ):
+            raise _fail(
+                "SDAI-PLUGIN-008",
+                f"plugin '{manifest.id}@{version}' has conflicting exact manifests",
+            )
+        layers[manifest.source_layer] = registration
+
+    def _locked_layer(self, plugin_id: str) -> RegistryLayer | None:
+        locked = [
+            item.manifest.source_layer
+            for layers in self._entries.get(plugin_id, {}).values()
+            for item in layers.values()
+            if item.manifest.locked
+        ]
+        return max(locked, key=lambda item: item.priority) if locked else None
+
+    def _resolve_exact(self, plugin_id: str, version: str) -> ResolvedPlugin:
+        layers = self._entries.get(plugin_id, {}).get(version)
+        if not layers:
+            raise _fail("SDAI-PLUGIN-010", f"plugin '{plugin_id}@{version}' does not exist")
+        locked = self._locked_layer(plugin_id)
+        eligible = {
+            layer: item
+            for layer, item in layers.items()
+            if locked is None or layer.priority <= locked.priority
+        }
+        if not eligible:
+            raise _fail("SDAI-PLUGIN-009", f"plugin '{plugin_id}@{version}' is hidden by a lock")
+        selected_layer = max(eligible, key=lambda item: item.priority)
+        selected = eligible[selected_layer]
+        provenance = tuple(
+            item.manifest
+            for _, item in sorted(eligible.items(), key=lambda pair: pair[0].priority)
+        )
+        return ResolvedPlugin(selected, provenance)
+
+    def resolve(self, reference: str) -> ResolvedPlugin:
+        if not isinstance(reference, str) or not reference.strip():
+            raise _fail("SDAI-PLUGIN-007", "plugin reference must be non-empty")
+        text = reference.strip()
+        if "@" in text:
+            raw_id, raw_version = text.rsplit("@", 1)
+            plugin_id = _safe_id(raw_id, "plugin id")
+            try:
+                version = str(SemVer.parse(raw_version))
+            except PackManifestError as exc:
+                raise _fail("SDAI-PLUGIN-007", str(exc)) from exc
+            return self._resolve_exact(plugin_id, version)
+        plugin_id = _safe_id(text, "plugin id")
+        try:
+            versions = [SemVer.parse(item) for item in self._entries.get(plugin_id, {})]
+        except PackManifestError as exc:  # pragma: no cover - registration validates first
+            raise _fail("SDAI-PLUGIN-007", str(exc)) from exc
+        if not versions:
+            raise _fail("SDAI-PLUGIN-001", f"plugin '{plugin_id}' does not exist")
+        versions.sort(key=cmp_to_key(_version_compare), reverse=True)
+        top = versions[0]
+        equal = [item for item in versions if item.compare_precedence(top) == 0]
+        if len({str(item) for item in equal}) > 1:
+            raise _fail("SDAI-PLUGIN-008", f"plugin '{plugin_id}' latest version is ambiguous")
+        return self._resolve_exact(plugin_id, str(top))
+
+    def list(self) -> tuple[ResolvedPlugin, ...]:
+        return tuple(self.resolve(plugin_id) for plugin_id in sorted(self._entries))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "apiVersion": PLUGIN_REGISTRY_API_VERSION,
+            "plugins": [item.as_dict() for item in self.list()],
+        }
+
+    def to_json(self) -> str:
+        return _canonical_json(self.as_dict())
+
+
+def build_plugin_step_registry(
+    sources: tuple[PluginManifestSource, ...] | list[PluginManifestSource],
+) -> PluginStepRegistry:
+    registry = PluginStepRegistry()
+    ordered = sorted(
+        sources,
+        key=lambda item: (item.layer.priority, item.source, str(item.root).replace("\\", "/").casefold()),
+    )
+    for source in ordered:
+        for path in _source_manifest_paths(source):
+            manifest = _load_plugin_manifest_file(source, path)
+            try:
+                version = SemVer.parse(manifest.version)
+            except PackManifestError as exc:
+                raise _fail("SDAI-PLUGIN-007", str(exc)) from exc
+            registry.register(PluginRegistration(manifest, version))
+    return registry
+
+
+def _external_plugin_sources(
+    env: Mapping[str, str],
+    variable: str,
+    layer: RegistryLayer,
+    *,
+    locked_plugins: tuple[str, ...] = (),
+) -> list[PluginManifestSource]:
+    result: list[PluginManifestSource] = []
+    for index, raw in enumerate(filter(None, env.get(variable, "").split(os.pathsep))):
+        path = Path(raw)
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            raise _fail("SDAI-PLUGIN-007", f"{variable} entries must be absolute regular directories")
+        result.append(PluginManifestSource(path, layer, f"{variable}[{index}]", locked_plugins))
+    return result
+
+
+def default_plugin_sources(
+    project_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[PluginManifestSource, ...]:
+    root = project_root.resolve()
+    env = dict(os.environ if environ is None else environ)
+    sources: list[PluginManifestSource] = []
+    builtin = Path(__file__).resolve().parent / "builtin_plugin_steps"
+    if builtin.is_dir():
+        sources.append(
+            PluginManifestSource(
+                builtin,
+                RegistryLayer.BUILTIN,
+                "sdai-core",
+                locked_plugins=("evidence-summary",),
+            )
+        )
+
+    state = load_install_state(root)
+    for record in state.packs:
+        version = record.identity.rsplit("@", 1)[-1]
+        pack_root = root / ".sdai" / "installed-packs" / Path(record.coordinate) / version
+        prefix = pack_root.relative_to(root).as_posix() + "/"
+        allowed: list[str] = []
+        for managed in record.files:
+            if not managed.path.startswith(prefix):
+                continue
+            relative = managed.path[len(prefix):]
+            if "/plugin-steps/" not in "/" + relative and not relative.startswith("plugin-steps/"):
+                continue
+            current = root / managed.path
+            if current.is_symlink() or not current.is_file():
+                raise _fail("SDAI-PLUGIN-007", f"managed Pack plugin file is missing: {managed.path}")
+            digest = "sha256:" + sha256(current.read_bytes()).hexdigest()
+            if digest != managed.sha256:
+                raise _fail("SDAI-PLUGIN-007", f"managed Pack plugin file changed: {managed.path}")
+            allowed.append(relative)
+        if allowed:
+            sources.append(
+                PluginManifestSource(
+                    pack_root,
+                    RegistryLayer.PACK,
+                    f"pack:{record.identity}",
+                    allowed_files=tuple(sorted(allowed)),
+                )
+            )
+
+    raw_locks = tuple(
+        sorted(
+            _safe_id(item.strip(), "organization plugin lock")
+            for item in env.get(_ORG_PLUGIN_LOCKS_ENV, "").split(",")
+            if item.strip()
+        )
+    )
+    sources.extend(
+        _external_plugin_sources(
+            env,
+            _ORG_PLUGIN_ROOTS_ENV,
+            RegistryLayer.ORG,
+            locked_plugins=raw_locks,
+        )
+    )
+    sources.append(PluginManifestSource(root, RegistryLayer.REPO, "repository"))
+    sources.extend(_external_plugin_sources(env, _USER_PLUGIN_ROOTS_ENV, RegistryLayer.USER))
+    return tuple(sources)
+
+
+def load_plugin_manifest(
+    project_root: Path,
+    plugin_id: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> PluginManifest:
+    registry = build_plugin_step_registry(
+        default_plugin_sources(project_root, environ=environ)
+    )
+    return registry.resolve(plugin_id).manifest
 
 
 _POLICY_KEYS = frozenset(
@@ -604,7 +975,7 @@ def prepare_plugin_step(
     environ: Mapping[str, str] | None = None,
 ) -> PluginExecutionPlan:
     root = project_root.resolve()
-    plugin = load_plugin_manifest(root, plugin_id)
+    plugin = load_plugin_manifest(root, plugin_id, environ=environ)
     policy = load_plugin_policy(root, environ=environ)
 
     if plugin.id in policy.denied_plugins:
@@ -950,6 +1321,23 @@ def execute_plugin_step(
     if dry_run:
         return plan, None
 
+    return plan, execute_prepared_plugin_step(
+        project_root,
+        plan,
+        registry=registry,
+        environ=environ,
+    )
+
+
+def execute_prepared_plugin_step(
+    project_root: Path,
+    plan: PluginExecutionPlan,
+    *,
+    registry: PluginExecutorRegistry = EXECUTORS,
+    environ: Mapping[str, str] | None = None,
+) -> PluginResult:
+    """Execute the exact immutable plan already checked by a trusted caller."""
+
     executor = registry.get(plan.plugin.executor)
     if executor is None:
         raise _fail(
@@ -971,4 +1359,4 @@ def execute_plugin_step(
     assert isinstance(normalized_data, dict)
     if normalized_data != dict(result.data or {}):
         result = PluginResult(result.status, result.summary, result.findings, normalized_data)
-    return plan, result
+    return result

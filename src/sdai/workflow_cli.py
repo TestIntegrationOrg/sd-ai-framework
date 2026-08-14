@@ -110,6 +110,9 @@ def _plugin_plan_payload(plan) -> dict[str, object]:
             "executor": plan.plugin.executor,
             "source": plan.plugin.source,
         },
+        "manifest_sha256": plan.plugin.manifest_sha256,
+        "plan_sha256": plan.sha256,
+        "input_sha256": plan.input_sha256,
         "effective_permissions": plan.permissions.as_dict(),
         "policy_sources": list(plan.policy_sources),
         "input_keys": sorted(plan.inputs),
@@ -241,7 +244,10 @@ def _step_plans(
                 root,
                 plugin_id,
                 node.id,
-                {str(key): None for key in input_keys},
+                resolution.plugin_inputs.get(
+                    node.path,
+                    {str(key): None for key in input_keys},
+                ),
                 dry_run=True,
             )
             assert plugin_result is None
