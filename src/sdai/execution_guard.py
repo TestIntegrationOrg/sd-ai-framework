@@ -3,12 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import fnmatch
 from pathlib import Path
+import shutil
 
 from sdai.path_safety import ensure_within_project
 
 
 class ProtectedPathViolation(RuntimeError):
     pass
+
+
+_DIRECTORY = object()
+_MISSING = object()
+_SnapshotValue = bytes | None | object
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -43,7 +49,7 @@ class WorkspaceMutationGuard:
 
     project_root: Path
     protected_patterns: tuple[str, ...]
-    _before: dict[str, bytes | None] = field(default_factory=dict, init=False, repr=False)
+    _before: dict[str, _SnapshotValue] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.project_root = self.project_root.resolve()
@@ -73,8 +79,8 @@ class WorkspaceMutationGuard:
                 roots.append(root)
         return roots
 
-    def _scan(self, *, allow_symlink: bool) -> dict[str, bytes | None]:
-        result: dict[str, bytes | None] = {}
+    def _scan(self, *, allow_symlink: bool) -> dict[str, _SnapshotValue]:
+        result: dict[str, _SnapshotValue] = {}
         visited: set[str] = set()
         for scan_root in self._scan_roots():
             if not scan_root.exists() and not scan_root.is_symlink():
@@ -97,6 +103,9 @@ class WorkspaceMutationGuard:
                         )
                     result[relative] = None
                     continue
+                if path.is_dir():
+                    result[relative] = _DIRECTORY
+                    continue
                 if not path.is_file():
                     continue
                 safe = ensure_within_project(
@@ -109,16 +118,19 @@ class WorkspaceMutationGuard:
         self._before = self._scan(allow_symlink=False)
         return self
 
-    def _restore(self, after: dict[str, bytes | None]) -> list[str]:
+    def _restore(self, after: dict[str, _SnapshotValue]) -> list[str]:
         changed = sorted(
             relative
             for relative in set(self._before) | set(after)
-            if self._before.get(relative) != after.get(relative)
+            if self._before.get(relative, _MISSING) != after.get(relative, _MISSING)
         )
         if not changed:
             return []
 
-        # Remove new protected files/symlinks first.
+        # Remove new protected files/symlinks first. Directories are removed after
+        # their contents, deepest first, so a read-only guard also restores commands
+        # that create only empty directories.
+        new_directories: list[Path] = []
         for relative in changed:
             if relative not in self._before:
                 # `relative` came from a project-root traversal. Unlink a newly-created
@@ -135,9 +147,13 @@ class WorkspaceMutationGuard:
                 )
                 if path.exists():
                     if path.is_dir():
-                        # Files inside are removed individually; leave an empty directory.
+                        new_directories.append(path)
                         continue
                     path.unlink()
+
+        for path in sorted(new_directories, key=lambda item: len(item.parts), reverse=True):
+            if path.exists() and path.is_dir():
+                shutil.rmtree(path)
 
         # Restore deleted/modified protected files byte-for-byte. Protected symlinks
         # created by the agent are unlinked before bytes are restored, preventing an
@@ -154,12 +170,20 @@ class WorkspaceMutationGuard:
                     current.mkdir(parents=True, exist_ok=True)
             if raw_path.is_symlink():
                 raw_path.unlink()
+            if content is _DIRECTORY:
+                if raw_path.exists() and not raw_path.is_dir():
+                    raw_path.unlink()
+                raw_path.mkdir(parents=True, exist_ok=True)
+                continue
             path = ensure_within_project(
                 self.project_root,
                 raw_path,
                 label=f"protected path '{relative}'",
             )
+            if path.exists() and path.is_dir():
+                shutil.rmtree(path)
             path.parent.mkdir(parents=True, exist_ok=True)
+            assert isinstance(content, bytes)
             path.write_bytes(content)
         return changed
 

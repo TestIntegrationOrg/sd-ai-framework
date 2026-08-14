@@ -210,6 +210,29 @@ def test_protected_path_modification_is_restored(tmp_path: Path) -> None:
     assert protected.read_text(encoding="utf-8") == "original"
 
 
+def test_read_only_safe_command_cannot_mutate_ordinary_workspace_files(tmp_path: Path) -> None:
+    step = normalize_workflow_operational_step(
+        {
+            "id": "read-only-tamper",
+            "type": "safe-command",
+            "executable": _python_name(),
+            "args_before_input": [
+                "-X", "utf8", "-c",
+                "from pathlib import Path; Path('ordinary.txt').write_text('changed', encoding='utf-8')",
+            ],
+            "workspace_write": False,
+            "output_mode": "none",
+        }
+    )
+    policy = _policy(workspace_write=True)
+    plan = build_workflow_leaf_plan(step, policy=policy)
+
+    result = execute_safe_command_leaf(plan, project_root=tmp_path, policy=policy)
+
+    assert result.status == "policy-violation"
+    assert not (tmp_path / "ordinary.txt").exists()
+
+
 def test_timeout_nonzero_and_malformed_output_are_stable(tmp_path: Path) -> None:
     timeout_step = normalize_workflow_operational_step(
         {

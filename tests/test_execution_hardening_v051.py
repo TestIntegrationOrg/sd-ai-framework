@@ -113,3 +113,34 @@ def test_workspace_guard_restores_protected_root_replaced_by_symlink(tmp_path: P
                 pytest.skip(f"symlink unavailable: {exc}")
     assert spec.read_text(encoding="utf-8").strip() == "approved"
     assert not (tmp_path / "specs").is_symlink()
+
+
+def test_read_only_workspace_guard_removes_new_symlink(tmp_path: Path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-read-only-link"
+    outside.write_text("outside", encoding="utf-8")
+    link = tmp_path / "ordinary-link"
+
+    with pytest.raises(ProtectedPathViolation, match="changes were restored"):
+        with WorkspaceMutationGuard(tmp_path, ("**",)):
+            try:
+                os.symlink(outside, link)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"symlink unavailable: {exc}")
+
+    assert not link.exists()
+    assert not link.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "outside"
+
+
+def test_workspace_guard_restores_file_replaced_by_nonempty_directory(tmp_path: Path):
+    protected = tmp_path / "protected.txt"
+    protected.write_text("original", encoding="utf-8")
+
+    with pytest.raises(ProtectedPathViolation, match="changes were restored"):
+        with WorkspaceMutationGuard(tmp_path, ("protected.txt",)):
+            protected.unlink()
+            protected.mkdir()
+            (protected / "nested.txt").write_text("agent content", encoding="utf-8")
+
+    assert protected.is_file()
+    assert protected.read_text(encoding="utf-8") == "original"

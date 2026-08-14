@@ -33,7 +33,7 @@ The v2 contract intentionally requires `cwd: .`. Subdirectory execution is fail-
 
 `WorkflowOperationalStep.to_json()` emits canonical compact UTF-8 JSON and a stable SHA-256. `build_workflow_leaf_plan()` emits `sdai.workflow-leaf-plan/v2`, binding the normalized step hash, input hash/length, and effective policy sources. Raw runtime input and environment values are not serialized in the plan.
 
-`execute_safe_command_leaf()` adapts the workflow plan to SDAI's existing Integration execution engine. The workflow layer does not introduce another subprocess runner. It inherits direct argv / `shell=False`, UTF-8 decoding, JSON parsing, timeout handling, environment-name allowlisting, project containment, protected-path restoration, nonzero-exit normalization, and policy revalidation immediately before launch.
+`execute_safe_command_leaf()` adapts the workflow plan to SDAI's existing Integration execution engine. The workflow layer does not introduce another subprocess runner. It inherits direct argv / `shell=False`, UTF-8 decoding, JSON parsing, timeout handling, environment-name allowlisting, project containment, protected-path restoration, nonzero-exit normalization, and policy revalidation immediately before launch. A leaf with `workspace_write: false` is enforced as read-only across the whole project; any mutation is restored and normalized as a policy violation.
 
 Results use `sdai.workflow-leaf-result/v2` and normalize status, exit code, output, and structured error metadata. Arbitrary command stderr is not copied into machine error metadata.
 

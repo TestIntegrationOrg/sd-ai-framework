@@ -613,7 +613,8 @@ def execute_integration_plan(
         runtime_environment = _runtime_environment(plan, policy, environment)
 
         try:
-            with WorkspaceMutationGuard(root, policy.protected_paths):
+            guarded_patterns = policy.protected_paths if plan.requires_workspace_write else ("**",)
+            with WorkspaceMutationGuard(root, guarded_patterns):
                 process = popen_factory(
                     argv,
                     cwd=root,
@@ -630,12 +631,17 @@ def execute_integration_plan(
                     cancellation=cancellation,
                 )
         except ProtectedPathViolation:
+            violation_message = (
+                "Integration modified protected SDAI/source-of-truth paths; changes were restored"
+                if plan.requires_workspace_write
+                else "Read-only Integration modified the project workspace; changes were restored"
+            )
             return _error_result(
                 plan,
                 status=IntegrationExecutionStatus.POLICY_VIOLATION,
                 code="SDAI-INTEGRATION-EXEC-009",
                 category="policy",
-                message="Integration modified protected SDAI/source-of-truth paths; changes were restored",
+                message=violation_message,
             )
         except (OSError, ValueError) as exc:
             return _error_result(
