@@ -51,7 +51,7 @@ _LOCKABLE_LAYERS = frozenset(
 )
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
 _WINDOWS_RESERVED = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
+    {"CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"}
     | {f"COM{index}" for index in range(1, 10)}
     | {f"LPT{index}" for index in range(1, 10)}
     | {f"COM{suffix}" for suffix in ("¹", "²", "³")}
@@ -214,7 +214,13 @@ def _normalize_json(
     label: str,
     ancestors: frozenset[int] = frozenset(),
     depth: int = 0,
+    nodes: list[int] | None = None,
 ) -> object:
+    if nodes is None:
+        nodes = [0]
+    nodes[0] += 1
+    if nodes[0] > 100_000:
+        raise _fail("SDAI-STORE-001", f"{label} exceeds the maximum value count")
     if depth > 64:
         raise _fail("SDAI-STORE-001", f"{label} exceeds the maximum nesting depth")
     if value is None or isinstance(value, (bool, int)):
@@ -238,6 +244,7 @@ def _normalize_json(
                 label=f"{label}[]",
                 ancestors=descendants,
                 depth=depth + 1,
+                nodes=nodes,
             )
             for item in value
         ]
@@ -266,6 +273,7 @@ def _normalize_json(
                 label=f"{label}.{key}",
                 ancestors=descendants,
                 depth=depth + 1,
+                nodes=nodes,
             )
         return normalized
     raise _fail("SDAI-STORE-001", f"{label} must contain only JSON-compatible values")
@@ -376,8 +384,13 @@ class SpecificationStoreManifest:
         store_id = _identifier(self.id, label="store id")
         version = _version(self.version)
         description = _text(self.description, label="store description", maximum=2048)
-        if not self.specification_roots or not all(
-            isinstance(item, SpecificationRoot) for item in self.specification_roots
+        if (
+            not isinstance(self.specification_roots, (list, tuple))
+            or not self.specification_roots
+            or not all(
+                isinstance(item, SpecificationRoot)
+                for item in self.specification_roots
+            )
         ):
             raise _fail("SDAI-STORE-001", "specificationRoots must not be empty")
         roots = tuple(sorted(self.specification_roots, key=lambda item: item.id))
@@ -485,7 +498,13 @@ class SpecificationStoreManifest:
 
 
 def load_specification_store_manifest(store_root: Path) -> SpecificationStoreManifest:
-    root = Path(store_root)
+    try:
+        root = Path(store_root)
+    except (TypeError, ValueError) as exc:
+        raise _fail(
+            "SDAI-STORE-002",
+            "SpecificationStore root must be a valid local path",
+        ) from exc
     if root.is_symlink():
         raise _fail("SDAI-STORE-002", "SpecificationStore root must not be a symlink")
     manifest_path = root / SPECIFICATION_STORE_MANIFEST_PATH
@@ -511,7 +530,12 @@ def load_specification_store_manifest(store_root: Path) -> SpecificationStoreMan
     ) as exc:
         raise _fail("SDAI-STORE-001", "SpecificationStore manifest YAML is malformed") from exc
     manifest = SpecificationStoreManifest.from_dict(raw)
-    _validate_layout(root, manifest.specification_roots)
+    try:
+        _validate_layout(root, manifest.specification_roots)
+    except SpecificationStoreError:
+        raise
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise _fail("SDAI-STORE-002", "SpecificationStore layout could not be validated") from exc
     return manifest
 
 
@@ -531,7 +555,14 @@ class SpecificationStoreSource:
                 "SDAI-STORE-REG-005",
                 "only core/org SpecificationStore sources may be authoritative locks",
             )
-        object.__setattr__(self, "root", Path(self.root))
+        try:
+            root = Path(self.root)
+        except (TypeError, ValueError) as exc:
+            raise _fail(
+                "SDAI-STORE-REG-001",
+                "store source root must be a valid local path",
+            ) from exc
+        object.__setattr__(self, "root", root)
         object.__setattr__(self, "layer", layer)
         object.__setattr__(self, "source", _source_label(self.source))
 
@@ -830,7 +861,10 @@ def _source_sort_key(
 def build_specification_store_registry(
     sources: Iterable[SpecificationStoreSource],
 ) -> SpecificationStoreRegistry:
-    normalized = tuple(sources)
+    try:
+        normalized = tuple(sources)
+    except TypeError as exc:
+        raise _fail("SDAI-STORE-REG-001", "registry sources must be iterable") from exc
     if not all(isinstance(source, SpecificationStoreSource) for source in normalized):
         raise _fail(
             "SDAI-STORE-REG-001",

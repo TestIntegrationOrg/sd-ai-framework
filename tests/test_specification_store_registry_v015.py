@@ -189,6 +189,47 @@ def test_deeply_nested_metadata_is_bounded(tmp_path: Path) -> None:
         load_specification_store_manifest(tmp_path)
 
 
+def test_alias_expanded_metadata_value_count_is_bounded() -> None:
+    shared: object = ["leaf"]
+    for _ in range(17):
+        shared = [shared, shared]
+    roots = (SpecificationRoot("current", "specs/current"),)
+    with pytest.raises(SpecificationStoreError, match="maximum value count"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(1, 0, 0),
+            "Expanded metadata",
+            roots,
+            ("current-specifications",),
+            {"expanded": shared},
+        )
+
+
+def test_programmatic_roots_require_a_materialized_sequence() -> None:
+    roots = (SpecificationRoot("current", "specs/current") for _ in range(1))
+    with pytest.raises(SpecificationStoreError, match="specificationRoots must not be empty"):
+        SpecificationStoreManifest(
+            "platform-specs",
+            SemVer(1, 0, 0),
+            "Generator roots",
+            roots,  # type: ignore[arg-type]
+            ("current-specifications",),
+        )
+
+
+def test_invalid_programmatic_root_inputs_use_store_domain_errors() -> None:
+    with pytest.raises(SpecificationStoreError, match="valid local path"):
+        load_specification_store_manifest(None)  # type: ignore[arg-type]
+    with pytest.raises(SpecificationStoreError, match="valid local path"):
+        SpecificationStoreSource(
+            None,  # type: ignore[arg-type]
+            SpecificationStoreLayer.REPO,
+            "repository",
+        )
+    with pytest.raises(SpecificationStoreError, match="sources must be iterable"):
+        build_specification_store_registry(None)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "roots, message",
     [
@@ -202,6 +243,7 @@ def test_deeply_nested_metadata_is_bounded(tmp_path: Path) -> None:
         ({"one": "Specs", "two": "specs"}, "path collision"),
         ({"current": "COM¹/private"}, "reserved Windows segment"),
         ({"current": "lpt³/private"}, "reserved Windows segment"),
+        ({"current": "CONIN$/private"}, "reserved Windows segment"),
     ],
 )
 def test_manifest_rejects_unsafe_colliding_or_overlapping_roots(
