@@ -99,6 +99,15 @@ def _canonical_json(value: object) -> str:
         raise _fail("SDAI-PACK-001", "manifest is not canonical finite JSON") from exc
 
 
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _fail("SDAI-PACK-001", f"Pack manifest JSON contains duplicate key '{key}'")
+        result[key] = value
+    return result
+
+
 def _expect_mapping(value: object, *, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise _fail("SDAI-PACK-001", f"{label} must be a string-keyed mapping")
@@ -476,7 +485,7 @@ class PackManifest:
     @classmethod
     def from_json(cls, value: str) -> "PackManifest":
         try:
-            raw = json.loads(value)
+            raw = json.loads(value, object_pairs_hook=_unique_json_object)
         except json.JSONDecodeError as exc:
             raise _fail("SDAI-PACK-001", "Pack manifest JSON is malformed") from exc
         return cls.from_dict(raw)
@@ -529,13 +538,14 @@ def load_pack_manifest(path: Path, *, pack_root: Path | None = None) -> PackMani
     except RuntimeError as exc:
         raise _fail("SDAI-PACK-002", "Pack manifest escapes the Pack root") from exc
 
-    relative_manifest = safe_manifest.relative_to(root_resolved).as_posix()
+    resolved_manifest = safe_manifest.resolve(strict=False)
+    relative_manifest = resolved_manifest.relative_to(root_resolved).as_posix()
     _reject_symlink_components(root_resolved, relative_manifest, label="Pack manifest")
 
     try:
-        raw: Any = yaml.load(safe_manifest.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        raw: Any = yaml.load(resolved_manifest.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise _fail("SDAI-PACK-001", f"unable to read Pack manifest '{safe_manifest}' as UTF-8 YAML") from exc
+        raise _fail("SDAI-PACK-001", f"unable to read Pack manifest '{resolved_manifest}' as UTF-8 YAML") from exc
     manifest = PackManifest.from_dict(raw)
     validate_pack_layout(root_input, manifest)
     return manifest
