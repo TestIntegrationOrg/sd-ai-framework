@@ -257,6 +257,19 @@ def test_manifest_rejects_unsafe_colliding_or_overlapping_roots(
         load_specification_store_manifest(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/".join("a" for _ in range(65)),
+        "é" * 128,
+        "segment/" + "a" * 4090,
+    ],
+)
+def test_specification_roots_have_bounded_portable_path_depth(path: str) -> None:
+    with pytest.raises(SpecificationStoreError, match="length or depth limits"):
+        SpecificationRoot("current", path)
+
+
 def test_manifest_rejects_missing_root_and_symlink_redirection(tmp_path: Path) -> None:
     path = _store(tmp_path)
     (tmp_path / "specs" / "changes").rmdir()

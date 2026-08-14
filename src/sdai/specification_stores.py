@@ -63,6 +63,9 @@ _TOP_LEVEL_KEYS = frozenset({"apiVersion", "kind", "metadata", "spec"})
 _METADATA_KEYS = frozenset({"id", "version", "description"})
 _SPEC_REQUIRED_KEYS = frozenset({"specificationRoots", "capabilities"})
 _SPEC_OPTIONAL_KEYS = frozenset({"metadata"})
+_PORTABLE_PATH_MAX_BYTES = 4096
+_PORTABLE_PATH_MAX_SEGMENT_BYTES = 255
+_PORTABLE_PATH_MAX_SEGMENTS = 64
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -197,6 +200,18 @@ def _portable_relative_path(value: object, *, label: str) -> str:
     normalized = unicodedata.normalize("NFC", value)
     path = PurePosixPath(normalized)
     parts = normalized.split("/")
+    if (
+        len(normalized.encode("utf-8")) > _PORTABLE_PATH_MAX_BYTES
+        or len(parts) > _PORTABLE_PATH_MAX_SEGMENTS
+        or any(
+            len(part.encode("utf-8")) > _PORTABLE_PATH_MAX_SEGMENT_BYTES
+            for part in parts
+        )
+    ):
+        raise _fail(
+            "SDAI-STORE-002",
+            f"{label} exceeds portable path length or depth limits",
+        )
     if path.is_absolute() or any(part in {"", ".", ".."} for part in parts):
         raise _fail("SDAI-STORE-002", f"{label} must be a portable relative path")
     for part in parts:
