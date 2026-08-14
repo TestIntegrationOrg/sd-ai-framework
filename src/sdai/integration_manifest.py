@@ -41,12 +41,15 @@ class IntegrationInputMode(StrEnum):
     NONE = "none"
     STDIN = "stdin"
     ARGUMENT = "argument"
+    FILE = "file"
 
 
 class IntegrationOutputMode(StrEnum):
     NONE = "none"
     STDOUT = "stdout"
     JSON_STDOUT = "json-stdout"
+    STDERR = "stderr"
+    JSON_STDERR = "json-stderr"
     FILE = "file"
 
 
@@ -114,6 +117,7 @@ _EXECUTION_KEYS = frozenset(
         "executable",
         "argsBeforeInput",
         "inputMode",
+        "inputPath",
         "argsAfterInput",
         "outputMode",
         "outputPath",
@@ -382,6 +386,7 @@ class IntegrationExecution:
     executable: str
     args_before_input: tuple[str, ...]
     input_mode: IntegrationInputMode
+    input_path: str | None
     args_after_input: tuple[str, ...]
     output_mode: IntegrationOutputMode
     output_path: str | None
@@ -393,6 +398,7 @@ class IntegrationExecution:
             "argsBeforeInput": list(self.args_before_input),
             "executable": self.executable,
             "inputMode": self.input_mode.value,
+            "inputPath": self.input_path,
             "outputMode": self.output_mode.value,
             "outputPath": self.output_path,
             "timeoutSeconds": self.timeout_seconds,
@@ -412,6 +418,18 @@ class IntegrationExecution:
                 "SDAI-INTEGRATION-003",
                 "execution.timeoutSeconds must be between 1 and 86400",
             )
+
+        input_path_raw = raw["inputPath"]
+        if input_mode == IntegrationInputMode.FILE:
+            input_path = _portable_relative_path(input_path_raw, label="execution.inputPath")
+        else:
+            if input_path_raw is not None:
+                raise _fail(
+                    "SDAI-INTEGRATION-003",
+                    "execution.inputPath must be null unless inputMode is 'file'",
+                )
+            input_path = None
+
         output_path_raw = raw["outputPath"]
         if output_mode == IntegrationOutputMode.FILE:
             output_path = _portable_relative_path(output_path_raw, label="execution.outputPath")
@@ -426,6 +444,7 @@ class IntegrationExecution:
             executable=_executable(raw["executable"]),
             args_before_input=_argument_list(raw["argsBeforeInput"], label="execution.argsBeforeInput"),
             input_mode=input_mode,
+            input_path=input_path,
             args_after_input=_argument_list(raw["argsAfterInput"], label="execution.argsAfterInput"),
             output_mode=output_mode,
             output_path=output_path,
@@ -562,14 +581,14 @@ class IntegrationManifest:
             )
 
         security = IntegrationSecurity.from_dict(raw["security"])
-        if (
-            execution is not None
-            and execution.output_mode == IntegrationOutputMode.FILE
-            and not security.requires_workspace_write
-        ):
+        uses_file_io = execution is not None and (
+            execution.input_mode == IntegrationInputMode.FILE
+            or execution.output_mode == IntegrationOutputMode.FILE
+        )
+        if uses_file_io and not security.requires_workspace_write:
             raise _fail(
                 "SDAI-INTEGRATION-004",
-                "file output requires security.requiresWorkspaceWrite=true",
+                "file input/output requires security.requiresWorkspaceWrite=true",
             )
 
         version_text = _exact_text(
