@@ -45,15 +45,16 @@ def _hash_bytes(data: bytes) -> str:
     return "sha256:" + sha256(data).hexdigest()
 
 
-def _valid_hash(value: str) -> bool:
+def _valid_hash(value: object) -> bool:
     return (
-        value.startswith("sha256:")
+        isinstance(value, str)
+        and value.startswith("sha256:")
         and len(value) == 71
         and all(char in "0123456789abcdef" for char in value[7:])
     )
 
 
-def _safe_relative(value: str, *, label: str) -> str:
+def _safe_relative(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
         raise _fail("SDAI-PACK-LIFECYCLE-002", f"{label} is not a portable relative path")
     pure = PurePosixPath(value)
@@ -75,9 +76,8 @@ def _managed_path(root: Path, relative: str) -> Path:
                 "SDAI-PACK-LIFECYCLE-002",
                 f"managed path '{safe}' contains a symlink component",
             )
-    resolved_target = current.resolve(strict=False)
     try:
-        resolved_target.relative_to(resolved_root)
+        current.resolve(strict=False).relative_to(resolved_root)
     except ValueError as exc:
         raise _fail("SDAI-PACK-LIFECYCLE-002", f"managed path '{safe}' escapes project root") from exc
     return current
@@ -148,15 +148,14 @@ class ManagedFile:
         return {"path": self.path, "sha256": self.sha256, "sourcePath": self.source_path}
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, object]) -> "ManagedFile":
-        if set(raw) != {"path", "sha256", "sourcePath"}:
-            raise _fail(
-                "SDAI-PACK-LIFECYCLE-001",
-                "managed file contains unsupported or missing fields",
-            )
-        if not all(isinstance(raw[key], str) for key in ("path", "sha256", "sourcePath")):
-            raise _fail("SDAI-PACK-LIFECYCLE-001", "managed file fields must be strings")
-        return cls(raw["path"], raw["sha256"], raw["sourcePath"])  # type: ignore[arg-type]
+    def from_dict(cls, value: object) -> "ManagedFile":
+        if not isinstance(value, Mapping) or set(value) != {"path", "sha256", "sourcePath"}:
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "managed file contract is invalid")
+        return cls(
+            path=_safe_relative(value["path"], label="managed file path"),
+            sha256=value["sha256"] if isinstance(value["sha256"], str) else "",
+            source_path=_safe_relative(value["sourcePath"], label="managed source path"),
+        )
 
 
 @dataclass(frozen=True)
@@ -175,8 +174,10 @@ class InstalledPack:
     def __post_init__(self) -> None:
         if self.mode not in {"installed", "local-link"}:
             raise _fail("SDAI-PACK-LIFECYCLE-001", f"unsupported Pack mode '{self.mode}'")
-        if not self.identity.startswith(self.coordinate + "@"):
+        if not isinstance(self.coordinate, str) or not isinstance(self.identity, str) or not self.identity.startswith(self.coordinate + "@"):
             raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack identity does not match coordinate")
+        if not isinstance(self.source, str) or not self.source:
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack source must be a non-empty string")
         for value, label in (
             (self.manifest_sha256, "manifestSha256"),
             (self.content_sha256, "contentSha256"),
@@ -184,8 +185,7 @@ class InstalledPack:
         ):
             if not _valid_hash(value):
                 raise _fail("SDAI-PACK-LIFECYCLE-001", f"{label} must be SHA-256")
-        ordered = tuple(sorted(self.files, key=lambda item: item.path))
-        if ordered != self.files or len({item.path for item in self.files}) != len(self.files):
+        if self.files != tuple(sorted(self.files, key=lambda item: item.path)) or len({item.path for item in self.files}) != len(self.files):
             raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack managed files must be unique and sorted")
         preserved = tuple(_safe_relative(item, label="preserved path") for item in self.preserved_paths)
         if preserved != tuple(sorted(set(preserved))):
@@ -197,11 +197,7 @@ class InstalledPack:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "apiVersion": (
-                PACK_INSTALL_RECORD_API_VERSION
-                if self.mode == "installed"
-                else PACK_LINK_RECORD_API_VERSION
-            ),
+            "apiVersion": PACK_LINK_RECORD_API_VERSION if self.mode == "local-link" else PACK_INSTALL_RECORD_API_VERSION,
             "contentSha256": self.content_sha256,
             "coordinate": self.coordinate,
             "files": [item.as_dict() for item in self.files],
@@ -215,51 +211,37 @@ class InstalledPack:
         }
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, object]) -> "InstalledPack":
+    def from_dict(cls, value: object) -> "InstalledPack":
         expected = {
-            "apiVersion",
-            "contentSha256",
-            "coordinate",
-            "files",
-            "identity",
-            "localPath",
-            "lockSha256",
-            "manifestSha256",
-            "mode",
-            "preservedPaths",
-            "source",
+            "apiVersion", "contentSha256", "coordinate", "files", "identity",
+            "localPath", "lockSha256", "manifestSha256", "mode", "preservedPaths", "source",
         }
-        if set(raw) != expected:
-            raise _fail(
-                "SDAI-PACK-LIFECYCLE-001",
-                "installed Pack contains unsupported or missing fields",
-            )
-        mode = raw["mode"]
-        expected_api = (
-            PACK_INSTALL_RECORD_API_VERSION if mode == "installed" else PACK_LINK_RECORD_API_VERSION
-        )
-        if raw["apiVersion"] != expected_api:
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Pack contract is invalid")
+        mode = value["mode"]
+        expected_api = PACK_LINK_RECORD_API_VERSION if mode == "local-link" else PACK_INSTALL_RECORD_API_VERSION
+        if value["apiVersion"] != expected_api:
             raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Pack apiVersion/mode mismatch")
-        files = raw["files"]
-        preserved = raw["preservedPaths"]
-        if not isinstance(files, list) or not all(isinstance(item, Mapping) for item in files):
-            raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Pack files must be objects")
-        if not isinstance(preserved, list) or not all(isinstance(item, str) for item in preserved):
-            raise _fail("SDAI-PACK-LIFECYCLE-001", "preservedPaths must be strings")
-        string_fields = ("identity", "coordinate", "mode", "source", "manifestSha256", "contentSha256", "lockSha256")
-        if not all(isinstance(raw[key], str) for key in string_fields):
+        files = value["files"]
+        preserved = value["preservedPaths"]
+        if not isinstance(files, list) or not isinstance(preserved, list):
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Pack collections are invalid")
+        scalar_keys = ("identity", "coordinate", "mode", "source", "manifestSha256", "contentSha256", "lockSha256")
+        if not all(isinstance(value[key], str) for key in scalar_keys):
             raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Pack scalar fields are invalid")
-        local_path = raw["localPath"]
+        if not all(isinstance(item, str) for item in preserved):
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "preservedPaths must contain strings")
+        local_path = value["localPath"]
         if local_path is not None and not isinstance(local_path, str):
             raise _fail("SDAI-PACK-LIFECYCLE-001", "localPath must be a string or null")
         return cls(
-            identity=raw["identity"],  # type: ignore[arg-type]
-            coordinate=raw["coordinate"],  # type: ignore[arg-type]
-            mode=raw["mode"],  # type: ignore[arg-type]
-            source=raw["source"],  # type: ignore[arg-type]
-            manifest_sha256=raw["manifestSha256"],  # type: ignore[arg-type]
-            content_sha256=raw["contentSha256"],  # type: ignore[arg-type]
-            lock_sha256=raw["lockSha256"],  # type: ignore[arg-type]
+            identity=value["identity"],  # type: ignore[arg-type]
+            coordinate=value["coordinate"],  # type: ignore[arg-type]
+            mode=value["mode"],  # type: ignore[arg-type]
+            source=value["source"],  # type: ignore[arg-type]
+            manifest_sha256=value["manifestSha256"],  # type: ignore[arg-type]
+            content_sha256=value["contentSha256"],  # type: ignore[arg-type]
+            lock_sha256=value["lockSha256"],  # type: ignore[arg-type]
             files=tuple(ManagedFile.from_dict(item) for item in files),
             local_path=local_path,
             preserved_paths=tuple(preserved),
@@ -273,16 +255,10 @@ class PackInstallState:
     def __post_init__(self) -> None:
         coordinates = [item.coordinate for item in self.packs]
         if coordinates != sorted(coordinates) or len(set(coordinates)) != len(coordinates):
-            raise _fail(
-                "SDAI-PACK-LIFECYCLE-001",
-                "installed Packs must contain one sorted record per coordinate",
-            )
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "installed Packs must be unique and sorted")
 
     def as_dict(self) -> dict[str, object]:
-        return {
-            "apiVersion": PACK_INSTALL_STATE_API_VERSION,
-            "packs": [item.as_dict() for item in self.packs],
-        }
+        return {"apiVersion": PACK_INSTALL_STATE_API_VERSION, "packs": [item.as_dict() for item in self.packs]}
 
     def to_text(self) -> str:
         return _canonical_json(self.as_dict()) + "\n"
@@ -294,18 +270,14 @@ class PackInstallState:
     @classmethod
     def from_json(cls, text: str) -> "PackInstallState":
         try:
-            raw = json.loads(text)
+            value = json.loads(text)
         except json.JSONDecodeError as exc:
             raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack install state JSON is malformed") from exc
-        if (
-            not isinstance(raw, Mapping)
-            or set(raw) != {"apiVersion", "packs"}
-            or raw["apiVersion"] != PACK_INSTALL_STATE_API_VERSION
-        ):
+        if not isinstance(value, Mapping) or set(value) != {"apiVersion", "packs"} or value["apiVersion"] != PACK_INSTALL_STATE_API_VERSION:
             raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack install state contract is invalid")
-        packs = raw["packs"]
-        if not isinstance(packs, list) or not all(isinstance(item, Mapping) for item in packs):
-            raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack install state packs must be objects")
+        packs = value["packs"]
+        if not isinstance(packs, list):
+            raise _fail("SDAI-PACK-LIFECYCLE-001", "Pack install state packs must be a list")
         return cls(tuple(InstalledPack.from_dict(item) for item in packs))
 
 
@@ -331,21 +303,19 @@ class OperationJournal:
     @classmethod
     def from_json(cls, text: str) -> "OperationJournal":
         try:
-            raw = json.loads(text)
+            value = json.loads(text)
         except json.JSONDecodeError as exc:
             raise _fail("SDAI-PACK-LIFECYCLE-007", "operation journal JSON is malformed") from exc
         expected = {"apiVersion", "coordinate", "files", "identity", "operation"}
-        if not isinstance(raw, Mapping) or set(raw) != expected or raw["apiVersion"] != PACK_OPERATION_JOURNAL_API_VERSION:
+        if not isinstance(value, Mapping) or set(value) != expected or value["apiVersion"] != PACK_OPERATION_JOURNAL_API_VERSION:
             raise _fail("SDAI-PACK-LIFECYCLE-007", "operation journal contract is invalid")
-        files = raw["files"]
-        if not isinstance(files, list) or not all(isinstance(item, Mapping) for item in files):
-            raise _fail("SDAI-PACK-LIFECYCLE-007", "operation journal files are invalid")
-        if not all(isinstance(raw[key], str) for key in ("operation", "coordinate", "identity")):
-            raise _fail("SDAI-PACK-LIFECYCLE-007", "operation journal scalar fields are invalid")
+        files = value["files"]
+        if not isinstance(files, list) or not all(isinstance(value[key], str) for key in ("operation", "coordinate", "identity")):
+            raise _fail("SDAI-PACK-LIFECYCLE-007", "operation journal fields are invalid")
         return cls(
-            operation=raw["operation"],  # type: ignore[arg-type]
-            coordinate=raw["coordinate"],  # type: ignore[arg-type]
-            identity=raw["identity"],  # type: ignore[arg-type]
+            operation=value["operation"],  # type: ignore[arg-type]
+            coordinate=value["coordinate"],  # type: ignore[arg-type]
+            identity=value["identity"],  # type: ignore[arg-type]
             files=tuple(ManagedFile.from_dict(item) for item in files),
         )
 
@@ -390,29 +360,23 @@ def _clear_journal(root: Path) -> None:
 
 
 def _destination_path(relative_source: str) -> str:
-    return _safe_relative(
-        f".sdai/installed-packs/{relative_source}",
-        label="Pack destination",
-    )
+    return _safe_relative(f".sdai/installed-packs/{relative_source}", label="Pack destination")
 
 
 def _source_files(pack_root: Path, manifest: PackManifest) -> tuple[tuple[str, bytes], ...]:
     index = build_pack_content_index(pack_root, manifest)
-    files: list[tuple[str, bytes]] = []
-    resolved_root = pack_root.resolve()
+    root = pack_root.resolve()
+    result: list[tuple[str, bytes]] = []
     for entry in index.entries:
-        source = resolved_root.joinpath(*PurePosixPath(entry.path).parts)
+        source = root.joinpath(*PurePosixPath(entry.path).parts)
         try:
             data = source.read_bytes()
         except OSError as exc:
-            raise _fail(
-                "SDAI-PACK-LIFECYCLE-003",
-                f"unable to read Pack source file '{entry.path}'",
-            ) from exc
+            raise _fail("SDAI-PACK-LIFECYCLE-003", f"unable to read Pack source file '{entry.path}'") from exc
         if _hash_bytes(data) != entry.sha256:
             raise _fail("SDAI-PACK-LIFECYCLE-004", f"Pack source changed while installing '{entry.path}'")
-        files.append((entry.path, data))
-    return tuple(files)
+        result.append((entry.path, data))
+    return tuple(result)
 
 
 def _verify_existing_file(root: Path, managed: ManagedFile) -> str:
@@ -422,20 +386,12 @@ def _verify_existing_file(root: Path, managed: ManagedFile) -> str:
     if not path.is_file():
         return "modified"
     try:
-        actual = _hash_bytes(path.read_bytes())
+        return "clean" if _hash_bytes(path.read_bytes()) == managed.sha256 else "modified"
     except OSError as exc:
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-003",
-            f"unable to inspect managed file '{managed.path}'",
-        ) from exc
-    return "clean" if actual == managed.sha256 else "modified"
+        raise _fail("SDAI-PACK-LIFECYCLE-003", f"unable to inspect managed file '{managed.path}'") from exc
 
 
-def _replace_record(
-    state: PackInstallState,
-    record: InstalledPack | None,
-    coordinate: str,
-) -> PackInstallState:
+def _replace_record(state: PackInstallState, record: InstalledPack | None, coordinate: str) -> PackInstallState:
     items = [item for item in state.packs if item.coordinate != coordinate]
     if record is not None:
         items.append(record)
@@ -445,11 +401,43 @@ def _replace_record(
 def _find_lock_entry(lock: PackLock, coordinate: str) -> PackLockEntry:
     matches = [entry for entry in lock.packages if entry.coordinate == coordinate]
     if len(matches) != 1:
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-004",
-            f"Pack coordinate '{coordinate}' is not present exactly once in the lock",
-        )
+        raise _fail("SDAI-PACK-LIFECYCLE-004", f"Pack coordinate '{coordinate}' is not present exactly once in the lock")
     return matches[0]
+
+
+def _preflight_destinations(
+    root: Path,
+    planned: tuple[ManagedFile, ...],
+    previous: InstalledPack | None,
+    stale: OperationJournal | None,
+) -> None:
+    previous_by_path = {item.path: item for item in previous.files} if previous else {}
+    for managed in planned:
+        destination = _managed_path(root, managed.path)
+        if not destination.exists():
+            continue
+        prior = previous_by_path.get(managed.path)
+        if prior is not None:
+            if _verify_existing_file(root, prior) == "modified":
+                raise _fail(
+                    "SDAI-PACK-LIFECYCLE-005",
+                    f"refusing to overwrite user-modified managed file '{managed.path}'",
+                )
+            continue
+        if stale is None:
+            raise _fail(
+                "SDAI-PACK-LIFECYCLE-005",
+                f"refusing to overwrite unmanaged file '{managed.path}'",
+            )
+        try:
+            actual = _hash_bytes(destination.read_bytes()) if destination.is_file() else ""
+        except OSError as exc:
+            raise _fail("SDAI-PACK-LIFECYCLE-003", f"unable to recover '{managed.path}'") from exc
+        if actual != managed.sha256:
+            raise _fail(
+                "SDAI-PACK-LIFECYCLE-005",
+                f"interrupted output '{managed.path}' no longer matches planned bytes",
+            )
 
 
 def install_from_local(
@@ -464,21 +452,12 @@ def install_from_local(
     lock_entry = _find_lock_entry(lock, coordinate)
     manifest = load_pack_manifest(pack_root / manifest_name, pack_root=pack_root)
     if manifest.identity != lock_entry.identity:
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-004",
-            f"local Pack identity '{manifest.identity}' does not match lock '{lock_entry.identity}'",
-        )
+        raise _fail("SDAI-PACK-LIFECYCLE-004", f"local Pack identity '{manifest.identity}' does not match lock '{lock_entry.identity}'")
     content_index = build_pack_content_index(pack_root, manifest)
     if content_index.sha256 != lock_entry.content_sha256:
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-004",
-            "local Pack content does not match exact lock content hash",
-        )
+        raise _fail("SDAI-PACK-LIFECYCLE-004", "local Pack content does not match exact lock content hash")
     if manifest.sha256 != lock_entry.manifest_sha256:
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-004",
-            "local Pack manifest does not match exact lock manifest hash",
-        )
+        raise _fail("SDAI-PACK-LIFECYCLE-004", "local Pack manifest does not match exact lock manifest hash")
 
     state = load_install_state(root)
     previous = next((item for item in state.packs if item.coordinate == coordinate), None)
@@ -488,11 +467,11 @@ def install_from_local(
         sorted(
             (
                 ManagedFile(
-                    _destination_path(f"{source_prefix}/{source_relative}"),
+                    _destination_path(f"{source_prefix}/{source_path}"),
                     _hash_bytes(data),
-                    source_relative,
+                    source_path,
                 )
-                for source_relative, data in source_files
+                for source_path, data in source_files
             ),
             key=lambda item: item.path,
         )
@@ -510,6 +489,11 @@ def install_from_local(
             f"incomplete Pack operation for '{stale.coordinate}' requires recovery before '{coordinate}'",
         )
 
+    # Crucially, new operations validate all existing destinations before creating a
+    # journal. A later retry may therefore adopt byte-identical output only when the
+    # journal pre-dated those bytes; an originally unmanaged file can never acquire
+    # ownership merely because a failed first attempt wrote a journal beside it.
+    _preflight_destinations(root, planned, previous, stale)
     journal = OperationJournal(
         operation="local-link" if local_link else ("update" if previous else "install"),
         coordinate=coordinate,
@@ -517,42 +501,18 @@ def install_from_local(
         files=planned,
     )
     _write_journal(root, journal)
-    previous_by_path = {item.path: item for item in previous.files} if previous else {}
-    planned_by_path = {item.path: item for item in planned}
-    data_by_source = dict(source_files)
-    preserved: set[str] = set(previous.preserved_paths if previous else ())
 
+    data_by_source = dict(source_files)
     for managed in planned:
         destination = _managed_path(root, managed.path)
-        prior = previous_by_path.get(managed.path)
-        if destination.exists():
-            if prior is not None:
-                if _verify_existing_file(root, prior) == "modified":
-                    raise _fail(
-                        "SDAI-PACK-LIFECYCLE-005",
-                        f"refusing to overwrite user-modified managed file '{managed.path}'",
-                    )
-            elif stale is not None:
-                try:
-                    actual = _hash_bytes(destination.read_bytes()) if destination.is_file() else ""
-                except OSError as exc:
-                    raise _fail("SDAI-PACK-LIFECYCLE-003", f"unable to recover '{managed.path}'") from exc
-                if actual != managed.sha256:
-                    raise _fail(
-                        "SDAI-PACK-LIFECYCLE-005",
-                        f"interrupted output '{managed.path}' no longer matches planned bytes",
-                    )
-            else:
-                raise _fail(
-                    "SDAI-PACK-LIFECYCLE-005",
-                    f"refusing to overwrite unmanaged file '{managed.path}'",
-                )
         destination.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(destination, data_by_source[managed.source_path])
 
+    planned_paths = {item.path for item in planned}
+    preserved: set[str] = set(previous.preserved_paths if previous else ())
     if previous is not None:
         for old in previous.files:
-            if old.path in planned_by_path:
+            if old.path in planned_paths:
                 continue
             status = _verify_existing_file(root, old)
             if status == "clean":
@@ -567,11 +527,7 @@ def install_from_local(
         identity=manifest.identity,
         coordinate=manifest.coordinate,
         mode="local-link" if local_link else "installed",
-        source=(
-            "local-link:" + pack_root.resolve().as_posix()
-            if local_link
-            else lock_entry.source
-        ),
+        source="local-link:" + pack_root.resolve().as_posix() if local_link else lock_entry.source,
         manifest_sha256=manifest.sha256,
         content_sha256=content_index.sha256,
         lock_sha256=lock.sha256,
@@ -588,18 +544,13 @@ def install_from_local(
 def remove_pack(root: Path, coordinate: str) -> tuple[str, ...]:
     state = load_install_state(root)
     record = next((item for item in state.packs if item.coordinate == coordinate), None)
+    stale = _load_journal(root)
     if record is None:
-        stale = _load_journal(root)
         if stale is not None and stale.coordinate == coordinate and stale.operation == "remove":
             _clear_journal(root)
         return ()
-
-    stale = _load_journal(root)
     if stale is not None and (stale.coordinate != coordinate or stale.operation != "remove"):
-        raise _fail(
-            "SDAI-PACK-LIFECYCLE-007",
-            f"incomplete Pack operation for '{stale.coordinate}' must be recovered first",
-        )
+        raise _fail("SDAI-PACK-LIFECYCLE-007", f"incomplete Pack operation for '{stale.coordinate}' must be recovered first")
     _write_journal(root, OperationJournal("remove", coordinate, record.identity, record.files))
     preserved: set[str] = set(record.preserved_paths)
     for managed in record.files:
@@ -618,18 +569,17 @@ def remove_pack(root: Path, coordinate: str) -> tuple[str, ...]:
 
 def outdated_packs(state: PackInstallState, lock: PackLock) -> tuple[InstalledPack, ...]:
     exact = {item.coordinate: item for item in lock.packages}
-    result: list[InstalledPack] = []
-    for installed in state.packs:
-        target = exact.get(installed.coordinate)
+    return tuple(
+        installed
+        for installed in state.packs
         if (
-            target is None
+            (target := exact.get(installed.coordinate)) is None
             or installed.identity != target.identity
             or installed.manifest_sha256 != target.manifest_sha256
             or installed.content_sha256 != target.content_sha256
             or installed.lock_sha256 != lock.sha256
-        ):
-            result.append(installed)
-    return tuple(result)
+        )
+    )
 
 
 def search_catalogs(catalogs: ResolvedCatalogSet, query: str) -> tuple[dict[str, object], ...]:
