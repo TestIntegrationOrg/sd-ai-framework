@@ -27,6 +27,12 @@ class PackIntegrityError(RuntimeError):
 _HASH_PREFIX = "sha256:"
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
 _ALGORITHM_RE = _IDENTIFIER_RE
+_WINDOWS_FORBIDDEN_CHARS = frozenset('<>:"|?*')
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 _SIGNATURE_KEYS = frozenset(
     {
         "apiVersion",
@@ -162,6 +168,30 @@ def _signature_bytes(value: object) -> bytes:
     return decoded
 
 
+def _validate_windows_portable_segment(segment: str, *, full_path: str) -> None:
+    if segment.endswith((".", " ")):
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-002",
+            f"Pack content path '{full_path}' has a segment with a trailing dot or space",
+        )
+    if any(ord(char) < 32 for char in segment):
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-002",
+            f"Pack content path '{full_path}' contains a Windows control character",
+        )
+    if any(char in _WINDOWS_FORBIDDEN_CHARS for char in segment):
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-002",
+            f"Pack content path '{full_path}' contains a Windows-forbidden character",
+        )
+    device_base = segment.split(".", 1)[0].upper()
+    if device_base in _WINDOWS_RESERVED_NAMES:
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-002",
+            f"Pack content path '{full_path}' contains Windows-reserved name '{segment}'",
+        )
+
+
 def _portable_file_path(value: str) -> str:
     text = unicodedata.normalize("NFC", value)
     if not text or "\\" in text or "\x00" in text:
@@ -173,6 +203,8 @@ def _portable_file_path(value: str) -> str:
         raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' is not relative")
     if any(part in {"", ".", ".."} for part in text.split("/")):
         raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' is unsafe")
+    for segment in pure.parts:
+        _validate_windows_portable_segment(segment, full_path=text)
     return pure.as_posix()
 
 
@@ -195,6 +227,14 @@ def _validate_resolved_content_path(root: Path, path: Path, *, label: str) -> Pa
             f"{label} '{path}' resolves through a symlink or reparse point",
         )
     return resolved
+
+
+def _walk_error(error: OSError) -> None:
+    location = getattr(error, "filename", None) or "declared Pack content"
+    raise _fail(
+        "SDAI-PACK-INTEGRITY-002",
+        f"unable to completely scan Pack content at '{location}'",
+    ) from error
 
 
 @dataclass(frozen=True)
@@ -256,7 +296,12 @@ def build_pack_content_index(pack_root: Path, manifest: PackManifest) -> PackCon
         if declared_root.is_symlink():
             raise _fail("SDAI-PACK-INTEGRITY-002", f"declared content root '{content_root}' must not be a symlink")
         _validate_resolved_content_path(root, declared_root, label="declared content root")
-        for current, directories, files in os.walk(declared_root, topdown=True, followlinks=False):
+        for current, directories, files in os.walk(
+            declared_root,
+            topdown=True,
+            onerror=_walk_error,
+            followlinks=False,
+        ):
             current_path = Path(current)
             _validate_resolved_content_path(root, current_path, label="Pack content directory")
             safe_directories: list[str] = []
