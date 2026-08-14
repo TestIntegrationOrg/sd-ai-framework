@@ -150,11 +150,20 @@ def _validate_keys(
         )
 
 
+def _contains_surrogate(value: str) -> bool:
+    return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+
+
 def _text(value: object, *, label: str, maximum: int = 1024) -> str:
     if not isinstance(value, str):
         raise _fail("SDAI-STORE-001", f"{label} must be a string")
     normalized = unicodedata.normalize("NFC", value.strip())
-    if not normalized or len(normalized) > maximum or "\x00" in normalized:
+    if (
+        not normalized
+        or len(normalized) > maximum
+        or "\x00" in normalized
+        or _contains_surrogate(normalized)
+    ):
         raise _fail(
             "SDAI-STORE-001",
             f"{label} must contain 1-{maximum} portable Unicode characters",
@@ -177,7 +186,12 @@ def _identifier(value: object, *, label: str) -> str:
 def _portable_relative_path(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise _fail("SDAI-STORE-002", f"{label} must be a portable relative path")
-    if "\\" in value or "\x00" in value or re.match(r"^[A-Za-z]:", value):
+    if (
+        "\\" in value
+        or "\x00" in value
+        or _contains_surrogate(value)
+        or re.match(r"^[A-Za-z]:", value)
+    ):
         raise _fail("SDAI-STORE-002", f"{label} must be a portable relative path")
     normalized = unicodedata.normalize("NFC", value)
     path = PurePosixPath(normalized)
@@ -206,8 +220,8 @@ def _normalize_json(
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, str):
-        if "\x00" in value:
-            raise _fail("SDAI-STORE-001", f"{label} contains NUL")
+        if "\x00" in value or _contains_surrogate(value):
+            raise _fail("SDAI-STORE-001", f"{label} contains invalid Unicode text")
         return unicodedata.normalize("NFC", value)
     if isinstance(value, float):
         if value != value or value in {float("inf"), float("-inf")}:
@@ -237,6 +251,11 @@ def _normalize_json(
         normalized: dict[str, object] = {}
         for key in sorted(value):
             canonical_key = unicodedata.normalize("NFC", key)
+            if "\x00" in canonical_key or _contains_surrogate(canonical_key):
+                raise _fail(
+                    "SDAI-STORE-001",
+                    f"{label} contains an invalid Unicode key",
+                )
             if canonical_key in normalized:
                 raise _fail(
                     "SDAI-STORE-001",
@@ -482,7 +501,14 @@ def load_specification_store_manifest(store_root: Path) -> SpecificationStoreMan
         )
     try:
         raw = yaml.load(read_utf8_text(manifest_path), Loader=_UniqueKeyLoader)
-    except (OSError, TextEncodingError, yaml.YAMLError) as exc:
+    except (
+        OSError,
+        OverflowError,
+        RecursionError,
+        TextEncodingError,
+        ValueError,
+        yaml.YAMLError,
+    ) as exc:
         raise _fail("SDAI-STORE-001", "SpecificationStore manifest YAML is malformed") from exc
     manifest = SpecificationStoreManifest.from_dict(raw)
     _validate_layout(root, manifest.specification_roots)

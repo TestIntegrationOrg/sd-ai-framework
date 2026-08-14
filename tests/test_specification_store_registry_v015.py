@@ -138,6 +138,48 @@ def test_recursive_yaml_metadata_is_reported_as_store_domain_error(tmp_path: Pat
         load_specification_store_manifest(tmp_path)
 
 
+def test_unpaired_surrogate_metadata_is_reported_as_store_domain_error(
+    tmp_path: Path,
+) -> None:
+    path = _store(tmp_path)
+    manifest = path.read_text(encoding="utf-8")
+    invalid = manifest.replace(
+        "  metadata: {}\n",
+        '  metadata:\n    owner: "\\uD800"\n',
+    )
+    assert invalid != manifest
+    path.write_text(invalid, encoding="utf-8")
+    with pytest.raises(SpecificationStoreError, match="invalid Unicode text"):
+        load_specification_store_manifest(tmp_path)
+
+
+def test_programmatic_metadata_rejects_surrogate_keys_and_values() -> None:
+    roots = (SpecificationRoot("current", "specs/current"),)
+    for metadata in ({"owner": "\ud800"}, {"\ud800": "owner"}):
+        with pytest.raises(SpecificationStoreError, match="invalid Unicode"):
+            SpecificationStoreManifest(
+                "platform-specs",
+                SemVer(1, 0, 0),
+                "Invalid Unicode metadata",
+                roots,
+                ("current-specifications",),
+                metadata,
+            )
+
+
+def test_yaml_integer_constructor_failure_is_translated(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    manifest = path.read_text(encoding="utf-8")
+    invalid = manifest.replace(
+        "  metadata: {}\n",
+        f"  metadata:\n    huge: {'1' * 5000}\n",
+    )
+    assert invalid != manifest
+    path.write_text(invalid, encoding="utf-8")
+    with pytest.raises(SpecificationStoreError, match="manifest YAML is malformed"):
+        load_specification_store_manifest(tmp_path)
+
+
 def test_deeply_nested_metadata_is_bounded(tmp_path: Path) -> None:
     metadata: object = "leaf"
     for _ in range(66):
