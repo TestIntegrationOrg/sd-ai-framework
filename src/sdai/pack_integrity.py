@@ -11,7 +11,7 @@ import re
 from typing import Mapping, Protocol, runtime_checkable
 import unicodedata
 
-from sdai.pack_manifest import PackManifest, validate_pack_layout
+from sdai.pack_manifest import PackManifest, PackManifestError, SemVer, validate_pack_layout
 
 
 PACK_CONTENT_API_VERSION = "sdai.pack-content/v1"
@@ -25,7 +25,8 @@ class PackIntegrityError(RuntimeError):
 
 
 _HASH_PREFIX = "sha256:"
-_ALGORITHM_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
+_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
+_ALGORITHM_RE = _IDENTIFIER_RE
 _SIGNATURE_KEYS = frozenset(
     {
         "apiVersion",
@@ -99,6 +100,16 @@ def _text(value: object, *, label: str) -> str:
     return unicodedata.normalize("NFC", value.strip())
 
 
+def _identifier(value: object, *, label: str) -> str:
+    text = _text(value, label=label)
+    if not _IDENTIFIER_RE.fullmatch(text):
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-001",
+            f"{label} '{text}' is not a portable lowercase identifier",
+        )
+    return text
+
+
 def _hash(value: object, *, label: str) -> str:
     text = _text(value, label=label)
     if not text.startswith(_HASH_PREFIX):
@@ -119,6 +130,24 @@ def _algorithm(value: object) -> str:
     return text
 
 
+def _parse_pack_identity(value: object) -> tuple[str, str, SemVer, str]:
+    text = _text(value, label="packIdentity")
+    if text.count("@") != 1 or text.count("/") != 1:
+        raise _fail("SDAI-PACK-INTEGRITY-001", f"packIdentity '{text}' is not publisher/id@version")
+    coordinate, version_text = text.rsplit("@", 1)
+    publisher_raw, pack_id_raw = coordinate.split("/", 1)
+    publisher = _identifier(publisher_raw, label="packIdentity publisher")
+    pack_id = _identifier(pack_id_raw, label="packIdentity id")
+    try:
+        version = SemVer.parse(version_text)
+    except PackManifestError as exc:
+        raise _fail("SDAI-PACK-INTEGRITY-001", f"packIdentity '{text}' has invalid SemVer") from exc
+    canonical = f"{publisher}/{pack_id}@{version}"
+    if text != canonical:
+        raise _fail("SDAI-PACK-INTEGRITY-001", f"packIdentity '{text}' is not canonical")
+    return publisher, pack_id, version, canonical
+
+
 def _signature_bytes(value: object) -> bytes:
     text = _text(value, label="signature")
     try:
@@ -133,16 +162,39 @@ def _signature_bytes(value: object) -> bytes:
     return decoded
 
 
-def _portable_file_path(relative: Path) -> str:
-    value = unicodedata.normalize("NFC", relative.as_posix())
-    pure = PurePosixPath(value)
+def _portable_file_path(value: str) -> str:
+    text = unicodedata.normalize("NFC", value)
+    if not text or "\\" in text or "\x00" in text:
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' is not portable")
+    if re.match(r"^[A-Za-z]:", text):
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' must be relative")
+    pure = PurePosixPath(text)
     if pure.is_absolute() or not pure.parts:
-        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{value}' is not relative")
-    if any(part in {"", ".", ".."} for part in pure.parts):
-        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{value}' is unsafe")
-    if "\\" in value or "\x00" in value:
-        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{value}' is not portable")
-    return value
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' is not relative")
+    if any(part in {"", ".", ".."} for part in text.split("/")):
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"Pack content path '{text}' is unsafe")
+    return pure.as_posix()
+
+
+def _normalized_fs_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _validate_resolved_content_path(root: Path, path: Path, *, label: str) -> Path:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"unable to resolve {label} '{path}'") from exc
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise _fail("SDAI-PACK-INTEGRITY-002", f"{label} '{path}' resolves outside the Pack root") from exc
+    if _normalized_fs_path(resolved) != _normalized_fs_path(path.absolute()):
+        raise _fail(
+            "SDAI-PACK-INTEGRITY-002",
+            f"{label} '{path}' resolves through a symlink or reparse point",
+        )
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -152,7 +204,7 @@ class PackContentEntry:
     size: int
 
     def __post_init__(self) -> None:
-        normalized = _portable_file_path(Path(self.path))
+        normalized = _portable_file_path(self.path)
         object.__setattr__(self, "path", normalized)
         object.__setattr__(self, "sha256", _hash(self.sha256, label=f"content file '{normalized}' sha256"))
         if not isinstance(self.size, int) or isinstance(self.size, bool) or self.size < 0:
@@ -200,11 +252,13 @@ def build_pack_content_index(pack_root: Path, manifest: PackManifest) -> PackCon
     seen_raw_paths: set[str] = set()
 
     for content_root in manifest.content_roots:
-        declared_root = root / PurePosixPath(content_root)
+        declared_root = root.joinpath(*PurePosixPath(content_root).parts)
         if declared_root.is_symlink():
             raise _fail("SDAI-PACK-INTEGRITY-002", f"declared content root '{content_root}' must not be a symlink")
+        _validate_resolved_content_path(root, declared_root, label="declared content root")
         for current, directories, files in os.walk(declared_root, topdown=True, followlinks=False):
             current_path = Path(current)
+            _validate_resolved_content_path(root, current_path, label="Pack content directory")
             safe_directories: list[str] = []
             for directory in sorted(directories):
                 child = current_path / directory
@@ -213,6 +267,7 @@ def build_pack_content_index(pack_root: Path, manifest: PackManifest) -> PackCon
                         "SDAI-PACK-INTEGRITY-002",
                         f"Pack content directory '{child.relative_to(root).as_posix()}' must not be a symlink",
                     )
+                _validate_resolved_content_path(root, child, label="Pack content directory")
                 safe_directories.append(directory)
             directories[:] = safe_directories
 
@@ -223,6 +278,7 @@ def build_pack_content_index(pack_root: Path, manifest: PackManifest) -> PackCon
                         "SDAI-PACK-INTEGRITY-002",
                         f"Pack content file '{file_path.relative_to(root).as_posix()}' must not be a symlink",
                     )
+                _validate_resolved_content_path(root, file_path, label="Pack content file")
                 if not file_path.is_file():
                     raise _fail(
                         "SDAI-PACK-INTEGRITY-002",
@@ -232,7 +288,7 @@ def build_pack_content_index(pack_root: Path, manifest: PackManifest) -> PackCon
                 if raw_relative in seen_raw_paths:
                     continue
                 seen_raw_paths.add(raw_relative)
-                relative = _portable_file_path(Path(raw_relative))
+                relative = _portable_file_path(raw_relative)
                 try:
                     data = file_path.read_bytes()
                 except OSError as exc:
@@ -260,8 +316,15 @@ class PackSignaturePayload:
     content_sha256: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "pack_identity", _text(self.pack_identity, label="packIdentity"))
-        object.__setattr__(self, "publisher", _text(self.publisher, label="publisher"))
+        identity_publisher, _, _, canonical_identity = _parse_pack_identity(self.pack_identity)
+        publisher = _identifier(self.publisher, label="publisher")
+        if identity_publisher != publisher:
+            raise _fail(
+                "SDAI-PACK-INTEGRITY-001",
+                f"packIdentity publisher '{identity_publisher}' does not match publisher '{publisher}'",
+            )
+        object.__setattr__(self, "pack_identity", canonical_identity)
+        object.__setattr__(self, "publisher", publisher)
         object.__setattr__(self, "manifest_sha256", _hash(self.manifest_sha256, label="manifestSha256"))
         object.__setattr__(self, "content_sha256", _hash(self.content_sha256, label="contentSha256"))
 
@@ -322,16 +385,22 @@ class PackSignatureEvidence:
     signature: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "pack_identity", _text(self.pack_identity, label="packIdentity"))
-        object.__setattr__(self, "publisher", _text(self.publisher, label="publisher"))
-        object.__setattr__(self, "manifest_sha256", _hash(self.manifest_sha256, label="manifestSha256"))
-        object.__setattr__(self, "content_sha256", _hash(self.content_sha256, label="contentSha256"))
+        payload = PackSignaturePayload(
+            pack_identity=self.pack_identity,
+            publisher=self.publisher,
+            manifest_sha256=self.manifest_sha256,
+            content_sha256=self.content_sha256,
+        )
+        object.__setattr__(self, "pack_identity", payload.pack_identity)
+        object.__setattr__(self, "publisher", payload.publisher)
+        object.__setattr__(self, "manifest_sha256", payload.manifest_sha256)
+        object.__setattr__(self, "content_sha256", payload.content_sha256)
         object.__setattr__(self, "payload_sha256", _hash(self.payload_sha256, label="payloadSha256"))
         object.__setattr__(self, "algorithm", _algorithm(self.algorithm))
         object.__setattr__(self, "key_id", _text(self.key_id, label="keyId"))
         signature_bytes = _signature_bytes(self.signature)
         object.__setattr__(self, "signature", base64.b64encode(signature_bytes).decode("ascii"))
-        if self.payload().sha256 != self.payload_sha256:
+        if payload.sha256 != self.payload_sha256:
             raise _fail("SDAI-PACK-INTEGRITY-001", "payloadSha256 does not match signed payload fields")
 
     @classmethod
@@ -520,11 +589,7 @@ def verify_pack_signature(
             if not valid:
                 reasons.append("invalid-signature")
 
-    verified = (
-        integrity_current
-        and publisher_bound
-        and signature_status is SignatureStatus.VALID
-    )
+    verified = integrity_current and publisher_bound and signature_status is SignatureStatus.VALID
     return PackSignatureVerification(
         pack_identity=manifest.identity,
         publisher=manifest.publisher,
