@@ -65,6 +65,15 @@ def _hash_json(value: object) -> str:
     return "sha256:" + sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _valid_sha(value: object) -> str:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        raise _fail("SDAI-WF2-REG-001", "workflow provenance hash must be SHA-256")
+    digest = value.removeprefix("sha256:")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise _fail("SDAI-WF2-REG-001", "workflow provenance hash must be lowercase SHA-256")
+    return value
+
+
 def _layer(value: RegistryLayer) -> RegistryLayer:
     try:
         return RegistryLayer(value)
@@ -157,6 +166,17 @@ class WorkflowSourceProvenance:
     source_sha256: str
     locked: bool
 
+    def __post_init__(self) -> None:
+        layer = _layer(self.layer)
+        if not isinstance(self.locked, bool):
+            raise _fail("SDAI-WF2-REG-001", "workflow provenance locked must be boolean")
+        if self.locked and layer not in _LOCKABLE_LAYERS:
+            raise _fail("SDAI-WF2-REG-005", "workflow provenance lock is not authoritative")
+        object.__setattr__(self, "layer", layer)
+        object.__setattr__(self, "source", _source_label(self.source))
+        object.__setattr__(self, "path", _portable_relative(self.path, label="workflow provenance path"))
+        object.__setattr__(self, "source_sha256", _valid_sha(self.source_sha256))
+
     def as_dict(self) -> dict[str, object]:
         return {
             "layer": self.layer.value,
@@ -235,8 +255,8 @@ class WorkflowRegistry:
 
     `version:` in existing workflow YAML remains the Workflow Engine schema version.
     Optional `registry_version:` is the semantic registry identity; legacy files omit it
-    and resolve as `0.0.0`. Exact `name@registry_version` content is immutable across
-    layers. Builtin/org locks block every higher-layer version of the same workflow name.
+    and resolve as `0.0.0`. Exact `name@registry_version` content and canonical graph are
+    immutable across layers. Builtin/org locks block higher-layer definitions of the name.
     """
 
     def __init__(self) -> None:
@@ -254,13 +274,19 @@ class WorkflowRegistry:
         entries = self._copy()
         versions = entries.setdefault(name, {})
 
-        for other_version, layers in versions.items():
+        for layers in versions.values():
             for layer, existing in layers.items():
                 if existing.provenance.locked and registration.provenance.layer.priority > layer.priority:
                     raise _fail(
                         "SDAI-WF2-REG-005",
                         f"workflow '{name}' is locked by {layer.value}:{existing.provenance.source}; "
                         f"higher layer {registration.provenance.layer.value} cannot define {name}@{version}",
+                    )
+                if registration.provenance.locked and layer.priority > registration.provenance.layer.priority:
+                    raise _fail(
+                        "SDAI-WF2-REG-005",
+                        f"cannot add authoritative lock for workflow '{name}' after higher-layer definition "
+                        f"{layer.value}:{existing.provenance.source}",
                     )
 
         layers = versions.setdefault(version, {})
@@ -271,21 +297,27 @@ class WorkflowRegistry:
                 f"duplicate workflow '{name}@{version}' in layer {registration.provenance.layer.value}: "
                 f"{existing.provenance.source} and {registration.provenance.source}",
             )
-        exact_hashes = {item.source_sha256 for item in layers.values()}
-        if exact_hashes and registration.source_sha256 not in exact_hashes:
-            raise _fail(
-                "SDAI-WF2-REG-004",
-                f"conflicting exact workflow '{name}@{version}' has different canonical source content",
-            )
+        if layers:
+            source_hashes = {item.source_sha256 for item in layers.values()}
+            graph_hashes = {item.graph_resolution.sha256 for item in layers.values()}
+            if registration.source_sha256 not in source_hashes:
+                raise _fail(
+                    "SDAI-WF2-REG-004",
+                    f"conflicting exact workflow '{name}@{version}' has different canonical source content",
+                )
+            if registration.graph_resolution.sha256 not in graph_hashes:
+                raise _fail(
+                    "SDAI-WF2-REG-004",
+                    f"conflicting exact workflow '{name}@{version}' resolves to a different canonical graph",
+                )
         layers[registration.provenance.layer] = registration
         self._entries = entries
 
     def _locked_layer(self, name: str) -> RegistryLayer | None:
         locked = [
             registration.provenance.layer
-            for versions in self._entries.get(name, {}).values()
-            for layers in versions.values()
-            for registration in [layers]
+            for version_layers in self._entries.get(name, {}).values()
+            for registration in version_layers.values()
             if registration.provenance.locked
         ]
         return max(locked, key=lambda item: item.priority) if locked else None
@@ -316,8 +348,7 @@ class WorkflowRegistry:
         if "@" in text:
             name_text, version_text = text.rsplit("@", 1)
             name = _name(name_text, label="workflow name")
-            version = str(_version(version_text))
-            return self._resolved_exact(name, version)
+            return self._resolved_exact(name, str(_version(version_text)))
 
         name = _name(text, label="workflow name")
         versions = self._entries.get(name, {})
@@ -398,8 +429,7 @@ def _registration(source: WorkflowSource, path: Path) -> WorkflowRegistration:
     normalized = _normalize_json(raw, label=f"workflow '{relative}'")
     assert isinstance(normalized, dict)
     filename_name = path.stem
-    declared_name = raw.get("name", filename_name)
-    name = _name(declared_name, label=f"workflow '{relative}' name")
+    name = _name(raw.get("name", filename_name), label=f"workflow '{relative}' name")
     if name != filename_name:
         raise _fail("SDAI-WF2-REG-002", f"workflow filename/name mismatch: '{filename_name}' != '{name}'")
     registry_version = _version(raw.get("registry_version"))
@@ -407,17 +437,10 @@ def _registration(source: WorkflowSource, path: Path) -> WorkflowRegistration:
     if raw_engine is not None and (isinstance(raw_engine, bool) or not isinstance(raw_engine, int)):
         raise _fail("SDAI-WF2-REG-002", f"workflow '{name}' engine version must be an integer")
     try:
-        graph_resolution = load_workflow_graph(root, name)
+        graph_resolution = load_workflow_graph(root, name, environ={})
     except (WorkflowGraphError, FileNotFoundError) as exc:
         raise _fail("SDAI-WF2-REG-002", f"workflow '{name}' cannot resolve to a canonical graph: {exc}") from exc
     source_sha = _hash_json(normalized)
-    provenance = WorkflowSourceProvenance(
-        layer=source.layer,
-        source=source.source,
-        path=relative,
-        source_sha256=source_sha,
-        locked=source.locked,
-    )
     return WorkflowRegistration(
         name=name,
         registry_version=registry_version,
@@ -425,7 +448,13 @@ def _registration(source: WorkflowSource, path: Path) -> WorkflowRegistration:
         source_data_json=_canonical_json(normalized),
         source_sha256=source_sha,
         graph_resolution=graph_resolution,
-        provenance=provenance,
+        provenance=WorkflowSourceProvenance(
+            layer=source.layer,
+            source=source.source,
+            path=relative,
+            source_sha256=source_sha,
+            locked=source.locked,
+        ),
     )
 
 
@@ -436,9 +465,7 @@ def build_workflow_registry(sources: tuple[WorkflowSource, ...] | list[WorkflowS
         key=lambda item: (item.layer.priority, item.source, str(item.project_root).replace("\\", "/").casefold()),
     )
     for source in ordered_sources:
-        staged: list[WorkflowRegistration] = []
-        for path in _workflow_files(source.project_root.resolve()):
-            staged.append(_registration(source, path))
+        staged = [_registration(source, path) for path in _workflow_files(source.project_root.resolve())]
         snapshot = registry._copy()
         try:
             for registration in staged:
