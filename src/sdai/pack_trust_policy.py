@@ -102,7 +102,7 @@ def _catalog_source_policy_value(value: object) -> str:
     try:
         return canonical_catalog_source(value)
     except PackCatalogError as exc:
-        raise _fail("SDAI-PACK-POLICY-001", f"invalid catalog source policy value: {value!r}") from exc
+        raise _fail("SDAI-PACK-POLICY-001", "invalid catalog source policy value") from exc
 
 
 def _allowlist(
