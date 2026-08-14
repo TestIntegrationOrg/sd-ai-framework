@@ -7,10 +7,13 @@ from pathlib import Path
 from sdai.pack_catalog import load_pack_catalog, resolve_pack_catalogs
 from sdai.pack_certification import (
     PackCertificationError,
-    evaluate_pack_certification,
     load_pack_certification_policy,
     load_pack_eval_evidence,
     resolve_pack_certification_policy,
+)
+from sdai.pack_eval_suite import (
+    evaluate_pack_certification_suite,
+    load_pack_eval_suite,
 )
 from sdai.pack_integrity import build_pack_content_index
 from sdai.pack_lifecycle import (
@@ -71,6 +74,7 @@ def add_pack_parser(commands: argparse._SubParsersAction) -> None:
     )
     certification.add_argument("--source", required=True, help="Local Pack artifact directory")
     certification.add_argument("--manifest", default="pack.yaml")
+    certification.add_argument("--suite", required=True, help="Current sdai.pack-eval-suite/v1 JSON")
     certification.add_argument("--evidence", help="sdai.pack-eval-evidence/v1 JSON")
     certification.add_argument("--organization-policy")
     certification.add_argument("--repository-policy")
@@ -104,6 +108,7 @@ def _run_certification(root: Path, args: argparse.Namespace) -> int:
     pack_root = _resolve_path(root, args.source)
     manifest = load_pack_manifest(pack_root / args.manifest, pack_root=pack_root)
     content = build_pack_content_index(pack_root, manifest)
+    suite = load_pack_eval_suite(_resolve_path(root, args.suite))
     policy = resolve_pack_certification_policy(
         organization=_load_optional_cert_policy(root, args.organization_policy),
         repository=_load_optional_cert_policy(root, args.repository_policy),
@@ -134,10 +139,11 @@ def _run_certification(root: Path, args: argparse.Namespace) -> int:
             print("  evidence-malformed")
         return 4
 
-    decision = evaluate_pack_certification(
+    decision = evaluate_pack_certification_suite(
         manifest,
         content.sha256,
         policy,
+        suite,
         evidence,
         risk=args.risk,
     )
