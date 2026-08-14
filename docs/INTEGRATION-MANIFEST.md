@@ -37,6 +37,7 @@ execution:
   executable: acme-agent
   argsBeforeInput: [run, --mode, safe]
   inputMode: argument
+  inputPath: null
   argsAfterInput: [--format, json]
   outputMode: json-stdout
   outputPath: null
@@ -77,12 +78,12 @@ Each projection contains exactly:
 ```yaml
 kind: skill | command | agent-file
 source: project/relative/source
- target: project/relative/target
+target: project/relative/target
 ```
 
 `source` identifies the SDAI/canonical project-relative input and `target` identifies the tool-native project-relative destination. #152 owns materialization; v1 only defines the deterministic contract.
 
-Paths use `/` separators and must be portable across Windows and POSIX. Absolute paths, drive-qualified paths, `.`/`..`, empty segments, backslashes, control characters, Windows-reserved device names, and non-portable Windows filename characters are rejected. Projection targets must be unique and must not overlap by ancestry, preventing two declarations from claiming the same managed namespace.
+Paths use `/` separators and must be portable across Windows and POSIX. Absolute paths, drive-qualified paths, `.`/`..`, empty segments, backslashes, control characters, Windows-reserved device names, non-portable segment whitespace, and non-portable Windows filename characters are rejected. Projection targets must be unique and must not overlap by ancestry, preventing two declarations from claiming the same managed namespace.
 
 ## Safe execution declaration
 
@@ -90,13 +91,16 @@ The execution object is structured; it is not a shell command string:
 
 - `executable` — one portable executable name or project-relative executable path.
 - `argsBeforeInput` — literal argv tokens before dynamic input.
-- `inputMode` — `none`, `stdin`, or `argument`.
+- `inputMode` — `none`, `stdin`, `argument`, or `file`.
+- `inputPath` — required safe project-relative path only for `inputMode: file`; otherwise `null`.
 - `argsAfterInput` — literal argv tokens after dynamic input.
-- `outputMode` — `none`, `stdout`, `json-stdout`, or `file`.
-- `outputPath` — required safe project-relative path only for `file`; otherwise `null`.
+- `outputMode` — `none`, `stdout`, `json-stdout`, `stderr`, `json-stderr`, or `file`.
+- `outputPath` — required safe project-relative path only for `outputMode: file`; otherwise `null`.
 - `timeoutSeconds` — integer from 1 through 86400.
 
-Dynamic prompt/input placement is structural. Static argv tokens may not contain the legacy `{prompt}` replacement marker. Future execution planning inserts dynamic input as a single argv element when `inputMode: argument`, or sends it as UTF-8 stdin when `inputMode: stdin`. SDAI never needs to concatenate the manifest into a shell string.
+Dynamic prompt/input placement is structural. Static argv tokens may not contain the legacy `{prompt}` replacement marker. Future execution planning inserts dynamic input as a single argv element when `inputMode: argument`, sends it as UTF-8 stdin when `inputMode: stdin`, or writes the exact UTF-8 input to the declared safe file when `inputMode: file`. SDAI never needs to concatenate the manifest into a shell string.
+
+Output selection is likewise structural. `stdout`/`stderr` modes select the captured stream, `json-*` variants additionally require JSON normalization in #151, and `file` reads only the declared safe file path.
 
 Shell metacharacters inside a literal argv token remain literal data under this contract; #151 is responsible for executing the plan with direct executable+argv subprocess semantics and applying provider/execution policy.
 
@@ -110,7 +114,7 @@ Shell metacharacters inside a literal argv token remain literal data under this 
 
 Secret values are never part of the manifest or its explainable canonical form. Later policy resolution may further restrict the environment names and declared privileges. Repository/user configuration cannot use a manifest to weaken organization execution policy.
 
-`outputMode: file` requires `requiresWorkspaceWrite: true` because the declared output is project-relative.
+Any file-based input or output requires `requiresWorkspaceWrite: true` because the declared path is project-relative and the integration execution lifecycle will create/read managed project data.
 
 ## Error contract
 
