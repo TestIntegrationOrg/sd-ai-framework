@@ -280,6 +280,7 @@ def test_signed_pack_gate_rejects_tamper_untrusted_publisher_stale_eval_and_reso
         {
             **manifest.as_dict(),
             "id": "a",
+            "version": "1.0.0",
             "dependencies": [{"publisher": "acme", "id": "b", "version": "=1.0.0"}],
         }
     )
@@ -287,6 +288,7 @@ def test_signed_pack_gate_rejects_tamper_untrusted_publisher_stale_eval_and_reso
         {
             **manifest.as_dict(),
             "id": "b",
+            "version": "1.0.0",
             "dependencies": [{"publisher": "acme", "id": "a", "version": "=1.0.0"}],
         }
     )
