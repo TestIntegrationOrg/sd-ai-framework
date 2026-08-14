@@ -9,6 +9,8 @@ from typing import Any, Callable, Mapping
 import unicodedata
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.resolver import BaseResolver
 
 from sdai.path_safety import ensure_within_project
 
@@ -18,6 +20,37 @@ PACK_MANIFEST_API_VERSION = "sdai.pack-manifest/v1"
 
 class PackManifestError(RuntimeError):
     pass
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.nodes.MappingNode, deep: bool = False) -> dict[object, object]:
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
 
 
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$")
@@ -500,7 +533,7 @@ def load_pack_manifest(path: Path, *, pack_root: Path | None = None) -> PackMani
     _reject_symlink_components(root_resolved, relative_manifest, label="Pack manifest")
 
     try:
-        raw: Any = yaml.safe_load(safe_manifest.read_text(encoding="utf-8"))
+        raw: Any = yaml.load(safe_manifest.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise _fail("SDAI-PACK-001", f"unable to read Pack manifest '{safe_manifest}' as UTF-8 YAML") from exc
     manifest = PackManifest.from_dict(raw)
