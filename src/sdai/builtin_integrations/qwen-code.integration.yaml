@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: qwen-code
+version: 1.0.0
+displayName: Qwen Code
+description: Mirror canonical Agent Skills into Qwen Code's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .qwen/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

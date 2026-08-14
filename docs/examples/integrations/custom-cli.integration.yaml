@@ -1,0 +1,24 @@
+apiVersion: sdai.integration-manifest/v1
+id: custom-cli-example
+version: 1.0.0
+displayName: Custom CLI Example
+description: Template showing shell-free executable and argv execution with explicit stdin and JSON stdout.
+capabilities:
+  - agent-execution
+projections: []
+execution:
+  executable: your-agent-cli
+  argsBeforeInput:
+    - run
+    - --non-interactive
+  inputMode: stdin
+  inputPath: null
+  argsAfterInput: []
+  outputMode: json-stdout
+  outputPath: null
+  timeoutSeconds: 600
+security:
+  requiresNetwork: true
+  requiresWorkspaceWrite: false
+  environment:
+    - YOUR_AGENT_API_KEY

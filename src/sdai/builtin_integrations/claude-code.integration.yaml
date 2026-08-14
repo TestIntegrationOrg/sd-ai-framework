@@ -1,0 +1,34 @@
+apiVersion: sdai.integration-manifest/v1
+id: claude-code
+version: 1.0.0
+displayName: Claude Code
+description: Project skill projection plus safe advisory Claude Code CLI execution.
+capabilities:
+  - agent-execution
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .claude/skills
+execution:
+  executable: claude
+  argsBeforeInput:
+    - -p
+    - Follow the SD-AI task supplied on stdin.
+    - --output-format
+    - text
+    - --no-session-persistence
+    - --permission-mode
+    - plan
+  inputMode: stdin
+  inputPath: null
+  argsAfterInput: []
+  outputMode: stdout
+  outputPath: null
+  timeoutSeconds: 600
+security:
+  requiresNetwork: true
+  requiresWorkspaceWrite: false
+  environment:
+    - ANTHROPIC_API_KEY
+    - CLAUDE_CONFIG_DIR

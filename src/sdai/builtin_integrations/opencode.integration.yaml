@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: opencode
+version: 1.0.0
+displayName: OpenCode
+description: Mirror canonical Agent Skills into OpenCode's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .opencode/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

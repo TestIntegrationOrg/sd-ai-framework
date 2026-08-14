@@ -1,0 +1,31 @@
+apiVersion: sdai.integration-manifest/v1
+id: codex
+version: 1.0.0
+displayName: OpenAI Codex
+description: Project skill projection plus safe advisory Codex CLI execution.
+capabilities:
+  - agent-execution
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .codex/skills
+execution:
+  executable: codex
+  argsBeforeInput:
+    - exec
+    - --ephemeral
+    - --sandbox
+    - read-only
+  inputMode: stdin
+  inputPath: null
+  argsAfterInput: []
+  outputMode: stdout
+  outputPath: null
+  timeoutSeconds: 600
+security:
+  requiresNetwork: true
+  requiresWorkspaceWrite: false
+  environment:
+    - CODEX_HOME
+    - OPENAI_API_KEY

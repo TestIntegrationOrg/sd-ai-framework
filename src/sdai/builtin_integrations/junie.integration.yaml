@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: junie
+version: 1.0.0
+displayName: JetBrains Junie
+description: Mirror canonical Agent Skills into Junie's project-native skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .junie/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []

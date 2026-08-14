@@ -1,0 +1,16 @@
+apiVersion: sdai.integration-manifest/v1
+id: devin
+version: 1.0.0
+displayName: Devin
+description: Mirror canonical Agent Skills into Devin's Cognition project skill directory.
+capabilities:
+  - skills
+projections:
+  - kind: skill
+    source: .agents/skills
+    target: .cognition/skills
+execution: null
+security:
+  requiresNetwork: false
+  requiresWorkspaceWrite: false
+  environment: []
