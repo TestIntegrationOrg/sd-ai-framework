@@ -134,7 +134,7 @@ def test_routes_api_ui_and_shared_entities_deterministically(tmp_path: Path) -> 
     assert result.unmatched_optional == ()
 
 
-def test_manifest_and_routing_json_are_order_independent_and_hide_absolute_paths(
+def test_manifest_semantics_are_order_independent_but_source_provenance_is_exact(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -166,7 +166,11 @@ def test_manifest_and_routing_json_are_order_independent_and_hide_absolute_paths
     )
 
     assert first.manifest_sha256 == second.manifest_sha256
-    assert first_result.to_json() == second_result.to_json()
+    assert [(item.entity.identity, item.repository_id) for item in first_result.decisions] == [
+        (item.entity.identity, item.repository_id) for item in second_result.decisions
+    ]
+    assert first.source_sha256 != second.source_sha256
+    assert first_result.to_json() != second_result.to_json()
     output = second_result.to_json()
     assert str(api.resolve()) not in output
     assert str(ui.resolve()) not in output
