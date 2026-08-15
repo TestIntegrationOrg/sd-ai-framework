@@ -11,6 +11,8 @@ from sdai.specification_store_references import (
     SPECIFICATION_STORE_CONTENT_SNAPSHOT_API_VERSION,
     SPECIFICATION_STORE_REFERENCES_API_VERSION,
     SPECIFICATION_STORE_REFERENCES_MAX_BYTES,
+    SpecificationStoreContentEntry,
+    SpecificationStoreContentSnapshot,
     SpecificationStoreReferenceError,
     load_specification_store_references,
     resolve_specification_store_references,
@@ -335,13 +337,27 @@ def test_duplicate_identity_and_overlapping_resolved_paths_fail_closed(tmp_path:
         resolve_specification_store_references(project)
 
 
-def test_case_colliding_content_paths_fail_closed(tmp_path: Path) -> None:
-    project, store = _workspace(tmp_path)
-    current = store / "knowledge" / "current"
-    (current / "Case.md").write_text("one\n", encoding="utf-8")
-    (current / "case.md").write_text("two\n", encoding="utf-8")
+def test_case_colliding_content_paths_fail_closed() -> None:
     with pytest.raises(SpecificationStoreReferenceError, match="case-insensitive content path"):
-        resolve_specification_store_references(project)
+        SpecificationStoreContentSnapshot(
+            identity="platform-specs@1.0.0",
+            manifest_sha256=HASH_A,
+            manifest_file_sha256=HASH_A,
+            entries=(
+                SpecificationStoreContentEntry(
+                    root="current",
+                    path="knowledge/current/Case.md",
+                    sha256=HASH_A,
+                    size=3,
+                ),
+                SpecificationStoreContentEntry(
+                    root="current",
+                    path="knowledge/current/case.md",
+                    sha256=HASH_A,
+                    size=3,
+                ),
+            ),
+        )
 
 
 def test_symlinked_store_or_content_is_rejected(tmp_path: Path) -> None:
