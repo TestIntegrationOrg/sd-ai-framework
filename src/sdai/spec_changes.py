@@ -34,6 +34,7 @@ _DOMAIN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _FEATURE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _REQUIREMENT_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BOUND_SPECIFICATION_FILE_MAX_BYTES = 16 * 1024 * 1024
 _WINDOWS_RESERVED_PATH_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
@@ -206,7 +207,13 @@ def _read_text(
                 "SDAI-SPEC-008",
                 f"{label} expected file digest must be a lowercase SHA-256 digest",
             )
-        data = safe.read_bytes()
+        with safe.open("rb") as stream:
+            data = stream.read(_BOUND_SPECIFICATION_FILE_MAX_BYTES + 1)
+        if len(data) > _BOUND_SPECIFICATION_FILE_MAX_BYTES:
+            raise _fail(
+                "SDAI-SPEC-008",
+                f"{label} exceeds the 16 MiB bound for SpecificationStore snapshot reads",
+            )
         actual = "sha256:" + sha256(data).hexdigest()
         if actual != expected_file_sha256:
             raise _fail(
@@ -642,12 +649,41 @@ def _expected_bound_digest(
     return expected
 
 
+def _validate_bound_delta_sources(
+    discovered_sources: tuple[str, ...],
+    expected_sources: tuple[str, ...] | None,
+) -> None:
+    if expected_sources is None:
+        return
+    if not isinstance(expected_sources, tuple) or not all(
+        isinstance(source, str) for source in expected_sources
+    ):
+        raise _fail(
+            "SDAI-SPEC-008",
+            "bound SpecificationStore delta sources must be a materialized source tuple",
+        )
+    if len(set(expected_sources)) != len(expected_sources):
+        raise _fail(
+            "SDAI-SPEC-008",
+            "bound SpecificationStore delta sources must not contain duplicates",
+        )
+    key = lambda value: (value.casefold(), value)
+    actual = tuple(sorted(discovered_sources, key=key))
+    expected = tuple(sorted(expected_sources, key=key))
+    if actual != expected:
+        raise _fail(
+            "SDAI-SPEC-008",
+            "delta source set does not match the bound SpecificationStore snapshot",
+        )
+
+
 def load_spec_change(
     project_root: Path,
     feature_id: str,
     *,
     changes_root: str = "specs/changes",
     expected_file_sha256_by_source: Mapping[str, str] | None = None,
+    expected_delta_sources: tuple[str, ...] | None = None,
 ) -> SpecChangeBundle:
     root = project_root.resolve()
     feature = validate_change_feature_id(feature_id)
@@ -674,7 +710,7 @@ def load_spec_change(
         )
     paths = sorted(
         [*delta_root.glob("*.yaml"), *delta_root.glob("*.yml")],
-        key=lambda item: item.name.casefold(),
+        key=lambda item: (item.name.casefold(), item.name),
     )
     if not paths:
         raise _fail(
@@ -689,6 +725,8 @@ def load_spec_change(
         )
         for path in paths
     )
+    discovered_sources = tuple(_portable_source(root, path) for path in contained_paths)
+    _validate_bound_delta_sources(discovered_sources, expected_delta_sources)
     deltas = tuple(
         load_delta_document(
             root,
