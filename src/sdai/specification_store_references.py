@@ -21,6 +21,7 @@ from sdai.spec_changes import (
     current_spec_path,
     load_current_spec,
     load_spec_change,
+    validate_change_feature_id,
 )
 from sdai.specification_stores import (
     SPECIFICATION_STORE_MANIFEST_PATH,
@@ -258,6 +259,36 @@ def _resolve_existing_directory(project_root: Path, declared: str) -> Path:
         raise _fail(
             "SDAI-STORE-REF-002",
             "SpecificationStore reference path must be an explicit existing local directory",
+        )
+    return resolved
+
+
+def _resolve_declaration_file(project_root: Path, path: Path | None) -> Path:
+    try:
+        candidate = Path(path) if path is not None else project_root / SPECIFICATION_STORE_REFERENCES_PATH
+    except (TypeError, ValueError) as exc:
+        raise _fail("SDAI-STORE-REF-002", "reference declaration path is invalid") from exc
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    _reject_redirect_chain(candidate, label="store reference declaration")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise _fail(
+            "SDAI-STORE-REF-002",
+            f"store reference declaration not found at {SPECIFICATION_STORE_REFERENCES_PATH}",
+        ) from exc
+    try:
+        resolved.relative_to(project_root)
+    except ValueError as exc:
+        raise _fail(
+            "SDAI-STORE-REF-002",
+            "reference declaration must stay inside the project",
+        ) from exc
+    if not resolved.is_file():
+        raise _fail(
+            "SDAI-STORE-REF-002",
+            f"store reference declaration not found at {SPECIFICATION_STORE_REFERENCES_PATH}",
         )
     return resolved
 
@@ -671,14 +702,23 @@ class ResolvedSpecificationStoreReference:
 
     def read_change(self, feature_id: str) -> ReferencedSpecChange:
         changes_root = self._root_path("changes", "changes")
+        feature = validate_change_feature_id(feature_id)
+        delta_parent = PurePosixPath(changes_root) / feature / "deltas"
+        expected_delta_sources = tuple(
+            entry.path
+            for entry in self.snapshot.entries
+            if PurePosixPath(entry.path).parent == delta_parent
+            and PurePosixPath(entry.path).suffix in {".yaml", ".yml"}
+        )
         self.verify_unchanged()
         change = load_spec_change(
             self.root,
-            feature_id,
+            feature,
             changes_root=changes_root,
             expected_file_sha256_by_source={
                 entry.path: entry.sha256 for entry in self.snapshot.entries
             },
+            expected_delta_sources=expected_delta_sources,
         )
         self.verify_unchanged()
         sources = (
@@ -753,26 +793,7 @@ def load_specification_store_references(
             "SDAI-STORE-REF-002",
             "project root must be an explicit existing local directory",
         )
-    reference_path = path or root / SPECIFICATION_STORE_REFERENCES_PATH
-    try:
-        reference_path = Path(reference_path)
-    except (TypeError, ValueError) as exc:
-        raise _fail("SDAI-STORE-REF-002", "reference declaration path is invalid") from exc
-    if not reference_path.is_absolute():
-        reference_path = root / reference_path
-    try:
-        reference_path.relative_to(root)
-    except ValueError as exc:
-        raise _fail(
-            "SDAI-STORE-REF-002",
-            "reference declaration must stay inside the project",
-        ) from exc
-    _reject_redirect_chain(reference_path, label="store reference declaration")
-    if not reference_path.is_file():
-        raise _fail(
-            "SDAI-STORE-REF-002",
-            f"store reference declaration not found at {SPECIFICATION_STORE_REFERENCES_PATH}",
-        )
+    reference_path = _resolve_declaration_file(root, path)
     data, text = _read_bounded_utf8(reference_path, label="store reference declaration")
     try:
         if any(isinstance(event, yaml.events.AliasEvent) for event in yaml.parse(text)):
@@ -1033,9 +1054,7 @@ def resolve_specification_store_references(
 ) -> ResolvedSpecificationStoreReferences:
     reference_set = load_specification_store_references(project_root, path)
     root = Path(project_root).resolve(strict=True)
-    declarations_path = Path(path) if path is not None else root / SPECIFICATION_STORE_REFERENCES_PATH
-    if not declarations_path.is_absolute():
-        declarations_path = root / declarations_path
+    declarations_path = _resolve_declaration_file(root, path)
     resolved_paths = tuple(
         (
             reference,
