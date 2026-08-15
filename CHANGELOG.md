@@ -7,10 +7,13 @@ All notable SD-AI Framework changes should be recorded here. The project version
 ### Added
 - Canonical `sdai.specification-store/v1` manifests at `.sdai-store/store.yaml`, with strict SemVer identity, UTF-8 metadata, explicit specification roots, capabilities, canonical JSON, and manifest hashes.
 - Deterministic core → organization → repository → user SpecificationStore registry resolution with exact/latest SemVer selection, complete provenance, authoritative locks, atomic construction, and source-order-independent JSON.
+- Strict `sdai.specification-store-references/v1` project declarations for exact, explicit local store workspaces, with optional manifest/content bindings and registry consistency checks.
+- Deterministic bounded content indexes and SHA-256 snapshots, plus provenance-preserving read-only access to current specifications and change bundles.
 
 ### Security
 - Reject unknown/duplicate or oversized manifests, unsafe or non-portable roots, case collisions, overlapping roots, missing directories, symlink redirection, conflicting exact identities, unauthorized locks, and ambiguous SemVer build variants.
-- Keep this registry slice local and non-executable: it does not clone, fetch, pull, push, register, or mutate SpecificationStore content.
+- Fail closed on missing, stale, dirty, redirected, duplicate, overlapping, oversized, or concurrently mutating referenced-store content.
+- Keep SpecificationStore registry and reference resolution local, read-only, and non-executable: they do not clone, fetch, pull, push, register, or mutate store content.
 
 ## Unreleased — 0.14 Workflow Engine 2 hardening
 

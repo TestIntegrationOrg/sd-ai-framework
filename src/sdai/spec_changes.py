@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 
 import yaml
@@ -133,17 +133,51 @@ def _portable_source(project_root: Path, path: Path) -> str:
     return safe.relative_to(root).as_posix()
 
 
-def current_spec_path(project_root: Path, domain: str) -> Path:
+def _declared_content_root(project_root: Path, relative: str, *, label: str) -> Path:
+    root = project_root.resolve()
+    if not isinstance(relative, str) or not relative:
+        raise _fail("SDAI-SPEC-001", f"{label} must be a non-empty relative path")
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in relative.split("/")):
+        raise _fail("SDAI-SPEC-001", f"{label} must be a safe relative path")
+    return ensure_within_project(
+        root,
+        root.joinpath(*pure.parts),
+        label=label,
+    )
+
+
+def current_spec_path(
+    project_root: Path,
+    domain: str,
+    *,
+    specification_root: str = "specs/current",
+) -> Path:
     root = project_root.resolve()
     domain_id = validate_domain_id(domain)
-    candidate = root / "specs" / "current" / domain_id / "specification.md"
+    content_root = _declared_content_root(
+        root,
+        specification_root,
+        label="current specification root",
+    )
+    candidate = content_root / domain_id / "specification.md"
     return ensure_within_project(root, candidate, label=f"current specification '{domain_id}'")
 
 
-def change_dir(project_root: Path, feature_id: str) -> Path:
+def change_dir(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+) -> Path:
     root = project_root.resolve()
     feature = validate_change_feature_id(feature_id)
-    candidate = root / "specs" / "changes" / feature
+    content_root = _declared_content_root(
+        root,
+        changes_root,
+        label="specification changes root",
+    )
+    candidate = content_root / feature
     return ensure_within_project(root, candidate, label=f"spec change '{feature}'")
 
 
@@ -290,10 +324,15 @@ class SpecChangeBundle:
         return json.dumps(self.as_dict(), indent=2, sort_keys=True, ensure_ascii=False)
 
 
-def load_current_spec(project_root: Path, domain: str) -> CurrentSpecification:
+def load_current_spec(
+    project_root: Path,
+    domain: str,
+    *,
+    specification_root: str = "specs/current",
+) -> CurrentSpecification:
     root = project_root.resolve()
     domain_id = validate_domain_id(domain)
-    path = current_spec_path(root, domain_id)
+    path = current_spec_path(root, domain_id, specification_root=specification_root)
     content = _read_text(root, path, f"current specification '{domain_id}'")
     return CurrentSpecification(
         domain=domain_id,
@@ -303,10 +342,15 @@ def load_current_spec(project_root: Path, domain: str) -> CurrentSpecification:
     )
 
 
-def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
+def load_change_metadata(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+) -> ChangeMetadata:
     root = project_root.resolve()
     feature = validate_change_feature_id(feature_id)
-    path = change_dir(root, feature) / "change.yaml"
+    path = change_dir(root, feature, changes_root=changes_root) / "change.yaml"
     raw, text, safe = _load_yaml_mapping(root, path, f"change metadata '{feature}'")
     unknown = _unknown_keys(raw, _CHANGE_KEYS)
     if unknown:
@@ -520,12 +564,17 @@ def load_delta_document(project_root: Path, path: Path) -> DeltaDocument:
     )
 
 
-def load_spec_change(project_root: Path, feature_id: str) -> SpecChangeBundle:
+def load_spec_change(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+) -> SpecChangeBundle:
     root = project_root.resolve()
-    metadata = load_change_metadata(root, feature_id)
+    metadata = load_change_metadata(root, feature_id, changes_root=changes_root)
     delta_root = ensure_within_project(
         root,
-        change_dir(root, metadata.feature_id) / "deltas",
+        change_dir(root, metadata.feature_id, changes_root=changes_root) / "deltas",
         label=f"delta directory '{metadata.feature_id}'",
     )
     if not delta_root.is_dir():
