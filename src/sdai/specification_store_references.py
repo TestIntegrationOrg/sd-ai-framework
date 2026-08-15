@@ -824,7 +824,6 @@ def _hash_file(path: Path, *, label: str) -> tuple[str, int]:
         opened_before.st_mode,
         opened_before.st_size,
         opened_before.st_mtime_ns,
-        opened_before.st_ctime_ns,
     )
     tokens_opened_after = (
         opened_after.st_dev,
@@ -832,16 +831,13 @@ def _hash_file(path: Path, *, label: str) -> tuple[str, int]:
         opened_after.st_mode,
         opened_after.st_size,
         opened_after.st_mtime_ns,
-        opened_after.st_ctime_ns,
     )
-    tokens_before = (*tokens_before, before.st_ctime_ns)
     tokens_after = (
         after.st_dev,
         after.st_ino,
         after.st_mode,
         after.st_size,
         after.st_mtime_ns,
-        after.st_ctime_ns,
     )
     if (
         tokens_before != tokens_opened_before
