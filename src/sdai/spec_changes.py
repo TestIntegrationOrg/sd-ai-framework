@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+from typing import Mapping
 
 import yaml
 
@@ -33,6 +34,7 @@ _DOMAIN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _FEATURE_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _REQUIREMENT_ID = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BOUND_SPECIFICATION_FILE_MAX_BYTES = 16 * 1024 * 1024
 _WINDOWS_RESERVED_PATH_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
@@ -133,21 +135,61 @@ def _portable_source(project_root: Path, path: Path) -> str:
     return safe.relative_to(root).as_posix()
 
 
-def current_spec_path(project_root: Path, domain: str) -> Path:
+def _declared_content_root(project_root: Path, relative: str, *, label: str) -> Path:
+    root = project_root.resolve()
+    if not isinstance(relative, str) or not relative:
+        raise _fail("SDAI-SPEC-001", f"{label} must be a non-empty relative path")
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in relative.split("/")):
+        raise _fail("SDAI-SPEC-001", f"{label} must be a safe relative path")
+    return ensure_within_project(
+        root,
+        root.joinpath(*pure.parts),
+        label=label,
+    )
+
+
+def current_spec_path(
+    project_root: Path,
+    domain: str,
+    *,
+    specification_root: str = "specs/current",
+) -> Path:
     root = project_root.resolve()
     domain_id = validate_domain_id(domain)
-    candidate = root / "specs" / "current" / domain_id / "specification.md"
+    content_root = _declared_content_root(
+        root,
+        specification_root,
+        label="current specification root",
+    )
+    candidate = content_root / domain_id / "specification.md"
     return ensure_within_project(root, candidate, label=f"current specification '{domain_id}'")
 
 
-def change_dir(project_root: Path, feature_id: str) -> Path:
+def change_dir(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+) -> Path:
     root = project_root.resolve()
     feature = validate_change_feature_id(feature_id)
-    candidate = root / "specs" / "changes" / feature
+    content_root = _declared_content_root(
+        root,
+        changes_root,
+        label="specification changes root",
+    )
+    candidate = content_root / feature
     return ensure_within_project(root, candidate, label=f"spec change '{feature}'")
 
 
-def _read_text(project_root: Path, path: Path, label: str) -> str:
+def _read_text(
+    project_root: Path,
+    path: Path,
+    label: str,
+    *,
+    expected_file_sha256: str | None = None,
+) -> str:
     root = project_root.resolve()
     safe = ensure_within_project(root, path, label=label)
     if not safe.is_file():
@@ -156,7 +198,35 @@ def _read_text(project_root: Path, path: Path, label: str) -> str:
             f"{label} does not exist or is not a file: {_portable_source(root, safe)}",
         )
     try:
-        return read_utf8_text(safe)
+        if expected_file_sha256 is None:
+            return read_utf8_text(safe)
+        if not isinstance(expected_file_sha256, str) or not _HASH.fullmatch(
+            expected_file_sha256
+        ):
+            raise _fail(
+                "SDAI-SPEC-008",
+                f"{label} expected file digest must be a lowercase SHA-256 digest",
+            )
+        with safe.open("rb") as stream:
+            data = stream.read(_BOUND_SPECIFICATION_FILE_MAX_BYTES + 1)
+        if len(data) > _BOUND_SPECIFICATION_FILE_MAX_BYTES:
+            raise _fail(
+                "SDAI-SPEC-008",
+                f"{label} exceeds the 16 MiB bound for SpecificationStore snapshot reads",
+            )
+        actual = "sha256:" + sha256(data).hexdigest()
+        if actual != expected_file_sha256:
+            raise _fail(
+                "SDAI-SPEC-008",
+                f"{label} bytes do not match the bound SpecificationStore snapshot",
+            )
+        try:
+            decoded = data.decode("utf-8-sig", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise TextEncodingError(f"{safe} is not valid UTF-8 at byte {exc.start}") from exc
+        return decoded.replace("\r\n", "\n").replace("\r", "\n")
+    except SpecChangeError:
+        raise
     except TextEncodingError as exc:
         raise _fail("SDAI-SPEC-002", str(exc)) from exc
     except OSError as exc:
@@ -170,10 +240,17 @@ def _load_yaml_mapping(
     project_root: Path,
     path: Path,
     label: str,
+    *,
+    expected_file_sha256: str | None = None,
 ) -> tuple[dict[object, object], str, Path]:
     root = project_root.resolve()
     safe = ensure_within_project(root, path, label=label)
-    text = _read_text(root, safe, label)
+    text = _read_text(
+        root,
+        safe,
+        label,
+        expected_file_sha256=expected_file_sha256,
+    )
     try:
         raw = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
@@ -290,11 +367,22 @@ class SpecChangeBundle:
         return json.dumps(self.as_dict(), indent=2, sort_keys=True, ensure_ascii=False)
 
 
-def load_current_spec(project_root: Path, domain: str) -> CurrentSpecification:
+def load_current_spec(
+    project_root: Path,
+    domain: str,
+    *,
+    specification_root: str = "specs/current",
+    expected_file_sha256: str | None = None,
+) -> CurrentSpecification:
     root = project_root.resolve()
     domain_id = validate_domain_id(domain)
-    path = current_spec_path(root, domain_id)
-    content = _read_text(root, path, f"current specification '{domain_id}'")
+    path = current_spec_path(root, domain_id, specification_root=specification_root)
+    content = _read_text(
+        root,
+        path,
+        f"current specification '{domain_id}'",
+        expected_file_sha256=expected_file_sha256,
+    )
     return CurrentSpecification(
         domain=domain_id,
         content=content,
@@ -303,11 +391,22 @@ def load_current_spec(project_root: Path, domain: str) -> CurrentSpecification:
     )
 
 
-def load_change_metadata(project_root: Path, feature_id: str) -> ChangeMetadata:
+def load_change_metadata(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+    expected_file_sha256: str | None = None,
+) -> ChangeMetadata:
     root = project_root.resolve()
     feature = validate_change_feature_id(feature_id)
-    path = change_dir(root, feature) / "change.yaml"
-    raw, text, safe = _load_yaml_mapping(root, path, f"change metadata '{feature}'")
+    path = change_dir(root, feature, changes_root=changes_root) / "change.yaml"
+    raw, text, safe = _load_yaml_mapping(
+        root,
+        path,
+        f"change metadata '{feature}'",
+        expected_file_sha256=expected_file_sha256,
+    )
     unknown = _unknown_keys(raw, _CHANGE_KEYS)
     if unknown:
         raise _fail(
@@ -468,9 +567,19 @@ def _parse_operation(raw: object, index: int) -> DeltaOperation:
     )
 
 
-def load_delta_document(project_root: Path, path: Path) -> DeltaDocument:
+def load_delta_document(
+    project_root: Path,
+    path: Path,
+    *,
+    expected_file_sha256: str | None = None,
+) -> DeltaDocument:
     root = project_root.resolve()
-    raw, text, safe = _load_yaml_mapping(root, path, "delta document")
+    raw, text, safe = _load_yaml_mapping(
+        root,
+        path,
+        "delta document",
+        expected_file_sha256=expected_file_sha256,
+    )
     unknown = _unknown_keys(raw, _DELTA_KEYS)
     if unknown:
         raise _fail(
@@ -520,12 +629,78 @@ def load_delta_document(project_root: Path, path: Path) -> DeltaDocument:
     )
 
 
-def load_spec_change(project_root: Path, feature_id: str) -> SpecChangeBundle:
+def _expected_bound_digest(
+    expected_by_source: Mapping[str, str] | None,
+    source: str,
+) -> str | None:
+    if expected_by_source is None:
+        return None
+    if not isinstance(expected_by_source, Mapping):
+        raise _fail(
+            "SDAI-SPEC-008",
+            "bound SpecificationStore snapshot digests must be a source mapping",
+        )
+    expected = expected_by_source.get(source)
+    if not isinstance(expected, str) or not _HASH.fullmatch(expected):
+        raise _fail(
+            "SDAI-SPEC-008",
+            f"specification source '{source}' is missing from the bound snapshot",
+        )
+    return expected
+
+
+def _validate_bound_delta_sources(
+    discovered_sources: tuple[str, ...],
+    expected_sources: tuple[str, ...] | None,
+) -> None:
+    if expected_sources is None:
+        return
+    if not isinstance(expected_sources, tuple) or not all(
+        isinstance(source, str) for source in expected_sources
+    ):
+        raise _fail(
+            "SDAI-SPEC-008",
+            "bound SpecificationStore delta sources must be a materialized source tuple",
+        )
+    if len(set(expected_sources)) != len(expected_sources):
+        raise _fail(
+            "SDAI-SPEC-008",
+            "bound SpecificationStore delta sources must not contain duplicates",
+        )
+    key = lambda value: (value.casefold(), value)
+    actual = tuple(sorted(discovered_sources, key=key))
+    expected = tuple(sorted(expected_sources, key=key))
+    if actual != expected:
+        raise _fail(
+            "SDAI-SPEC-008",
+            "delta source set does not match the bound SpecificationStore snapshot",
+        )
+
+
+def load_spec_change(
+    project_root: Path,
+    feature_id: str,
+    *,
+    changes_root: str = "specs/changes",
+    expected_file_sha256_by_source: Mapping[str, str] | None = None,
+    expected_delta_sources: tuple[str, ...] | None = None,
+) -> SpecChangeBundle:
     root = project_root.resolve()
-    metadata = load_change_metadata(root, feature_id)
+    feature = validate_change_feature_id(feature_id)
+    metadata_path = change_dir(root, feature, changes_root=changes_root) / "change.yaml"
+    metadata_source = _portable_source(root, metadata_path)
+    metadata = load_change_metadata(
+        root,
+        feature,
+        changes_root=changes_root,
+        expected_file_sha256=_expected_bound_digest(
+            expected_file_sha256_by_source,
+            metadata_source,
+        ),
+    )
     delta_root = ensure_within_project(
         root,
-        change_dir(root, metadata.feature_id) / "deltas",
+        change_dir(root, metadata.feature_id, changes_root=changes_root) / "deltas",
         label=f"delta directory '{metadata.feature_id}'",
     )
     if not delta_root.is_dir():
@@ -535,7 +710,7 @@ def load_spec_change(project_root: Path, feature_id: str) -> SpecChangeBundle:
         )
     paths = sorted(
         [*delta_root.glob("*.yaml"), *delta_root.glob("*.yml")],
-        key=lambda item: item.name.casefold(),
+        key=lambda item: (item.name.casefold(), item.name),
     )
     if not paths:
         raise _fail(
@@ -550,7 +725,19 @@ def load_spec_change(project_root: Path, feature_id: str) -> SpecChangeBundle:
         )
         for path in paths
     )
-    deltas = tuple(load_delta_document(root, path) for path in contained_paths)
+    discovered_sources = tuple(_portable_source(root, path) for path in contained_paths)
+    _validate_bound_delta_sources(discovered_sources, expected_delta_sources)
+    deltas = tuple(
+        load_delta_document(
+            root,
+            path,
+            expected_file_sha256=_expected_bound_digest(
+                expected_file_sha256_by_source,
+                _portable_source(root, path),
+            ),
+        )
+        for path in contained_paths
+    )
     by_domain: dict[str, DeltaDocument] = {}
     for delta in deltas:
         if delta.domain not in metadata.domains:
