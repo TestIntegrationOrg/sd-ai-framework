@@ -2,6 +2,16 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — 0.15 Specification Stores + Multi-Repo Feature Graph
+
+### Added
+- Canonical `sdai.specification-store/v1` manifests at `.sdai-store/store.yaml`, with strict SemVer identity, UTF-8 metadata, explicit specification roots, capabilities, canonical JSON, and manifest hashes.
+- Deterministic core → organization → repository → user SpecificationStore registry resolution with exact/latest SemVer selection, complete provenance, authoritative locks, atomic construction, and source-order-independent JSON.
+
+### Security
+- Reject unknown/duplicate or oversized manifests, unsafe or non-portable roots, case collisions, overlapping roots, missing directories, symlink redirection, conflicting exact identities, unauthorized locks, and ambiguous SemVer build variants.
+- Keep this registry slice local and non-executable: it does not clone, fetch, pull, push, register, or mutate SpecificationStore content.
+
 ## Unreleased — 0.14 Workflow Engine 2 hardening
 
 ### Added
