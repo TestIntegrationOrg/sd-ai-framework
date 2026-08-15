@@ -29,6 +29,7 @@ from sdai.models import FeatureContext, LifecycleMode, validate_feature_id
 from sdai.orchestrator import AGENTS, Orchestrator, StepExecution
 from sdai.quality_gates import QualityGateResult, QualityGateRunner, load_quality_gates
 from sdai.scaffold import init_project, upgrade_project
+from sdai.specification_store_cli import add_store_parser
 from sdai.text import read_utf8_text
 from sdai.v05_scaffold import install_v05_scaffold
 from sdai.validation import ValidationFinding, has_blockers, validate
@@ -745,6 +746,8 @@ def parser() -> argparse.ArgumentParser:
     prompts_show.add_argument("name")
     prompts_show.add_argument("--path")
     prompts_show.set_defaults(func=cmd_prompts)
+
+    add_store_parser(sub)
     return p
 
 
