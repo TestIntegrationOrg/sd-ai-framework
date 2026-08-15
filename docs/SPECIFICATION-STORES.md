@@ -1,6 +1,6 @@
-# SpecificationStore manifest and registry
+# SpecificationStore manifest, references, and lifecycle
 
-SDAI 0.15 introduces an extension-first contract for centralized specification stores. This first slice defines identity, layout, provenance, SemVer selection, and authority only. It does not clone, fetch, pull, push, register, or mutate a store.
+SDAI 0.15 introduces an extension-first contract for centralized specification stores. The store model separates canonical identity and content from local discovery and lifecycle operations: manifests and snapshots remain deterministic, while create/register/list/doctor/context provide explicit local administration without any Git or network mutation.
 
 ## Canonical manifest
 
@@ -73,7 +73,37 @@ A content binding fails closed if either digest is stale. Snapshot construction 
 
 `ResolvedSpecificationStoreReference.read_current()` and `.read_change()` verify the complete store snapshot before and after the read. Their results carry exact store identity, canonical manifest hash, complete snapshot hash, and the hashes and sizes of the content files that produced the current specification or change bundle.
 
-This surface is strictly read-only. It performs no network, Git, clone, fetch, pull, push, registration, or store mutation operation.
+Reference resolution is strictly read-only. It performs no network, Git, clone, fetch, pull, push, or store-content mutation operation.
+
+## Lifecycle CLI
+
+SDAI provides an explicit local lifecycle surface:
+
+```text
+sdai store create STORE_ID --version VERSION --destination PATH [--description TEXT] [--json]
+sdai store register STORE_PATH [--path PROJECT] [--json]
+sdai store list [--path PROJECT] [--json]
+sdai store doctor [--path PROJECT] [--json]
+sdai store context [--store STORE_ID] [--version VERSION] [--path PROJECT] [--json]
+```
+
+`store create` creates the canonical `current` and `changes` roots plus `.sdai-store/store.yaml`. A missing or empty explicit destination may be initialized. Repeating the exact create is idempotent. A non-empty unmanaged destination, invalid existing store, or managed store with different canonical content is rejected rather than overwritten.
+
+`store register` validates an already-present local store and writes only the project's `.sdai/specification-stores.yaml` declaration. It never copies or changes referenced specification content. Repeating the same identity/path registration is idempotent; the same exact identity at a different path is rejected. External local paths may be recorded as discovery inputs, but list/context outputs expose only `pathScope=project|external` rather than absolute machine paths.
+
+`store list` returns exact identity, version, manifest hash, content snapshot hash, ordinal, and path scope. `store context` adds declared capabilities, portable store-relative roots, and per-content-file root/path/hash/size provenance. `--json` emits one canonical UTF-8 JSON document with sorted keys and no human decoration.
+
+`store doctor` validates the complete reference set and immutable snapshot boundary. Its automation exit classes are stable:
+
+```text
+0  success / healthy
+1  invalid or unsafe lifecycle operation
+2  doctor found an unhealthy reference set
+```
+
+A project with no registered stores is healthy with a warning so bootstrap scripts can call doctor before registration. Invalid, stale, unsafe, redirected, overlapping, or otherwise unresolvable references produce the unhealthy exit class without printing local store paths in canonical output.
+
+Lifecycle operations are local-only. They do not clone, fetch, pull, push, execute store content, or overwrite unmanaged files.
 
 ## API surface
 
@@ -84,5 +114,8 @@ This surface is strictly read-only. It performs no network, Git, clone, fetch, p
 - `load_specification_store_references(project_root)` validates project declarations.
 - `resolve_specification_store_references(project_root, registry)` resolves and snapshots referenced local stores.
 - `ResolvedSpecificationStoreReference.verify_unchanged()` revalidates manifest and content bytes.
+- `create_store(destination, id, version)` creates an owned local store conservatively and idempotently.
+- `register_store(project_root, store_root)` adds one explicit local project reference without mutating store content.
+- `list_stores`, `doctor_stores`, and `export_store_context` provide deterministic library equivalents of the CLI.
 
-Lifecycle CLI commands, ownership routing, and multi-repository feature graphs are intentionally delivered by the dependent 0.15 slices. Those features consume these contracts rather than creating parallel identity or provenance rules.
+Ownership routing and multi-repository feature graphs are delivered by the dependent 0.15 slices. They consume these contracts rather than creating parallel identity or provenance rules.
