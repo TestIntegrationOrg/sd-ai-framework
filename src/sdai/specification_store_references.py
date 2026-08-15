@@ -18,6 +18,7 @@ from sdai.pack_manifest import PackManifestError, SemVer
 from sdai.spec_changes import (
     CurrentSpecification,
     SpecChangeBundle,
+    current_spec_path,
     load_current_spec,
     load_spec_change,
 )
@@ -645,10 +646,22 @@ class ResolvedSpecificationStoreReference:
     def read_current(self, domain: str) -> ReferencedCurrentSpecification:
         specification_root = self._root_path("current", "current-specifications")
         self.verify_unchanged()
+        source = current_spec_path(
+            self.root,
+            domain,
+            specification_root=specification_root,
+        ).relative_to(self.root).as_posix()
+        entry = self.snapshot.entry(source)
+        if entry is None:
+            raise _fail(
+                "SDAI-STORE-REF-004",
+                f"referenced content '{source}' is missing from the bound snapshot",
+            )
         specification = load_current_spec(
             self.root,
             domain,
             specification_root=specification_root,
+            expected_file_sha256=entry.sha256,
         )
         self.verify_unchanged()
         return ReferencedCurrentSpecification(
@@ -663,6 +676,9 @@ class ResolvedSpecificationStoreReference:
             self.root,
             feature_id,
             changes_root=changes_root,
+            expected_file_sha256_by_source={
+                entry.path: entry.sha256 for entry in self.snapshot.entries
+            },
         )
         self.verify_unchanged()
         sources = (

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sdai.spec_changes import SpecChangeError
 from sdai.specification_store_references import (
     SPECIFICATION_STORE_CONTENT_SNAPSHOT_API_VERSION,
     SPECIFICATION_STORE_REFERENCES_API_VERSION,
@@ -247,6 +248,46 @@ def test_read_fails_when_store_changes_after_resolution(tmp_path: Path) -> None:
     )
     with pytest.raises(SpecificationStoreReferenceError, match="dirty or stale"):
         selected.read_current("signing")
+
+
+def test_returned_reads_bind_the_exact_bytes_consumed_to_snapshot_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, store = _workspace(tmp_path)
+    selected = resolve_specification_store_references(project).references[0]
+    import sdai.specification_store_references as references_module
+
+    current_path = store / "knowledge" / "current" / "signing" / "specification.md"
+    current_bytes = current_path.read_bytes()
+    original_current_loader = references_module.load_current_spec
+
+    def replace_current_during_load(*args, **kwargs):  # type: ignore[no-untyped-def]
+        current_path.write_text("# Swapped current truth\n", encoding="utf-8")
+        try:
+            return original_current_loader(*args, **kwargs)
+        finally:
+            current_path.write_bytes(current_bytes)
+
+    monkeypatch.setattr(references_module, "load_current_spec", replace_current_during_load)
+    with pytest.raises(SpecChangeError, match="do not match the bound.*snapshot"):
+        selected.read_current("signing")
+
+    monkeypatch.setattr(references_module, "load_current_spec", original_current_loader)
+    change_path = store / "knowledge" / "changes" / "SIGN-123" / "change.yaml"
+    change_bytes = change_path.read_bytes()
+    original_change_loader = references_module.load_spec_change
+
+    def replace_change_during_load(*args, **kwargs):  # type: ignore[no-untyped-def]
+        change_path.write_text("version: 1\nfeature_id: SIGN-123\n", encoding="utf-8")
+        try:
+            return original_change_loader(*args, **kwargs)
+        finally:
+            change_path.write_bytes(change_bytes)
+
+    monkeypatch.setattr(references_module, "load_spec_change", replace_change_during_load)
+    with pytest.raises(SpecChangeError, match="do not match the bound.*snapshot"):
+        selected.read_change("SIGN-123")
 
 
 def test_mutation_between_snapshot_passes_fails_closed(
