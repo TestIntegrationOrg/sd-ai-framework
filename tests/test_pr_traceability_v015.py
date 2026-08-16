@@ -41,6 +41,10 @@ def _git(path: Path, *args: str) -> str:
     return (completed.stdout or "").strip()
 
 
+def _clone(value: object) -> object:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 def _repository(tmp_path: Path) -> tuple[Path, str]:
     repository = tmp_path / "api"
     repository.mkdir()
@@ -230,7 +234,10 @@ def test_stale_trace_link_cannot_satisfy_pr_traceability(tmp_path: Path) -> None
     graph = build_multi_repo_feature_graph(project, FEATURE)
     node_id = "pr-reference:api:review-17"
 
-    assert any(node.node_id == node_id for node in graph.nodes)
+    pr_node = next(node for node in graph.nodes if node.node_id == node_id)
+    pr_fact = next(fact for fact in pr_node.facts if fact.kind == "pr-evidence")
+    assert pr_fact.payload["satisfiesTraceability"] is False
+    assert pr_fact.payload["linksCurrent"] is False
     assert not any(edge.target == node_id and edge.relation == "included-in-pr" for edge in graph.edges)
     assert any(
         finding.code == "SDAI-FEATURE-GRAPH-PR-EVIDENCE-STALE-LINK"
@@ -241,10 +248,8 @@ def test_stale_trace_link_cannot_satisfy_pr_traceability(tmp_path: Path) -> None
 def test_duplicate_local_pr_identity_is_conflicting_evidence(tmp_path: Path) -> None:
     repository, implementation_commit = _repository(tmp_path)
     payload = _evidence_payload(implementation_commit)
-    payload["pullRequests"] = [
-        payload["pullRequests"][0],  # type: ignore[index]
-        dict(payload["pullRequests"][0]),  # type: ignore[index]
-    ]
+    original = payload["pullRequests"][0]  # type: ignore[index]
+    payload["pullRequests"] = [_clone(original), _clone(original)]
     _write_evidence(repository, payload, commit=False)
 
     with pytest.raises(PullRequestEvidenceError, match="local ids must be unique"):
@@ -254,18 +259,15 @@ def test_duplicate_local_pr_identity_is_conflicting_evidence(tmp_path: Path) -> 
 def test_resolved_pr_evidence_is_canonical_and_uses_local_git_only(tmp_path: Path) -> None:
     repository, implementation_commit = _repository(tmp_path)
     payload = _evidence_payload(implementation_commit)
-    payload["pullRequests"] = [
-        {
-            **payload["pullRequests"][0],  # type: ignore[index]
-            "id": "z-review",
-            "provider": {"name": "Proveedor ñ", "reference": "z"},
-        },
-        {
-            **payload["pullRequests"][0],  # type: ignore[index]
-            "id": "a-review",
-            "provider": {"name": "Provider α", "reference": "a"},
-        },
-    ]
+    original = payload["pullRequests"][0]  # type: ignore[index]
+    first = _clone(original)
+    second = _clone(original)
+    assert isinstance(first, dict) and isinstance(second, dict)
+    first["id"] = "z-review"
+    first["provider"] = {"name": "Proveedor ñ", "reference": "z"}
+    second["id"] = "a-review"
+    second["provider"] = {"name": "Provider α", "reference": "a"}
+    payload["pullRequests"] = [first, second]
     _write_evidence(repository, payload)
 
     resolved = resolve_pull_request_evidence(repository, FEATURE, "api")
