@@ -656,11 +656,11 @@ def _add_repository_declarations(builder: _GraphBuilder, root: Path) -> None:
         return
     try:
         manifest = load_feature_repository_manifest(root)
-    except FeatureRepositoryError as exc:
+    except FeatureRepositoryError:
         builder.finding(
             FeatureGraphFindingLevel.ERROR,
             "SDAI-FEATURE-GRAPH-AMBIGUOUS-REPOSITORIES",
-            f"feature repository ownership declaration is invalid: {exc}",
+            "feature repository ownership declaration is invalid or unsafe",
             FEATURE_REPOSITORIES_PATH,
         )
         return
@@ -700,10 +700,15 @@ def _resolve_repositories(
             if "SDAI-FEATURE-REPO-004" in message
             else "SDAI-FEATURE-GRAPH-AMBIGUOUS-REPOSITORIES"
         )
+        detail = (
+            "required feature repository participant is missing or unavailable"
+            if code == "SDAI-FEATURE-GRAPH-MISSING-REPOSITORY"
+            else "feature repository participants cannot be resolved safely"
+        )
         builder.finding(
             FeatureGraphFindingLevel.ERROR,
             code,
-            f"feature repository participants cannot be resolved safely: {message}",
+            detail,
             FEATURE_REPOSITORIES_PATH,
         )
         return None
