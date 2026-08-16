@@ -19,7 +19,7 @@ from sdai.feature_repositories import (
     route_feature_entities,
 )
 from sdai.models import validate_feature_id
-from sdai.spec_changes import DeltaOperationKind
+from sdai.spec_changes import DeltaOperationKind, SpecChangeError
 from sdai.specification_store_references import (
     SPECIFICATION_STORE_REFERENCES_PATH,
     ResolvedSpecificationStoreReferences,
@@ -540,11 +540,11 @@ def _add_store_requirements(
             continue
         try:
             referenced = reference.read_change(feature)
-        except SpecificationStoreReferenceError as exc:
+        except (SpecificationStoreReferenceError, SpecChangeError):
             builder.finding(
                 FeatureGraphFindingLevel.ERROR,
                 "SDAI-FEATURE-GRAPH-STALE-CONTENT",
-                "referenced SpecificationStore feature content is stale or unreadable",
+                "referenced SpecificationStore feature content is stale, invalid, or unreadable",
                 feature,
                 reference.identity,
             )
