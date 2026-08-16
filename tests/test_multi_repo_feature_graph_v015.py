@@ -260,7 +260,7 @@ def test_graph_reports_ambiguous_cross_repository_ownership_without_inventing_ed
             {
                 **_ownership_repository("shared", repositories["shared"], "SHARED"),
                 "ownership": [
-                    {"type": "requirement", "pattern": "FR-API-*"},
+                    {"type": "requirement", "pattern": "*-API-001"},
                     {"type": "contract", "pattern": "CONTRACT-SHARED-*"},
                     {"type": "component", "pattern": "COMPONENT-SHARED-*"},
                     {"type": "task", "pattern": "TASK-SHARED-*"},
