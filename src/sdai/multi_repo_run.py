@@ -104,9 +104,6 @@ def _participant_ids(graph: MultiRepoFeatureGraph) -> tuple[str, ...]:
 
 
 def _blocking_graph_findings(graph: MultiRepoFeatureGraph) -> tuple[str, ...]:
-    # A feature can legitimately be pre-implementation and therefore have no
-    # repository trace yet. Block only findings that make the input authority,
-    # participant identity, or ownership decision unsafe to act on.
     blocking_codes = {
         "SDAI-FEATURE-GRAPH-STALE-CONTENT",
         "SDAI-FEATURE-GRAPH-MISSING-REPOSITORIES",
@@ -208,9 +205,7 @@ class MultiRepoRunPlan:
 
     @property
     def ready(self) -> bool:
-        return not self.blockers and all(
-            item.status is RunParticipantStatus.READY for item in self.participants
-        )
+        return not self.blockers and all(item.status is RunParticipantStatus.READY for item in self.participants)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -260,10 +255,7 @@ def _inspect_resolved_repository(
     repository: ResolvedFeatureRepository,
 ) -> PlannedRepositoryRun:
     item = repository.repository
-    command = (
-        f"sdai run {feature_id} --repo {item.id} --workflow {workflow} "
-        f"--isolation {isolation}"
-    )
+    command = f"sdai run {feature_id} --repo {item.id} --workflow {workflow} --isolation {isolation}"
     branch_policy = (
         "in-place-current-branch"
         if isolation == "in-place"
@@ -297,11 +289,7 @@ def _inspect_resolved_repository(
         baseline = verify_clean_baseline(repository.root)
     except WorktreeIsolationError as exc:
         message = str(exc)
-        status = (
-            RunParticipantStatus.DIRTY
-            if "source baseline is dirty" in message
-            else RunParticipantStatus.INCOMPATIBLE
-        )
+        status = RunParticipantStatus.DIRTY if "source baseline is dirty" in message else RunParticipantStatus.INCOMPATIBLE
         return PlannedRepositoryRun(
             item.id,
             repository.root,
@@ -358,10 +346,7 @@ def build_multi_repo_run_plan(
     if selected_requested:
         unknown = sorted(set(selected_requested) - set(by_id))
         if unknown:
-            raise _fail(
-                "SDAI-MULTI-RUN-002",
-                "unknown repository id(s): " + ", ".join(unknown),
-            )
+            raise _fail("SDAI-MULTI-RUN-002", "unknown repository id(s): " + ", ".join(unknown))
         nonparticipants = sorted(set(selected_requested) - participants)
         if nonparticipants:
             raise _fail(
@@ -392,10 +377,7 @@ def build_multi_repo_run_plan(
 
 def revalidate_run_plan(plan: MultiRepoRunPlan) -> None:
     if plan.blockers:
-        raise _fail(
-            "SDAI-MULTI-RUN-DRIFT",
-            "run plan contains blocking feature-graph findings",
-        )
+        raise _fail("SDAI-MULTI-RUN-DRIFT", "run plan contains blocking feature-graph findings")
     for participant in plan.participants:
         if participant.status is not RunParticipantStatus.READY or participant.root is None:
             raise _fail(
@@ -426,11 +408,7 @@ class RepositoryRunResult:
     status: str
 
     def as_dict(self) -> dict[str, object]:
-        return {
-            "exitCode": self.exit_code,
-            "repositoryId": self.repository_id,
-            "status": self.status,
-        }
+        return {"exitCode": self.exit_code, "repositoryId": self.repository_id, "status": self.status}
 
 
 @dataclass(frozen=True)
@@ -459,13 +437,22 @@ def execute_multi_repo_run(
 ) -> MultiRepoRunResult:
     if plan.exit_class is not MultiRepoExitClass.SUCCESS:
         return MultiRepoRunResult(plan.sha256, (), plan.exit_class)
-    revalidate_run_plan(plan)
+    try:
+        revalidate_run_plan(plan)
+    except MultiRepoRunError as exc:
+        exit_class = (
+            MultiRepoExitClass.DRIFT
+            if "SDAI-MULTI-RUN-DRIFT" in str(exc)
+            else MultiRepoExitClass.PARTICIPANT_UNAVAILABLE_OR_DIRTY
+        )
+        return MultiRepoRunResult(plan.sha256, (), exit_class)
+
     results: list[RepositoryRunResult] = []
     exit_class = MultiRepoExitClass.SUCCESS
     for participant in plan.participants:
         try:
             code = int(runner(participant, plan.workflow, plan.isolation))
-        except (OSError, RuntimeError) as exc:
+        except (OSError, RuntimeError):
             results.append(RepositoryRunResult(participant.repository_id, 1, "infrastructure-failed"))
             exit_class = MultiRepoExitClass.INFRASTRUCTURE_OR_TOOL_FAILURE
             break
