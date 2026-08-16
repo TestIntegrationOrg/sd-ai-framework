@@ -47,7 +47,7 @@ Execute every participant in deterministic repository order:
 sdai run FEATURE-123 --all --workflow standard --isolation worktree --path .
 ```
 
-The immutable plan is printed before any participant mutation. Immediately before execution, SD-AI revalidates every planned Git baseline. If a repository became dirty, changed commit/tree/branch, disappeared, or became incompatible, execution is refused before the first workflow mutation.
+The immutable plan is printed before any participant mutation. Immediately before execution, SD-AI revalidates every planned Git baseline. If a repository became dirty, changed commit/tree/branch, disappeared, or became incompatible, execution is refused before the first workflow mutation and mapped to the stable drift/participant exit class rather than leaking a raw exception.
 
 Actual repository execution delegates to the existing repository-local `Orchestrator` and worktree isolation implementation. Provider profiles, workflow state, approvals, quality gates, guarded workspace mutation, worktree evidence, and repository-local durable execution artifacts therefore remain local to that repository.
 
@@ -94,16 +94,18 @@ The ordinary single-repository command keeps its pre-0.15 exit behavior.
 Aggregate repository-local verification with:
 
 ```bash
-sdai verify --all-repos --feature FEATURE-123 --risk medium --path .
+sdai verify --all-repos --feature FEATURE-123 --risk standard --path .
 ```
 
 Canonical JSON:
 
 ```bash
-sdai verify --all-repos --feature FEATURE-123 --risk medium --json --path .
+sdai verify --all-repos --feature FEATURE-123 --risk standard --json --path .
 ```
 
-The aggregate report is bound to the same feature graph and run-plan hashes used to determine participants. Each repository is then verified locally with the existing verification engine. Reports remain separate per repository so partial states are visible rather than flattened into an invented global result.
+The supported risk values are the existing verification-engine values: `trivial`, `standard`, `critical`, and `regulated`.
+
+The aggregate report is bound to the same feature graph and run-plan hashes used to determine participants. It includes the canonical feature-graph findings so SpecificationStore/ownership/participant health remains visible alongside each repository-local verification report. Each ready repository is then verified locally with the existing provider-free verification engine. Reports remain separate per repository so partial states are visible rather than flattened into an invented global result.
 
 Verification is read-only with respect to unrelated repositories. Missing/dirty participants, graph/store drift, local verification policy failures, and infrastructure failures map to the stable exit classes above.
 
