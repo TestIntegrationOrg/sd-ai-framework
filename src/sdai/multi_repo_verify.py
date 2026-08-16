@@ -7,8 +7,10 @@ from pathlib import Path
 from sdai.multi_repo_feature_graph import build_multi_repo_feature_graph
 from sdai.multi_repo_run import (
     MultiRepoExitClass,
+    MultiRepoRunError,
     RunParticipantStatus,
     build_multi_repo_run_plan,
+    revalidate_run_plan,
 )
 from sdai.verification import VerificationOutcome
 from sdai.verify_engine import verify_feature
@@ -103,6 +105,18 @@ def _graph_findings_json(project_root: Path, feature_id: str) -> tuple[str, str]
     return graph.sha256, rendered
 
 
+def _revalidation_exit(plan) -> MultiRepoExitClass | None:
+    if any(item.status is not RunParticipantStatus.READY for item in plan.participants):
+        return None
+    try:
+        revalidate_run_plan(plan)
+    except MultiRepoRunError as exc:
+        if "SDAI-MULTI-RUN-DRIFT" in str(exc):
+            return MultiRepoExitClass.DRIFT
+        return MultiRepoExitClass.PARTICIPANT_UNAVAILABLE_OR_DIRTY
+    return None
+
+
 def verify_all_repositories(
     project_root: Path,
     feature_id: str,
@@ -136,6 +150,17 @@ def verify_all_repositories(
             graph_findings_json,
             (),
             plan.exit_class,
+        )
+
+    revalidation_exit = _revalidation_exit(plan)
+    if revalidation_exit is not None:
+        return MultiRepoVerificationReport(
+            plan.feature_id,
+            plan.graph_sha256,
+            plan.sha256,
+            graph_findings_json,
+            (),
+            revalidation_exit,
         )
 
     participant_problem = False
