@@ -377,18 +377,6 @@ class PullRequestEvidenceManifest:
         ids = [item.id for item in ordered]
         if len(ids) != len(set(ids)):
             raise _fail("SDAI-PR-EVIDENCE-004", "pull request local ids must be unique")
-        provider_hints: dict[tuple[str, str], str] = {}
-        for item in ordered:
-            hint = item.provider_identity_hint
-            if hint is None:
-                continue
-            previous = provider_hints.get(hint)
-            if previous is not None:
-                raise _fail(
-                    "SDAI-PR-EVIDENCE-004",
-                    f"provider metadata is duplicated by PR references '{previous}' and '{item.id}'",
-                )
-            provider_hints[hint] = item.id
         object.__setattr__(self, "pull_requests", ordered)
         object.__setattr__(self, "source", _text(self.source, label="PR evidence source", maximum=512))
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_sha256):
