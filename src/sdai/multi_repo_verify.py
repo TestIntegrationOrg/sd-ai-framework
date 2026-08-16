@@ -4,13 +4,17 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+from sdai.multi_repo_feature_graph import build_multi_repo_feature_graph
 from sdai.multi_repo_run import (
     MultiRepoExitClass,
-    MultiRepoRunPlan,
     RunParticipantStatus,
     build_multi_repo_run_plan,
 )
-from sdai.verification import VerificationRisk, verify_feature
+from sdai.verification import VerificationOutcome
+from sdai.verify_engine import verify_feature
+
+
+_RISKS = frozenset({"trivial", "standard", "critical", "regulated"})
 
 
 @dataclass(frozen=True)
@@ -48,14 +52,23 @@ class MultiRepoVerificationReport:
     feature_id: str
     graph_sha256: str
     plan_sha256: str
+    graph_findings_json: str
     repositories: tuple[RepositoryVerificationResult, ...]
     exit_class: MultiRepoExitClass
+
+    @property
+    def graph_findings(self) -> list[dict[str, object]]:
+        value = json.loads(self.graph_findings_json)
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError("graph findings must be a list of mappings")
+        return value
 
     def as_dict(self) -> dict[str, object]:
         return {
             "apiVersion": "sdai.multi-repo-verification/v1",
             "exitClass": self.exit_class.name.lower().replace("_", "-"),
             "featureId": self.feature_id,
+            "graphFindings": self.graph_findings,
             "graphSha256": self.graph_sha256,
             "planSha256": self.plan_sha256,
             "repositories": [item.as_dict() for item in self.repositories],
@@ -71,25 +84,56 @@ class MultiRepoVerificationReport:
         )
 
 
+def _normalize_risk(value: str) -> str:
+    normalized = value.strip().lower() if isinstance(value, str) else ""
+    if normalized not in _RISKS:
+        raise ValueError("risk must be one of: " + ", ".join(sorted(_RISKS)))
+    return normalized
+
+
+def _graph_findings_json(project_root: Path, feature_id: str) -> tuple[str, str]:
+    graph = build_multi_repo_feature_graph(project_root, feature_id)
+    rendered = json.dumps(
+        [item.as_dict() for item in graph.findings],
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return graph.sha256, rendered
+
+
 def verify_all_repositories(
     project_root: Path,
     feature_id: str,
     *,
-    risk: VerificationRisk = VerificationRisk.MEDIUM,
+    risk: str = "standard",
 ) -> MultiRepoVerificationReport:
+    selected_risk = _normalize_risk(risk)
+    graph_sha256, graph_findings_json = _graph_findings_json(project_root, feature_id)
     plan = build_multi_repo_run_plan(
         project_root,
         feature_id,
         workflow="verification",
         isolation="in-place",
     )
-    results: list[RepositoryVerificationResult] = []
+    if graph_sha256 != plan.graph_sha256:
+        return MultiRepoVerificationReport(
+            plan.feature_id,
+            graph_sha256,
+            plan.sha256,
+            graph_findings_json,
+            (),
+            MultiRepoExitClass.DRIFT,
+        )
 
+    results: list[RepositoryVerificationResult] = []
     if plan.blockers:
         return MultiRepoVerificationReport(
             plan.feature_id,
             plan.graph_sha256,
             plan.sha256,
+            graph_findings_json,
             (),
             plan.exit_class,
         )
@@ -110,8 +154,13 @@ def verify_all_repositories(
             )
             continue
         try:
-            report = verify_feature(participant.root, plan.feature_id, risk=risk)
-        except (OSError, RuntimeError, ValueError) as exc:
+            report = verify_feature(
+                participant.root,
+                plan.feature_id,
+                risk=selected_risk,
+                environ={},
+            )
+        except (OSError, RuntimeError, ValueError):
             infrastructure_failure = True
             results.append(
                 RepositoryVerificationResult(
@@ -122,14 +171,17 @@ def verify_all_repositories(
                 )
             )
             continue
-        rendered = report.to_json().strip()
-        if report.exit_code != 0:
+        rendered = report.to_json()
+        if report.outcome is VerificationOutcome.PASSED:
+            repository_exit = 0
+        else:
+            repository_exit = int(MultiRepoExitClass.POLICY_FAILURE)
             policy_failure = True
         results.append(
             RepositoryVerificationResult(
                 participant.repository_id,
-                report.status.value,
-                report.exit_code,
+                report.outcome.value,
+                repository_exit,
                 rendered,
             )
         )
@@ -146,6 +198,7 @@ def verify_all_repositories(
         plan.feature_id,
         plan.graph_sha256,
         plan.sha256,
+        graph_findings_json,
         tuple(results),
         exit_class,
     )
