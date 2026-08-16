@@ -185,6 +185,24 @@ def _declared_path(value: object) -> str:
     return candidate
 
 
+def _source_path(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise _fail("SDAI-FEATURE-REPO-002", "declaration source must be a non-empty path")
+    candidate = unicodedata.normalize("NFC", value)
+    if candidate != value or "\\" in candidate or candidate.startswith("/"):
+        raise _fail(
+            "SDAI-FEATURE-REPO-002",
+            "declaration source must be a normalized project-relative POSIX path",
+        )
+    parts = candidate.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise _fail(
+            "SDAI-FEATURE-REPO-002",
+            "declaration source must be a normalized project-relative POSIX path",
+        )
+    return candidate
+
+
 def _capabilities(value: object) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise _fail(
@@ -454,6 +472,7 @@ class FeatureRepository:
 class FeatureRepositoryManifest:
     repositories: tuple[FeatureRepository, ...]
     source_sha256: str
+    source: str = FEATURE_REPOSITORIES_PATH
 
     def __post_init__(self) -> None:
         if not isinstance(self.repositories, (tuple, list)) or not self.repositories:
@@ -462,6 +481,12 @@ class FeatureRepositoryManifest:
             raise _fail("SDAI-FEATURE-REPO-001", "feature repository manifest has too many repositories")
         if not all(isinstance(item, FeatureRepository) for item in self.repositories):
             raise _fail("SDAI-FEATURE-REPO-001", "repositories contain invalid entries")
+        selector_count = sum(len(item.ownership) for item in self.repositories)
+        if selector_count > FEATURE_REPOSITORIES_MAX_SELECTORS:
+            raise _fail(
+                "SDAI-FEATURE-REPO-001",
+                "feature repository manifest has too many ownership selectors",
+            )
         ordered = tuple(sorted(self.repositories, key=lambda item: item.id))
         ids = [item.id for item in ordered]
         if len(set(ids)) != len(ids):
@@ -483,6 +508,7 @@ class FeatureRepositoryManifest:
         object.__setattr__(self, "repositories", ordered)
         if not isinstance(self.source_sha256, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_sha256):
             raise _fail("SDAI-FEATURE-REPO-001", "source_sha256 must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "source", _source_path(self.source))
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -499,7 +525,13 @@ class FeatureRepositoryManifest:
         return _sha256_json(self.as_dict())
 
     @classmethod
-    def from_dict(cls, value: object, *, source_sha256: str) -> "FeatureRepositoryManifest":
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        source_sha256: str,
+        source: str = FEATURE_REPOSITORIES_PATH,
+    ) -> "FeatureRepositoryManifest":
         raw = _mapping(value, label="feature repository manifest")
         _keys(raw, required=_TOP_LEVEL_KEYS, allowed=_TOP_LEVEL_KEYS, label="feature repository manifest")
         if raw["apiVersion"] != FEATURE_REPOSITORIES_API_VERSION:
@@ -512,6 +544,7 @@ class FeatureRepositoryManifest:
         return cls(
             tuple(FeatureRepository.from_dict(item) for item in repositories),
             source_sha256,
+            source,
         )
 
 
@@ -541,12 +574,17 @@ class ResolvedFeatureRepositories:
     repositories: tuple[ResolvedFeatureRepository, ...]
     manifest_sha256: str
     source_sha256: str
+    source: str = FEATURE_REPOSITORIES_PATH
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", _source_path(self.source))
 
     def as_dict(self) -> dict[str, object]:
         return {
             "apiVersion": FEATURE_REPOSITORY_RESOLUTION_API_VERSION,
             "manifestSha256": self.manifest_sha256,
             "repositories": [item.as_dict() for item in self.repositories],
+            "source": self.source,
             "sourceSha256": self.source_sha256,
         }
 
@@ -590,6 +628,10 @@ class RouteDecision:
     repository_ordinal: int
     manifest_sha256: str
     source_sha256: str
+    source: str = FEATURE_REPOSITORIES_PATH
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", _source_path(self.source))
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -599,7 +641,7 @@ class RouteDecision:
                 "repositoryId": self.repository_id,
                 "repositoryOrdinal": self.repository_ordinal,
                 "selector": self.selector.as_dict(),
-                "source": FEATURE_REPOSITORIES_PATH,
+                "source": self.source,
                 "sourceSha256": self.source_sha256,
             },
         }
@@ -653,14 +695,24 @@ def load_feature_repository_manifest(
         raise
     except (OverflowError, RecursionError, ValueError, yaml.YAMLError) as exc:
         raise _fail("SDAI-FEATURE-REPO-001", "feature repository YAML is malformed") from exc
-    return FeatureRepositoryManifest.from_dict(raw, source_sha256=_sha256_bytes(data))
+    source = declaration.relative_to(root).as_posix()
+    return FeatureRepositoryManifest.from_dict(
+        raw,
+        source_sha256=_sha256_bytes(data),
+        source=source,
+    )
 
 
 def resolve_feature_repositories(
     project_root: Path,
     path: Path | None = None,
 ) -> ResolvedFeatureRepositories:
-    root = Path(project_root).resolve(strict=True)
+    try:
+        root = Path(project_root).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise _fail("SDAI-FEATURE-REPO-002", "project root must be an existing local directory") from exc
+    if not root.is_dir():
+        raise _fail("SDAI-FEATURE-REPO-002", "project root must be an existing local directory")
     manifest = load_feature_repository_manifest(root, path)
     resolved: list[ResolvedFeatureRepository] = []
     seen_roots: dict[str, str] = {}
@@ -680,6 +732,7 @@ def resolve_feature_repositories(
         tuple(resolved),
         manifest.sha256,
         manifest.source_sha256,
+        manifest.source,
     )
 
 
@@ -749,6 +802,7 @@ def route_feature_entities(
                 repository_ordinal=repository.ordinal,
                 manifest_sha256=resolved.manifest_sha256,
                 source_sha256=resolved.source_sha256,
+                source=resolved.source,
             )
         )
     return FeatureRoutingResult(
