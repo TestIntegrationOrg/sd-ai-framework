@@ -8,6 +8,7 @@ import sys
 from sdai import __version__
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
+from sdai.feature_graph_cli import main as feature_graph_main
 from sdai.trace_cli import main as trace_main
 from sdai.trace_policy_cli import main as trace_policy_main
 from sdai.verify_cli import main as verify_main
@@ -48,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
     if effective in (["--version"], ["-V"]):
         print(f"sdai {__version__}")
         return 0
+
+    # Keep the legacy `sdai feature FEATURE --title ... --description ...`
+    # lifecycle parser unchanged. The nested graph surface is dispatched before
+    # lifecycle parsing so existing required intake arguments remain intact.
+    if len(effective) >= 2 and effective[0] == "feature" and effective[1] == "graph":
+        return feature_graph_main(effective[2:])
 
     if effective and effective[0] == "trace":
         return _run_trace(effective[1:])
