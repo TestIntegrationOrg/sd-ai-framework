@@ -108,3 +108,41 @@ def test_pr_reference_is_versioned_but_not_synthesized_by_graph_builder(tmp_path
     graph = build_multi_repo_feature_graph(project, "GRAPH-EMPTY-101")
 
     assert not any(node.type is FeatureGraphNodeType.PR_REFERENCE for node in graph.nodes)
+
+
+def test_missing_repository_error_does_not_expose_declared_absolute_path(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(project / ".sdai" / "config.yaml", "{}\n")
+    missing = (tmp_path / "secret" / "api-repository").resolve()
+    _write(
+        project / ".sdai" / "feature-repositories.yaml",
+        yaml.safe_dump(
+            {
+                "apiVersion": "sdai.feature-repositories/v1",
+                "kind": "FeatureRepositories",
+                "repositories": [
+                    {
+                        "id": "api",
+                        "path": str(missing),
+                        "capabilities": ["requirements"],
+                        "ownership": [
+                            {"type": "requirement", "pattern": "FR-API-*"},
+                        ],
+                        "required": True,
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+    )
+
+    graph = build_multi_repo_feature_graph(project, "GRAPH-MISSING-101")
+    rendered = graph.to_json()
+
+    assert graph.has_errors
+    assert any(
+        finding.code == "SDAI-FEATURE-GRAPH-MISSING-REPOSITORY"
+        for finding in graph.findings
+    )
+    assert str(missing) not in rendered
