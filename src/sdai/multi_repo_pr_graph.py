@@ -78,8 +78,11 @@ def _pr_fact(
     repository_id: str,
     evidence: ResolvedPullRequestEvidence,
     resolved_reference,
+    *,
+    links_current: bool,
 ) -> FeatureGraphFact:
     reference = resolved_reference.reference
+    satisfies = resolved_reference.satisfies_traceability and links_current
     payload: dict[str, object] = {
         "commitExists": resolved_reference.commit_exists,
         "commitReachable": resolved_reference.commit_reachable,
@@ -87,11 +90,12 @@ def _pr_fact(
         "evidenceSha256": evidence.sha256,
         "headCommit": reference.head_commit,
         "links": list(reference.links),
+        "linksCurrent": links_current,
         "localId": reference.id,
         "manifestSha256": evidence.manifest.sha256,
         "repositoryId": repository_id,
         "resolvedCommit": resolved_reference.resolved_commit,
-        "satisfiesTraceability": resolved_reference.satisfies_traceability,
+        "satisfiesTraceability": satisfies,
         "source": evidence.manifest.source,
         "sourceSha256": evidence.manifest.source_sha256,
         "state": reference.state.value,
@@ -103,7 +107,6 @@ def _pr_fact(
 
 def _extend_repository(
     *,
-    base: MultiRepoFeatureGraph,
     repository_id: str,
     repository_root: Path,
     feature_id: str,
@@ -140,11 +143,19 @@ def _extend_repository(
     for resolved_reference in evidence.references:
         reference = resolved_reference.reference
         node_id = _pr_node_id(repository_id, reference.id)
+        missing_links = tuple(sorted(link for link in reference.links if link not in trace_nodes))
         nodes.append(
             MultiRepoFeatureNode(
                 node_id,
                 FeatureGraphNodeType.PR_REFERENCE,
-                (_pr_fact(repository_id, evidence, resolved_reference),),
+                (
+                    _pr_fact(
+                        repository_id,
+                        evidence,
+                        resolved_reference,
+                        links_current=not missing_links,
+                    ),
+                ),
             )
         )
 
@@ -178,8 +189,6 @@ def _extend_repository(
                 repository_id,
             )
             continue
-
-        missing_links = tuple(sorted(link for link in reference.links if link not in trace_nodes))
         if missing_links:
             _finding(
                 findings,
@@ -243,7 +252,6 @@ def build_multi_repo_feature_graph(
             continue
         repository_id = repository.repository.id
         _extend_repository(
-            base=base,
             repository_id=repository_id,
             repository_root=repository.root,
             feature_id=feature_id,
