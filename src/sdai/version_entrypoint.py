@@ -9,6 +9,8 @@ from sdai import __version__
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
 from sdai.feature_graph_cli import main as feature_graph_main
+from sdai.multi_repo_run_cli import main as multi_repo_run_main
+from sdai.multi_repo_verify_cli import main as multi_repo_verify_main
 from sdai.trace_cli import main as trace_main
 from sdai.trace_policy_cli import main as trace_policy_main
 from sdai.verify_cli import main as verify_main
@@ -44,6 +46,13 @@ def _run_trace(argv: list[str]) -> int:
     return trace_main(argv)
 
 
+def _is_multi_repo_run(argv: list[str]) -> bool:
+    return any(
+        value in {"--repo", "--all", "--plan"} or value.startswith("--repo=")
+        for value in argv
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     effective = list(sys.argv[1:] if argv is None else argv)
     if effective in (["--version"], ["-V"]):
@@ -56,10 +65,18 @@ def main(argv: list[str] | None = None) -> int:
     if len(effective) >= 2 and effective[0] == "feature" and effective[1] == "graph":
         return feature_graph_main(effective[2:])
 
+    # The legacy single-repository `sdai run FEATURE` surface remains unchanged.
+    # Multi-repository execution is selected explicitly and always constructs a
+    # hash-bound plan before invoking the local repository execution path.
+    if effective and effective[0] == "run" and _is_multi_repo_run(effective[1:]):
+        return multi_repo_run_main(effective[1:])
+
     if effective and effective[0] == "trace":
         return _run_trace(effective[1:])
 
     if effective and effective[0] == "verify":
+        if "--all-repos" in effective[1:]:
+            return multi_repo_verify_main(effective[1:])
         return verify_main(effective[1:])
 
     if effective and effective[0] == "converge":
