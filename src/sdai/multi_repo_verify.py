@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from sdai.multi_repo_feature_graph import build_multi_repo_feature_graph
+from sdai.multi_repo_pr_graph import build_multi_repo_feature_graph
 from sdai.multi_repo_run import (
     MultiRepoExitClass,
     MultiRepoRunError,
@@ -17,6 +17,7 @@ from sdai.verify_engine import verify_feature
 
 
 _RISKS = frozenset({"trivial", "standard", "critical", "regulated"})
+_PR_FINDING_PREFIX = "SDAI-FEATURE-GRAPH-PR-EVIDENCE-"
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,19 @@ def _graph_findings_json(project_root: Path, feature_id: str) -> tuple[str, str]
     return graph.sha256, rendered
 
 
+def _has_unsatisfied_pr_traceability(graph_findings_json: str) -> bool:
+    value = json.loads(graph_findings_json)
+    if not isinstance(value, list):
+        return True
+    for item in value:
+        if not isinstance(item, dict):
+            return True
+        code = item.get("code")
+        if isinstance(code, str) and code.startswith(_PR_FINDING_PREFIX):
+            return True
+    return False
+
+
 def _revalidation_exit(plan) -> MultiRepoExitClass | None:
     if any(item.status is not RunParticipantStatus.READY for item in plan.participants):
         return None
@@ -131,21 +145,12 @@ def verify_all_repositories(
         workflow="verification",
         isolation="in-place",
     )
-    if graph_sha256 != plan.graph_sha256:
-        return MultiRepoVerificationReport(
-            plan.feature_id,
-            graph_sha256,
-            plan.sha256,
-            graph_findings_json,
-            (),
-            MultiRepoExitClass.DRIFT,
-        )
 
     results: list[RepositoryVerificationResult] = []
     if plan.blockers:
         return MultiRepoVerificationReport(
             plan.feature_id,
-            plan.graph_sha256,
+            graph_sha256,
             plan.sha256,
             graph_findings_json,
             (),
@@ -156,7 +161,7 @@ def verify_all_repositories(
     if revalidation_exit is not None:
         return MultiRepoVerificationReport(
             plan.feature_id,
-            plan.graph_sha256,
+            graph_sha256,
             plan.sha256,
             graph_findings_json,
             (),
@@ -164,7 +169,7 @@ def verify_all_repositories(
         )
 
     participant_problem = False
-    policy_failure = False
+    policy_failure = _has_unsatisfied_pr_traceability(graph_findings_json)
     infrastructure_failure = False
     for participant in plan.participants:
         if participant.status is not RunParticipantStatus.READY or participant.root is None:
@@ -221,7 +226,7 @@ def verify_all_repositories(
         exit_class = MultiRepoExitClass.SUCCESS
     return MultiRepoVerificationReport(
         plan.feature_id,
-        plan.graph_sha256,
+        graph_sha256,
         plan.sha256,
         graph_findings_json,
         tuple(results),

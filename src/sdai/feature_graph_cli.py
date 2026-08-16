@@ -3,11 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from sdai.multi_repo_feature_graph import (
-    FeatureGraphFindingLevel,
-    MultiRepoFeatureGraph,
-    build_multi_repo_feature_graph,
-)
+from sdai.multi_repo_feature_graph import FeatureGraphFindingLevel, MultiRepoFeatureGraph
+from sdai.multi_repo_pr_graph import build_multi_repo_feature_graph
 
 
 def _parser() -> argparse.ArgumentParser:
