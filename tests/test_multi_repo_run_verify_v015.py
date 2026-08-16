@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -17,7 +16,7 @@ from sdai.multi_repo_run import (
     revalidate_run_plan,
 )
 from sdai.multi_repo_verify import verify_all_repositories
-from sdai.verification import VerificationRisk
+from sdai.verification import VerificationOutcome
 from sdai.version_entrypoint import main as sdai_main
 
 
@@ -191,36 +190,43 @@ def test_all_repo_verification_aggregates_local_reports_without_mutation(
     project, repositories = _project(tmp_path)
     calls: list[str] = []
 
-    class Status:
-        def __init__(self, value: str):
-            self.value = value
-
     class FakeReport:
         def __init__(self, root: Path):
-            self.status = Status("pass" if root.name != "shared" else "fail")
-            self.exit_code = 0 if root.name != "shared" else 2
+            self.outcome = (
+                VerificationOutcome.BLOCKED
+                if root.name == "shared"
+                else VerificationOutcome.PASSED
+            )
             self.root = root
 
         def to_json(self) -> str:
             return json.dumps(
-                {"status": self.status.value, "repository": self.root.name},
+                {"outcome": self.outcome.value, "repository": self.root.name},
                 sort_keys=True,
                 separators=(",", ":"),
             )
 
-    def fake_verify(root: Path, feature_id: str, *, risk: VerificationRisk):
+    def fake_verify(
+        root: Path,
+        feature_id: str,
+        *,
+        risk: str,
+        environ: dict[str, str],
+    ) -> FakeReport:
         calls.append(root.name)
         assert feature_id == FEATURE
-        assert risk is VerificationRisk.HIGH
+        assert risk == "critical"
+        assert environ == {}
         return FakeReport(root)
 
     monkeypatch.setattr("sdai.multi_repo_verify.verify_feature", fake_verify)
-    report = verify_all_repositories(project, FEATURE, risk=VerificationRisk.HIGH)
+    report = verify_all_repositories(project, FEATURE, risk="critical")
 
     assert calls == ["api", "shared", "ui"]
     assert report.exit_class is MultiRepoExitClass.POLICY_FAILURE
     assert [item.repository_id for item in report.repositories] == ["api", "shared", "ui"]
-    assert report.repositories[1].status == "fail"
+    assert report.repositories[1].status == "blocked"
+    assert isinstance(report.graph_findings, list)
     assert all(_git(root, "status", "--porcelain=v1") == "" for root in repositories.values())
 
 
