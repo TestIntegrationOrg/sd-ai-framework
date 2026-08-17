@@ -13,7 +13,12 @@ from sdai.contracts import (
     ContractSeverity,
     ContractSnapshot,
 )
-from sdai.openapi_contracts import _UniqueKeyLoader, _escape_pointer, _normalize_json, _resolve_pointer
+from sdai.structured_contracts import (
+    UniqueKeySafeLoader,
+    escape_json_pointer,
+    normalize_structured_json,
+    resolve_local_json_pointer,
+)
 
 
 _ASYNCAPI_VERSION = re.compile(r"^(?:2|3)\.\d+\.\d+(?:[-+].*)?$")
@@ -61,7 +66,7 @@ def _dereference(value: object, document: Mapping[str, object], *, seen: frozens
             return current
         seen = seen | {reference}
         try:
-            current = _resolve_pointer(document, reference)
+            current = resolve_local_json_pointer(document, reference)
         except (KeyError, ValueError):
             return current
     return current
@@ -92,7 +97,7 @@ def _scan_refs(
                 )
             else:
                 try:
-                    _resolve_pointer(document, reference)
+                    resolve_local_json_pointer(document, reference)
                 except (KeyError, ValueError):
                     findings.append(
                         _finding(
@@ -108,7 +113,7 @@ def _scan_refs(
                     snapshot,
                     document,
                     value[key],
-                    pointer=f"{pointer}/{_escape_pointer(key)}",
+                    pointer=f"{pointer}/{escape_json_pointer(key)}",
                 )
             )
     elif isinstance(value, list):
@@ -119,11 +124,11 @@ def _scan_refs(
 
 def _parse(snapshot: ContractSnapshot) -> _Parsed:
     try:
-        raw = yaml.load(snapshot.text, Loader=_UniqueKeyLoader)
+        raw = yaml.load(snapshot.text, Loader=UniqueKeySafeLoader)
     except yaml.YAMLError:
         return _Parsed(None, (_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-001", "AsyncAPI document is not valid YAML/JSON"),))
     try:
-        normalized = _normalize_json(raw, pointer="")
+        normalized = normalize_structured_json(raw)
     except ValueError as exc:
         return _Parsed(None, (_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-002", str(exc)),))
     if not isinstance(normalized, Mapping):
@@ -163,7 +168,7 @@ def _parse(snapshot: ContractSnapshot) -> _Parsed:
                     snapshot,
                     "SDAI-CONTRACT-ASYNCAPI-009",
                     f"channel '{name}' must be a mapping",
-                    pointer=f"/channels/{_escape_pointer(name)}",
+                    pointer=f"/channels/{escape_json_pointer(name)}",
                 )
             )
             continue
@@ -175,7 +180,7 @@ def _parse(snapshot: ContractSnapshot) -> _Parsed:
                         snapshot,
                         "SDAI-CONTRACT-ASYNCAPI-010",
                         f"channel operation '{action}' must be a mapping",
-                        pointer=f"/channels/{_escape_pointer(name)}/{action}",
+                        pointer=f"/channels/{escape_json_pointer(name)}/{action}",
                     )
                 )
     operations = document.get("operations")
@@ -282,7 +287,7 @@ def _schema_diff(
                 before_doc=before_doc,
                 after_doc=after_doc,
                 snapshot=snapshot,
-                pointer=f"{pointer}/properties/{_escape_pointer(name)}",
+                pointer=f"{pointer}/properties/{escape_json_pointer(name)}",
                 direction=direction,
             )
         )
@@ -304,15 +309,15 @@ def _diff_one_way(
     old_channels = {channel for channel, _ in old_ops}
     new_channels = {channel for channel, _ in new_ops}
     for channel in sorted(old_channels - new_channels):
-        findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-001", f"channel removed: {channel}", pointer=f"/channels/{_escape_pointer(channel)}", compatibility=direction))
+        findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-001", f"channel removed: {channel}", pointer=f"/channels/{escape_json_pointer(channel)}", compatibility=direction))
     for channel, action in sorted(set(old_ops) - set(new_ops)):
-        findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-002", f"operation removed: {action} {channel}", pointer=f"/channels/{_escape_pointer(channel)}/{action}", compatibility=direction))
+        findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-002", f"operation removed: {action} {channel}", pointer=f"/channels/{escape_json_pointer(channel)}/{action}", compatibility=direction))
     for key in sorted(set(old_ops) & set(new_ops)):
         channel, action = key
         old_operation, new_operation = old_ops[key], new_ops[key]
         old_message = _message(old_operation, before)
         new_message = _message(new_operation, after)
-        pointer = f"/channels/{_escape_pointer(channel)}/{action}/message"
+        pointer = f"/channels/{escape_json_pointer(channel)}/{action}/message"
         if old_message is not None and new_message is None:
             findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-003", "operation message removed", pointer=pointer, compatibility=direction))
             continue
@@ -343,7 +348,7 @@ def _diff_one_way(
         if _binding_fingerprint(old_message.get("bindings")) != _binding_fingerprint(new_message.get("bindings")):
             findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-004", "message bindings changed", pointer=f"{pointer}/bindings", compatibility=direction))
         if _binding_fingerprint(old_operation.get("bindings")) != _binding_fingerprint(new_operation.get("bindings")):
-            findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-005", "operation bindings changed", pointer=f"/channels/{_escape_pointer(channel)}/{action}/bindings", compatibility=direction))
+            findings.append(_finding(snapshot, "SDAI-CONTRACT-ASYNCAPI-DIFF-005", "operation bindings changed", pointer=f"/channels/{escape_json_pointer(channel)}/{action}/bindings", compatibility=direction))
     return findings
 
 
