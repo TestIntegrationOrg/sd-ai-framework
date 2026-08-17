@@ -229,7 +229,9 @@ def test_v015_integrated_central_store_multi_repo_release_journey(
 
     plan = build_multi_repo_run_plan(project, FEATURE, isolation="in-place")
     assert plan.ready
-    assert plan.graph_sha256 == graph.sha256
+    assert plan.graph_sha256.startswith("sha256:")
+    assert plan.repository_resolution_sha256 == graph.repository_resolution_sha256
+    assert plan.store_resolution_sha256 == graph.store_resolution_sha256
     assert [item.repository_id for item in plan.participants] == ["api", "shared", "ui"]
     calls: list[str] = []
 
