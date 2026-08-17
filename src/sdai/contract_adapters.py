@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sdai.contracts import ContractAdapterRegistry
-from sdai.openapi_contracts import OpenAPIContractAdapter
+from sdai.openapi_directional import OpenAPIContractAdapter
 
 
 def default_contract_registry() -> ContractAdapterRegistry:
