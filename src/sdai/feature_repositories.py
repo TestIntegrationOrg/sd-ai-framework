@@ -173,14 +173,15 @@ def _declared_path(value: object) -> str:
         )
     candidate = unicodedata.normalize("NFC", value)
     if (
-        "\x00" in candidate
+        candidate != value
+        or "\x00" in candidate
         or any(0xD800 <= ord(character) <= 0xDFFF for character in candidate)
         or any(ord(character) < 32 for character in candidate)
         or len(candidate.encode("utf-8")) > 4096
     ):
         raise _fail(
             "SDAI-FEATURE-REPO-002",
-            "repository path contains invalid or oversized local path text",
+            "repository path must be NFC-normalized valid bounded local path text",
         )
     return candidate
 
@@ -339,6 +340,10 @@ def _resolve_repository(project_root: Path, declared: str, *, required: bool) ->
             "repository Git metadata must not be a filesystem redirect",
         )
     return resolved
+
+
+def _portable_resolved_root_key(path: Path) -> tuple[str, ...]:
+    return tuple(unicodedata.normalize("NFC", part).casefold() for part in path.parts)
 
 
 def _read_bounded(path: Path) -> tuple[bytes, str]:
@@ -715,18 +720,19 @@ def resolve_feature_repositories(
         raise _fail("SDAI-FEATURE-REPO-002", "project root must be an existing local directory")
     manifest = load_feature_repository_manifest(root, path)
     resolved: list[ResolvedFeatureRepository] = []
-    seen_roots: dict[str, str] = {}
+    seen_roots: list[tuple[str, tuple[str, ...]]] = []
     for ordinal, repository in enumerate(manifest.repositories, start=1):
         repository_root = _resolve_repository(root, repository.path, required=repository.required)
         if repository_root is not None:
-            key = str(repository_root).casefold()
-            previous = seen_roots.get(key)
-            if previous is not None:
-                raise _fail(
-                    "SDAI-FEATURE-REPO-003",
-                    f"repositories '{previous}' and '{repository.id}' resolve to the same local path",
-                )
-            seen_roots[key] = repository.id
+            key = _portable_resolved_root_key(repository_root)
+            for previous_id, previous_key in seen_roots:
+                common = min(len(previous_key), len(key))
+                if previous_key[:common] == key[:common]:
+                    raise _fail(
+                        "SDAI-FEATURE-REPO-003",
+                        f"repositories '{previous_id}' and '{repository.id}' resolve to duplicate or nested local paths",
+                    )
+            seen_roots.append((repository.id, key))
         resolved.append(ResolvedFeatureRepository(repository, repository_root, ordinal))
     return ResolvedFeatureRepositories(
         tuple(resolved),
