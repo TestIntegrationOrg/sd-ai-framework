@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from sdai.contract_adapters import default_contract_registry
 from sdai.contracts import (
     CompatibilityDirection,
     ContractAdapterRegistry,
@@ -81,7 +82,7 @@ def main(
     try:
         root = _root(args.path)
         _ensure_initialized(root)
-        adapters = registry or ContractAdapterRegistry()
+        adapters = registry if registry is not None else default_contract_registry()
 
         if args.action == "inspect":
             result = discover_contracts(root, args.manifest)
