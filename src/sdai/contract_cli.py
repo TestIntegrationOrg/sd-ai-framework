@@ -16,24 +16,29 @@ from sdai.contracts import (
 )
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="sdai contract",
-        description="Inspect and evaluate explicitly declared local API/data contracts",
-    )
+def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--path", help="SD-AI project root")
     parser.add_argument(
         "--manifest",
         default=".sdai/contracts.yaml",
         help="Project-relative explicit contract source manifest",
     )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="sdai contract",
+        description="Inspect and evaluate explicitly declared local API/data contracts",
+    )
     actions = parser.add_subparsers(dest="action", required=True)
 
     inspect = actions.add_parser("inspect", help="Discover and hash declared local contracts")
+    _add_common_arguments(inspect)
     inspect.add_argument("--json", action="store_true")
 
     check = actions.add_parser("check", help="Validate one declared contract through its format adapter")
     check.add_argument("source")
+    _add_common_arguments(check)
     check.add_argument("--json", action="store_true")
 
     diff = actions.add_parser("diff", help="Compare a declared contract with an explicit local source")
@@ -44,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=[item.value for item in CompatibilityDirection if item is not CompatibilityDirection.NONE],
         default=CompatibilityDirection.BACKWARD.value,
     )
+    _add_common_arguments(diff)
     diff.add_argument("--json", action="store_true")
     return parser
 
