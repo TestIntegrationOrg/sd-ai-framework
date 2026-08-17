@@ -51,7 +51,7 @@ def _write_manifest(project: Path, repositories: list[dict[str, object]]) -> Non
                 "      - requirements",
                 "    ownership:",
                 "      - type: requirement",
-                f"        pattern: {repository['pattern']}",
+                f"        pattern: '{repository['pattern']}'",
             ]
         )
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
