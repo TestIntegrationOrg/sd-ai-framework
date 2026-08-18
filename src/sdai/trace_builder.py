@@ -7,6 +7,12 @@ from pathlib import Path
 import re
 from typing import Mapping
 
+from sdai.contract_trace import (
+    ContractTraceError,
+    ContractTraceGap,
+    build_contract_trace_index,
+    build_contract_trace_links,
+)
 from sdai.cross_artifact import FeatureArtifactIndex, IndexedEntity, build_feature_artifact_index
 from sdai.models import validate_feature_id
 from sdai.path_safety import PathSafetyError, ensure_within_project
@@ -267,6 +273,18 @@ class TraceBuildResult:
         return _canonical_hash(self.as_dict())
 
 
+def _contract_gap(item: ContractTraceGap) -> TraceGap:
+    return TraceGap(
+        kind=item.kind,
+        source=item.source,
+        line=item.line,
+        target=item.target,
+        relation=item.relation,
+        source_node_id=item.source_node_id,
+        detail=item.detail,
+    )
+
+
 def _cross_artifact_edges(
     index: FeatureArtifactIndex,
     node_ids: Mapping[str, tuple[str, ...]],
@@ -507,9 +525,17 @@ def build_feature_trace_graph(
             nodes.append(node)
     nodes.extend(_special_nodes(index, root))
 
+    try:
+        contract_index = build_contract_trace_index(root)
+    except ContractTraceError as exc:
+        raise _fail("SDAI-TRACE-BUILD-005", f"unable to build contract trace symbols: {exc}") from exc
+    nodes.extend(contract_index.nodes)
+
     declaration_nodes = tuple(nodes)
     known = _id_to_node_ids(declaration_nodes)
     edges, gaps = _cross_artifact_edges(index, known)
+    edges.extend(contract_index.edges)
+    gaps.extend(_contract_gap(item) for item in contract_index.gaps)
 
     repository_nodes, repository_edges, repository_gaps = _repository_nodes_and_edges(
         root,
@@ -528,6 +554,13 @@ def build_feature_trace_graph(
     nodes.extend(evidence_nodes)
     edges.extend(evidence_edges)
     gaps.extend(evidence_gaps)
+
+    try:
+        contract_links = build_contract_trace_links(root, feature, contract_index, tuple(nodes))
+    except ContractTraceError as exc:
+        raise _fail("SDAI-TRACE-BUILD-005", f"unable to resolve contract trace links: {exc}") from exc
+    edges.extend(contract_links.edges)
+    gaps.extend(_contract_gap(item) for item in contract_links.gaps)
 
     try:
         graph = TraceGraph(feature_id=feature, nodes=tuple(nodes), edges=tuple(edges))
