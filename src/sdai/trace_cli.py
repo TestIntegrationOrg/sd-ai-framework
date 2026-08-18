@@ -163,6 +163,69 @@ def _requirement_rows(
     return rows
 
 
+def _contract_coverage(result: TraceBuildResult) -> dict[str, object]:
+    source_nodes = [
+        node
+        for node in result.graph.nodes
+        if node.type is TraceNodeType.CONTRACT
+        and node.metadata.get("contract_trace_role") == "source"
+    ]
+    symbol_nodes = [
+        node
+        for node in result.graph.nodes
+        if node.type is TraceNodeType.CONTRACT
+        and node.metadata.get("contract_trace_role") == "symbol"
+    ]
+    links_by_source: dict[str, list[TraceEdge]] = {}
+    explicit_links: list[TraceEdge] = []
+    for edge in result.graph.edges:
+        if edge.metadata.get("contract_trace_role") != "link":
+            continue
+        explicit_links.append(edge)
+        links_by_source.setdefault(edge.source, []).append(edge)
+
+    rows: list[dict[str, object]] = []
+    for node in symbol_nodes:
+        links = sorted(links_by_source.get(node.node_id, ()), key=lambda item: item.edge_id)
+        rows.append(
+            {
+                "node_id": node.node_id,
+                "source_id": node.metadata.get("source_id"),
+                "contract_kind": node.metadata.get("contract_kind"),
+                "address": node.metadata.get("address"),
+                "symbol_kind": node.metadata.get("symbol_kind"),
+                "source_sha256": node.metadata.get("source_sha256"),
+                "symbol_sha256": node.metadata.get("symbol_sha256"),
+                "linked": bool(links),
+                "links": [edge.as_dict() for edge in links],
+            }
+        )
+    rows.sort(
+        key=lambda item: (
+            str(item["source_id"]),
+            str(item["address"]),
+            str(item["node_id"]),
+        )
+    )
+    linked = sum(1 for item in rows if item["linked"])
+    total = len(rows)
+    contract_gaps = [
+        gap
+        for gap in result.gaps
+        if "contract" in gap.kind
+    ]
+    return {
+        "sources_total": len(source_nodes),
+        "symbols_total": total,
+        "symbols_linked": linked,
+        "symbols_unlinked": total - linked,
+        "coverage_percent": 100.0 if total == 0 else round((linked * 100.0) / total, 2),
+        "links": len(explicit_links),
+        "gaps": len(contract_gaps),
+        "symbols": rows,
+    }
+
+
 def _coverage_payload(
     result: TraceBuildResult,
     reports: Mapping[str, EvidenceFreshnessReport],
@@ -190,6 +253,7 @@ def _coverage_payload(
         "gaps": len(result.gaps),
         "proof_counts": proof_counts,
         "requirements": rows,
+        "contract_trace": _contract_coverage(result),
     }
 
 
@@ -394,6 +458,8 @@ def _run_coverage(args: argparse.Namespace) -> int:
     result = _build(root, args.feature)
     reports = _evidence_reports(root, result)
     payload = _coverage_payload(result, reports)
+    contract_trace = payload["contract_trace"]
+    assert isinstance(contract_trace, dict)
     if args.json:
         print(_json(payload))
     else:
@@ -402,12 +468,17 @@ def _run_coverage(args: argparse.Namespace) -> int:
             f"covered={payload['requirements_covered']}/{payload['requirements_total']} "
             f"percent={payload['coverage_percent']:.2f}% gaps={payload['gaps']}"
         )
+        print(
+            f"  Contracts symbols={contract_trace['symbols_linked']}/{contract_trace['symbols_total']} "
+            f"percent={contract_trace['coverage_percent']:.2f}% links={contract_trace['links']} "
+            f"gaps={contract_trace['gaps']}"
+        )
         for row in payload["requirements"]:
             print(
                 f"  {'COVERED' if row['covered'] else 'MISSING':7} "
                 f"{row['requirement_id']} proofs={len(row['proofs'])}"
             )
-    return 0 if payload["requirements_uncovered"] == 0 else 2
+    return 0 if payload["requirements_uncovered"] == 0 and contract_trace["gaps"] == 0 else 2
 
 
 def _run_export(args: argparse.Namespace) -> int:
