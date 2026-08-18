@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -47,17 +48,19 @@ _SOURCE_SUFFIXES = frozenset(
 )
 _ORM_SUFFIXES = frozenset({".py", ".java", ".kt", ".kts", ".cs", ".ts", ".tsx", ".js", ".jsx"})
 _CONFIG_SUFFIXES = frozenset({".properties", ".yaml", ".yml", ".json", ".toml", ".conf", ".config"})
-_SAFE_RESOURCE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,511}$")
-_SAFE_PART = re.compile(r"^[A-Za-z0-9_$][A-Za-z0-9_$-]{0,127}$")
+_SAFE_RESOURCE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,199}$")
+_SAFE_PART = re.compile(r"^[A-Za-z0-9_$][A-Za-z0-9_$-]{0,79}$")
 _IDENTIFIER_PART = r'(?:[A-Za-z_$][A-Za-z0-9_$]*|"(?:[^"]|"")+"|`[^`]+`|\[[^\]]+\])'
 _SQL_IDENTIFIER = rf"(?P<resource>{_IDENTIFIER_PART}(?:\s*\.\s*{_IDENTIFIER_PART}){{0,2}})"
-_SQL_CREATE = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_INSERT = re.compile(rf"^\s*INSERT\s+INTO\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_UPDATE = re.compile(rf"^\s*UPDATE\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_DELETE = re.compile(rf"^\s*DELETE\s+FROM\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_MERGE = re.compile(rf"^\s*MERGE\s+INTO\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_ADMIN = re.compile(rf"^\s*(?:ALTER\s+TABLE|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE\s+TABLE)\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE | re.DOTALL)
-_SQL_FROM_JOIN = re.compile(rf"\b(?:FROM|JOIN)\s+{_SQL_IDENTIFIER}\b", re.IGNORECASE)
+_SQL_END = r"(?=\s|\(|,|;|\)|$)"
+_SQL_CREATE = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_INSERT = re.compile(rf"^\s*INSERT\s+INTO\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_UPDATE = re.compile(rf"^\s*UPDATE\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_DELETE = re.compile(rf"^\s*DELETE\s+FROM\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_MERGE = re.compile(rf"^\s*MERGE\s+INTO\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_ADMIN = re.compile(rf"^\s*(?:ALTER\s+TABLE|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|TRUNCATE\s+TABLE)\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE | re.DOTALL)
+_SQL_FROM_JOIN = re.compile(rf"\b(?:FROM|JOIN)\s+{_SQL_IDENTIFIER}{_SQL_END}", re.IGNORECASE)
+_SQL_CTE = re.compile(r"(?:\bWITH|,)\s+(?P<cte>[A-Za-z_$][A-Za-z0-9_$]*)\s+AS\s*\(", re.IGNORECASE)
 _SQL_RECOGNIZED = re.compile(
     r"^\s*(?:CREATE\s+TABLE|INSERT\s+INTO|UPDATE\b|DELETE\s+FROM|MERGE\s+INTO|ALTER\s+TABLE|DROP\s+TABLE|TRUNCATE\s+TABLE)",
     re.IGNORECASE,
@@ -96,14 +99,14 @@ def _fail(code: str, message: str) -> ArchitectureDriftError:
     return ArchitectureDriftError(f"{code}: {message}")
 
 
-def _slug(value: str, *, limit: int = 96) -> str:
+def _slug(value: str, *, limit: int = 64) -> str:
     normalized = re.sub(r"[^a-z0-9._-]+", "-", value.casefold()).strip("-._") or "resource"
     return normalized[:limit]
 
 
 def _hashed_identity(prefix: str, value: str) -> str:
     digest = sha256(value.encode("utf-8")).hexdigest()[:16]
-    return f"{prefix}:{_slug(value)}:{digest}"
+    return f"{prefix}:{_slug(value, limit=40)}:{digest}"
 
 
 def _unquote_identifier(part: str) -> str:
@@ -124,11 +127,11 @@ def _resource_name(value: str, *, source: str, line: int) -> str:
     parts: list[str] = []
     for raw in raw_parts:
         part = _unquote_identifier(raw)
-        if not part or len(part.encode("utf-8")) > 128 or _SAFE_PART.fullmatch(part) is None:
+        if not part or len(part.encode("utf-8")) > 80 or _SAFE_PART.fullmatch(part) is None:
             raise _fail("SDAI-ARCH-DATA-003", f"data resource identifier is dynamic or unsafe at {source}:{line}")
         parts.append(part.casefold())
     resource = ".".join(parts)
-    if len(resource) > 512 or _SAFE_RESOURCE.fullmatch(resource) is None:
+    if len(resource) > 200 or _SAFE_RESOURCE.fullmatch(resource) is None:
         raise _fail("SDAI-ARCH-DATA-003", f"data resource identifier exceeds supported limits at {source}:{line}")
     return resource
 
@@ -158,10 +161,11 @@ def _ownership_hit(resource: str, line: int, detail: str) -> _DataHit:
 
 
 def _mask_sql(text: str) -> str:
-    """Mask SQL comments and string literals while retaining statement/newline structure."""
+    """Mask SQL comments/string literals while retaining statement/newline structure."""
     output: list[str] = []
     index = 0
     state = "code"
+    dollar_tag = ""
     while index < len(text):
         char = text[index]
         nxt = text[index + 1] if index + 1 < len(text) else ""
@@ -181,6 +185,14 @@ def _mask_sql(text: str) -> str:
                 index += 1
                 state = "string"
                 continue
+            if char == "$":
+                match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$", text[index:])
+                if match is not None:
+                    dollar_tag = match.group(0)
+                    output.extend(" " * len(dollar_tag))
+                    index += len(dollar_tag)
+                    state = "dollar-string"
+                    continue
             output.append(char)
             index += 1
             continue
@@ -196,6 +208,16 @@ def _mask_sql(text: str) -> str:
             if char == "*" and nxt == "/":
                 output.extend((" ", " "))
                 index += 2
+                state = "code"
+                continue
+            output.append("\n" if char == "\n" else " ")
+            index += 1
+            continue
+        if state == "dollar-string":
+            if dollar_tag and text.startswith(dollar_tag, index):
+                output.extend(" " * len(dollar_tag))
+                index += len(dollar_tag)
+                dollar_tag = ""
                 state = "code"
                 continue
             output.append("\n" if char == "\n" else " ")
@@ -227,8 +249,7 @@ def _sql_statements(text: str) -> tuple[tuple[str, int], ...]:
             statement = cleaned[start:index].strip()
             if statement:
                 result.append((statement, start_line))
-            segment = cleaned[start : index + 1]
-            line += segment.count("\n")
+            line += cleaned[start : index + 1].count("\n")
             start = index + 1
             start_line = line
     tail = cleaned[start:].strip()
@@ -269,8 +290,11 @@ def _sql_hits(text: str, *, source: str) -> tuple[_DataHit, ...]:
             )
 
         if re.search(r"\b(?:SELECT|WITH)\b", statement, re.IGNORECASE):
+            ctes = {match.group("cte").casefold() for match in _SQL_CTE.finditer(statement)}
             for match in _SQL_FROM_JOIN.finditer(statement):
                 resource = _resource_name(match.group("resource"), source=source, line=line)
+                if resource in ctes:
+                    continue
                 hits.append(_access_hit(resource, "read", line, "SQL read access"))
 
     return _bounded(hits, source=source)
@@ -329,50 +353,105 @@ def _strip_c_comments(text: str) -> str:
     return "".join(output)
 
 
+def _literal_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _python_orm_hits(text: str, *, source: str) -> tuple[_DataHit, ...]:
+    try:
+        tree = ast.parse(text, filename=source, mode="exec")
+    except SyntaxError as exc:
+        raise _fail(
+            "SDAI-ARCH-DATA-003",
+            f"unable to parse Python ORM source {source}:{exc.lineno or 1}: {exc.msg}",
+        ) from exc
+    hits: list[_DataHit] = []
+    for node in ast.walk(tree):
+        name: str | None = None
+        value: ast.AST | None = None
+        line = getattr(node, "lineno", 1)
+        if isinstance(node, ast.Assign):
+            value = node.value
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in {"__tablename__", "db_table"}:
+                    name = target.id
+                    break
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            if isinstance(node.target, ast.Name) and node.target.id in {"__tablename__", "db_table"}:
+                name = node.target.id
+        if name is None:
+            continue
+        literal = _literal_string(value)
+        if literal is None:
+            raise _fail(
+                "SDAI-ARCH-DATA-003",
+                f"dynamic Python ORM table mapping cannot be resolved at {source}:{line}",
+            )
+        resource = _resource_name(literal, source=source, line=line)
+        hits.extend(
+            (
+                _access_hit(resource, "read", line, "Python ORM entity mapping"),
+                _access_hit(resource, "write", line, "Python ORM entity mapping"),
+            )
+        )
+    return _bounded(hits, source=source)
+
+
+def _annotation_resource(line: str, *, family: str, source: str, line_number: int) -> str | None:
+    if family == "jpa":
+        marker = re.match(r"^\s*@Table\s*\((?P<args>.*)\)\s*$", line, re.IGNORECASE)
+        if marker is None:
+            return None
+        args = marker.group("args")
+        name = re.search(r"\bname\s*=\s*[\"'](?P<value>[A-Za-z0-9_$.-]+)[\"']", args, re.IGNORECASE)
+        if name is None:
+            name = re.match(r"\s*[\"'](?P<value>[A-Za-z0-9_$.-]+)[\"']", args)
+        if name is None:
+            raise _fail("SDAI-ARCH-DATA-003", f"dynamic JPA table mapping cannot be resolved at {source}:{line_number}")
+        schema = re.search(r"\bschema\s*=\s*[\"'](?P<value>[A-Za-z0-9_$-]+)[\"']", args, re.IGNORECASE)
+        value = f"{schema.group('value')}.{name.group('value')}" if schema is not None else name.group("value")
+        return _resource_name(value, source=source, line=line_number)
+    if family == "dotnet":
+        marker = re.match(r"^\s*\[Table\s*\((?P<args>.*)\)\s*\]\s*$", line, re.IGNORECASE)
+        if marker is None:
+            return None
+        args = marker.group("args")
+        name = re.match(r"\s*[\"'](?P<value>[A-Za-z0-9_$.-]+)[\"']", args)
+        if name is None:
+            raise _fail("SDAI-ARCH-DATA-003", f"dynamic .NET table mapping cannot be resolved at {source}:{line_number}")
+        schema = re.search(r"\bSchema\s*=\s*[\"'](?P<value>[A-Za-z0-9_$-]+)[\"']", args, re.IGNORECASE)
+        value = f"{schema.group('value')}.{name.group('value')}" if schema is not None else name.group("value")
+        return _resource_name(value, source=source, line=line_number)
+    marker = re.match(r"^\s*@Entity\s*\((?P<args>.*)\)\s*$", line, re.IGNORECASE)
+    if marker is None:
+        return None
+    name = re.match(r"\s*[\"'](?P<value>[A-Za-z0-9_$.-]+)[\"']", marker.group("args"))
+    if name is None:
+        raise _fail("SDAI-ARCH-DATA-003", f"dynamic TypeORM entity mapping cannot be resolved at {source}:{line_number}")
+    return _resource_name(name.group("value"), source=source, line=line_number)
+
+
 def _orm_hits(path: Path, text: str, *, source: str) -> tuple[_DataHit, ...]:
     suffix = path.suffix.casefold()
-    hits: list[_DataHit] = []
     if suffix == ".py":
-        pattern = re.compile(r"^\s*(?:__tablename__|db_table)\s*=\s*[\"'](?P<table>[A-Za-z0-9_$.-]+)[\"']")
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            match = pattern.match(line)
-            if match is not None:
-                resource = _resource_name(match.group("table"), source=source, line=line_number)
-                hits.extend(
-                    (
-                        _access_hit(resource, "read", line_number, "Python ORM entity mapping"),
-                        _access_hit(resource, "write", line_number, "Python ORM entity mapping"),
-                    )
-                )
-    else:
-        cleaned = _strip_c_comments(text)
-        patterns: tuple[re.Pattern[str], ...]
-        if suffix in {".java", ".kt", ".kts"}:
-            patterns = (
-                re.compile(r"@Table\s*\(\s*(?:name\s*=\s*)?[\"'](?P<table>[A-Za-z0-9_$.-]+)[\"']", re.IGNORECASE),
+        return _python_orm_hits(text, source=source)
+
+    cleaned = _strip_c_comments(text)
+    family = "jpa" if suffix in {".java", ".kt", ".kts"} else "dotnet" if suffix == ".cs" else "typeorm"
+    hits: list[_DataHit] = []
+    for line_number, line in enumerate(cleaned.splitlines(), start=1):
+        resource = _annotation_resource(line, family=family, source=source, line_number=line_number)
+        if resource is None:
+            continue
+        hits.extend(
+            (
+                _access_hit(resource, "read", line_number, "ORM entity mapping"),
+                _access_hit(resource, "write", line_number, "ORM entity mapping"),
             )
-        elif suffix == ".cs":
-            patterns = (
-                re.compile(r"\[Table\s*\(\s*[\"'](?P<table>[A-Za-z0-9_$.-]+)[\"']", re.IGNORECASE),
-            )
-        elif suffix in {".ts", ".tsx", ".js", ".jsx"}:
-            patterns = (
-                re.compile(r"@Entity\s*\(\s*[\"'](?P<table>[A-Za-z0-9_$.-]+)[\"']", re.IGNORECASE),
-            )
-        else:
-            patterns = ()
-        for line_number, line in enumerate(cleaned.splitlines(), start=1):
-            for pattern in patterns:
-                match = pattern.search(line)
-                if match is None:
-                    continue
-                resource = _resource_name(match.group("table"), source=source, line=line_number)
-                hits.extend(
-                    (
-                        _access_hit(resource, "read", line_number, "ORM entity mapping"),
-                        _access_hit(resource, "write", line_number, "ORM entity mapping"),
-                    )
-                )
+        )
     return _bounded(hits, source=source)
 
 
@@ -393,15 +472,13 @@ def _config_pairs(text: str) -> tuple[tuple[str, str, int], ...]:
         match = pattern.match(raw_line)
         if match is None:
             continue
-        key = match.group("key")
-        value = _clean_config_scalar(match.group("value"))
-        result.append((key, value, line_number))
+        result.append((match.group("key"), _clean_config_scalar(match.group("value")), line_number))
     return tuple(result)
 
 
 def _safe_store_part(value: str, *, fallback: str) -> str:
     normalized = value.casefold().strip().rstrip(".")
-    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", normalized):
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", normalized):
         return normalized
     return _hashed_identity(fallback, normalized).split(":", 1)[1]
 
@@ -415,7 +492,9 @@ def _store_hit(
     line: int,
     detail: str,
 ) -> _DataHit:
-    safe_kind = _slug(kind, limit=32)
+    if port is not None and not 1 <= port <= 65535:
+        raise _fail("SDAI-ARCH-DATA-004", f"database endpoint port is outside the supported range at line {line}")
+    safe_kind = _slug(kind, limit=24)
     safe_host = _safe_store_part(host or "local", fallback="host")
     safe_database = _safe_store_part(database or "default", fallback="db")
     port_text = str(port) if port is not None else "default"
@@ -433,7 +512,7 @@ def _store_hit(
 
 
 def _dynamic_store_hit(name: str, *, line: int) -> _DataHit:
-    safe_name = _slug(name, limit=64)
+    safe_name = _slug(name, limit=48)
     digest = sha256(name.casefold().encode("utf-8")).hexdigest()[:16]
     return _DataHit(
         ArchitectureFactKind.DATA_ACCESS,
@@ -458,7 +537,7 @@ def _connection_string_hit(value: str, *, line: int) -> _DataHit | None:
     database = pairs.get("database") or pairs.get("initialcatalog") or pairs.get("databasename")
     if host is None and database is None:
         return None
-    if host and host.startswith("tcp:"):
+    if host and host.casefold().startswith("tcp:"):
         host = host[4:]
     port: int | None = None
     if host and "," in host:
@@ -469,7 +548,15 @@ def _connection_string_hit(value: str, *, line: int) -> _DataHit | None:
     return _store_hit(kind="database", host=host, port=port, database=database, line=line, detail="database connection configuration")
 
 
-def _uri_store_hit(value: str, *, line: int) -> _DataHit | None:
+def _parsed_host_port(text: str, *, source: str, line: int) -> tuple[str | None, int | None]:
+    try:
+        parsed = urlparse(text)
+        return parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise _fail("SDAI-ARCH-DATA-004", f"database endpoint is malformed at {source}:{line}") from exc
+
+
+def _uri_store_hit(value: str, *, source: str, line: int) -> _DataHit | None:
     text = value.strip()
     if text.casefold().startswith("jdbc:"):
         text = text[5:]
@@ -484,34 +571,19 @@ def _uri_store_hit(value: str, *, line: int) -> _DataHit | None:
 
     if scheme in {"sqlserver", "mssql"} and ";" in text:
         head, tail = text.split(";", 1)
-        parsed = urlparse(head)
+        host, port = _parsed_host_port(head, source=source, line=line)
         tail_hit = _connection_string_hit(tail, line=line)
         database = None
         if tail_hit is not None:
-            database_value = tail_hit.attributes.get("database")
-            if isinstance(database_value, str):
-                database = database_value
-        return _store_hit(
-            kind=scheme,
-            host=parsed.hostname,
-            port=parsed.port,
-            database=database,
-            line=line,
-            detail="database URI configuration",
-        )
+            value_from_tail = tail_hit.attributes.get("database")
+            if isinstance(value_from_tail, str):
+                database = value_from_tail
+        return _store_hit(kind=scheme, host=host, port=port, database=database, line=line, detail="database URI configuration")
 
     parsed = urlparse(text)
-    if not parsed.scheme:
-        return None
+    host, port = _parsed_host_port(text, source=source, line=line)
     database = unquote(parsed.path.lstrip("/").split("/", 1)[0]) if parsed.path else None
-    return _store_hit(
-        kind=scheme,
-        host=parsed.hostname,
-        port=parsed.port,
-        database=database,
-        line=line,
-        detail="database URI configuration",
-    )
+    return _store_hit(kind=scheme, host=host, port=port, database=database, line=line, detail="database URI configuration")
 
 
 def _config_hits(text: str, *, source: str) -> tuple[_DataHit, ...]:
@@ -525,7 +597,7 @@ def _config_hits(text: str, *, source: str) -> tuple[_DataHit, ...]:
             if _CONNECTION_KEY.search(key) or _CONNECTION_KEY.search(name):
                 hits.append(_dynamic_store_hit(name, line=line))
             continue
-        uri_hit = _uri_store_hit(value, line=line)
+        uri_hit = _uri_store_hit(value, source=source, line=line)
         if uri_hit is not None:
             hits.append(uri_hit)
             continue
