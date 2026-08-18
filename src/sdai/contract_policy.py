@@ -14,12 +14,7 @@ from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
 from sdai.constitution import Constitution
-from sdai.contracts import (
-    ContractDiffResult,
-    ContractError,
-    ContractFinding,
-    ContractSeverity,
-)
+from sdai.contracts import ContractDiffResult, ContractError, ContractFinding, ContractSeverity
 from sdai.policy import OperatingMode, PolicyError, load_effective_configuration
 from sdai.trace_evidence import (
     EvidenceBindingKind,
@@ -122,10 +117,7 @@ class EffectiveContractPolicy:
             "apiVersion": CONTRACT_POLICY_API_VERSION,
             "kind": "EffectiveContractPolicy",
             "sources": [item.to_dict() for item in self.sources],
-            "rules": {
-                item.value: self.rules[item].to_dict()
-                for item in ContractCriticality
-            },
+            "rules": {item.value: self.rules[item].to_dict() for item in ContractCriticality},
             "sha256": self.sha256,
         }
 
@@ -280,15 +272,9 @@ def _hash_bytes(value: bytes) -> str:
 def _constitution_hash(value: Constitution | str) -> str:
     raw = value.sha256 if isinstance(value, Constitution) else value
     if not isinstance(raw, str):
-        raise ContractError(
-            "SDAI-CONTRACT-POLICY-003",
-            "constitution SHA-256 must be text",
-        )
+        raise ContractError("SDAI-CONTRACT-POLICY-003", "constitution SHA-256 must be text")
     normalized = raw.strip().casefold()
-    if normalized.startswith("sha256:"):
-        digest = normalized[7:]
-    else:
-        digest = normalized
+    digest = normalized[7:] if normalized.startswith("sha256:") else normalized
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ContractError(
             "SDAI-CONTRACT-POLICY-003",
@@ -318,7 +304,7 @@ def _core_layer() -> _ContractPolicyLayer:
             ),
         ),
     }
-    canonical = {
+    payload = {
         "apiVersion": CONTRACT_POLICY_API_VERSION,
         "kind": "CoreContractPolicy",
         "rules": {
@@ -331,7 +317,7 @@ def _core_layer() -> _ContractPolicyLayer:
         },
     }
     return _ContractPolicyLayer(
-        source=ContractPolicySource("core:sdai-0.16", _hash_json(canonical)),
+        source=ContractPolicySource("core:sdai-0.16", _hash_json(payload)),
         rules=MappingProxyType(rules),
     )
 
@@ -408,7 +394,12 @@ def _read_policy(path: Path, *, source: str) -> tuple[bytes, Mapping[str, object
     return content, raw
 
 
-def _parse_rule(value: object, *, source: str, criticality: ContractCriticality) -> _ContractPolicyRuleLayer:
+def _parse_rule(
+    value: object,
+    *,
+    source: str,
+    criticality: ContractCriticality,
+) -> _ContractPolicyRuleLayer:
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ContractError(
             "SDAI-CONTRACT-POLICY-001",
@@ -484,14 +475,18 @@ def _load_policy_layer(path: Path, *, source: str) -> _ContractPolicyLayer:
 
 
 def merge_contract_policy_layers(layers: Sequence[_ContractPolicyLayer]) -> EffectiveContractPolicy:
-    """Merge contract policy monotonically so later/lower layers can only tighten."""
+    """Merge contract policy monotonically so lower layers can only tighten."""
     if not layers:
         raise ContractError("SDAI-CONTRACT-POLICY-001", "at least one contract policy layer is required")
     effective: dict[ContractCriticality, ContractPolicyRule] = {}
     for criticality in ContractCriticality:
         applicable = [layer.rules[criticality] for layer in layers if criticality in layer.rules]
-        allow_breaking_values = [item.allow_breaking for item in applicable if item.allow_breaking is not None]
-        allow_unknown_values = [item.allow_unknown for item in applicable if item.allow_unknown is not None]
+        allow_breaking_values = [
+            item.allow_breaking for item in applicable if item.allow_breaking is not None
+        ]
+        allow_unknown_values = [
+            item.allow_unknown for item in applicable if item.allow_unknown is not None
+        ]
         evidence: set[ContractEvidenceType] = set()
         for item in applicable:
             evidence.update(item.required_evidence)
@@ -519,7 +514,7 @@ def load_effective_contract_policy(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> EffectiveContractPolicy:
-    """Load core -> organization -> repository -> user policy with monotonic precedence."""
+    """Load immutable core -> organization -> repository -> user restrictions."""
     root = project_root.resolve()
     env = dict(os.environ if environ is None else environ)
     try:
@@ -533,8 +528,13 @@ def load_effective_contract_policy(
     layers: list[_ContractPolicyLayer] = [_core_layer()]
     org_value = env.get(ORG_CONTRACT_POLICY_ENV, "").strip()
     if org_value:
-        path = _safe_external_policy(org_value, label=ORG_CONTRACT_POLICY_ENV, project_root=root)
-        layers.append(_load_policy_layer(path, source=f"organization:{path}"))
+        path = _safe_external_policy(
+            org_value,
+            label=ORG_CONTRACT_POLICY_ENV,
+            project_root=root,
+        )
+        # Stable semantic labels keep effective hashes machine/path independent.
+        layers.append(_load_policy_layer(path, source="organization"))
 
     repo_path = _safe_repo_policy(root)
     if repo_path.exists():
@@ -543,16 +543,22 @@ def load_effective_contract_policy(
                 "SDAI-CONTRACT-POLICY-004",
                 f"repository contract policy must be a regular non-symlink file: {CONTRACT_POLICY_PATH}",
             )
-        layers.append(_load_policy_layer(repo_path, source=f"repository:{CONTRACT_POLICY_PATH}"))
+        layers.append(
+            _load_policy_layer(
+                repo_path,
+                source=f"repository:{CONTRACT_POLICY_PATH}",
+            )
+        )
 
     user_value = env.get(USER_CONTRACT_POLICY_ENV, "").strip()
     if user_value:
-        path = _safe_external_policy(user_value, label=USER_CONTRACT_POLICY_ENV, project_root=root)
-        layers.append(_load_policy_layer(path, source=f"user:{path}"))
+        path = _safe_external_policy(
+            user_value,
+            label=USER_CONTRACT_POLICY_ENV,
+            project_root=root,
+        )
+        layers.append(_load_policy_layer(path, source="user"))
 
-    # Enterprise execution remains governed by the company-managed base policy.
-    # Contract policy can only add restrictions on top of the immutable core even
-    # when a separate organization contract policy is not configured.
     if base_policy.operating_mode is OperatingMode.ENTERPRISE and not base_policy.sources:
         raise ContractError(
             "SDAI-CONTRACT-POLICY-005",
@@ -589,19 +595,13 @@ _PROTOBUF_BREAKING = frozenset(
 _KNOWN_BREAKING_CODES = (
     _OPENAPI_BREAKING | _ASYNCAPI_BREAKING | _JSON_SCHEMA_BREAKING | _PROTOBUF_BREAKING
 )
-_CONTRACT_DIFF_PREFIXES = (
-    "SDAI-CONTRACT-OPENAPI-DIFF-",
-    "SDAI-CONTRACT-ASYNCAPI-DIFF-",
-    "SDAI-CONTRACT-JSONSCHEMA-DIFF-",
-    "SDAI-CONTRACT-PROTOBUF-DIFF-",
-)
 
 
 def classify_contract_finding(finding: ContractFinding) -> ContractFindingClassification:
     if finding.code in _KNOWN_BREAKING_CODES:
         change_class = ContractChangeClass.BREAKING
     elif finding.severity is ContractSeverity.ERROR:
-        # Unknown/future diff codes and parser/validation failures fail closed.
+        # Future diff codes and validation/parser errors remain unknown and fail closed.
         change_class = ContractChangeClass.UNKNOWN
     else:
         change_class = ContractChangeClass.NON_BREAKING
@@ -640,11 +640,13 @@ def classify_contract_diff(
     return overall, classifications
 
 
-def _contract_claim(record: TraceEvidence) -> tuple[ContractEvidenceType | None, Mapping[str, object] | None, list[str]]:
+def _contract_claim(
+    record: TraceEvidence,
+) -> tuple[ContractEvidenceType | None, Mapping[str, object] | None, list[str]]:
     reasons: list[str] = []
     raw = record.result.get("contractPolicy") if isinstance(record.result, Mapping) else None
     if not isinstance(raw, Mapping):
-        return None, None, (reasons + ["evidence result.contractPolicy claim is missing"])
+        return None, None, ["evidence result.contractPolicy claim is missing"]
     expected = {
         "evidenceType",
         "baselineSha256",
@@ -674,14 +676,21 @@ def _assess_evidence(
     constitution_sha256: str,
 ) -> ContractEvidenceAssessment:
     evidence_type, claim, reasons = _contract_claim(record)
-    freshness_value = freshness.freshness.value if freshness is not None else ProofFreshness.MISSING.value
+    freshness_value = (
+        freshness.freshness.value if freshness is not None else ProofFreshness.MISSING.value
+    )
     if freshness is None:
         reasons.append("no current trace freshness report exists for evidence")
-    elif freshness.evidence_id != record.evidence_id:
-        reasons.append("freshness report evidence identity does not match the evidence record")
-    elif freshness.freshness is not ProofFreshness.VALID:
-        reasons.append(f"trace evidence is not fresh: {freshness.freshness.value}")
-        reasons.extend(freshness.reasons)
+    else:
+        if freshness.evidence_id != record.evidence_id:
+            reasons.append("freshness report evidence identity does not match the evidence record")
+        if freshness.subject != record.subject:
+            reasons.append("freshness report subject does not match the evidence record")
+        if freshness.evidence_git_commit != record.git_commit:
+            reasons.append("freshness report Git commit does not match the evidence record")
+        if freshness.freshness is not ProofFreshness.VALID:
+            reasons.append(f"trace evidence is not fresh: {freshness.freshness.value}")
+            reasons.extend(freshness.reasons)
 
     if record.status not in {EvidenceStatus.PASSED, EvidenceStatus.RECORDED}:
         reasons.append(f"evidence status is not successful: {record.status.value}")
@@ -695,15 +704,16 @@ def _assess_evidence(
             "constitutionSha256": constitution_sha256,
         }
         for key, expected in expected_bindings.items():
-            actual = claim.get(key)
-            if actual != expected:
+            if claim.get(key) != expected:
                 reasons.append(f"{key} does not match the current governed contract input")
 
         if evidence_type is ContractEvidenceType.ARCHITECTURE_APPROVAL:
             if record.kind is not EvidenceKind.APPROVAL:
                 reasons.append("architecture approval evidence must use evidence kind 'approval'")
             if record.producer.semantic_role != "architecture-approver":
-                reasons.append("architecture approval must be produced by semantic role 'architecture-approver'")
+                reasons.append(
+                    "architecture approval must be produced by semantic role 'architecture-approver'"
+                )
             if record.producer.provider is not None or record.producer.model is not None:
                 reasons.append("architecture approval cannot be self-approved by an AI provider/model")
         elif record.kind not in {EvidenceKind.REVIEW, EvidenceKind.APPROVAL}:
@@ -733,7 +743,7 @@ def evaluate_contract_policy(
     evidence: Sequence[TraceEvidence] = (),
     freshness_reports: Mapping[str, EvidenceFreshnessReport] | None = None,
 ) -> ContractPolicyDecision:
-    """Classify one diff and apply deterministic, hash-bound governance policy."""
+    """Classify a diff and apply deterministic, hash-bound governance policy."""
     if not isinstance(diff, ContractDiffResult):
         raise ContractError("SDAI-CONTRACT-POLICY-003", "diff must be ContractDiffResult")
     if not isinstance(policy, EffectiveContractPolicy):
@@ -749,6 +759,7 @@ def evaluate_contract_policy(
             "SDAI-CONTRACT-POLICY-002",
             f"unsupported contract criticality: {criticality!r}",
         ) from exc
+
     constitution_sha256 = _constitution_hash(constitution)
     change_class, classifications = classify_contract_diff(diff)
     rule = policy.rule_for(normalized_criticality)
@@ -765,7 +776,10 @@ def evaluate_contract_policy(
                 )
                 for item in evidence
             ),
-            key=lambda item: (item.evidence_type.value if item.evidence_type else "~", item.evidence_id),
+            key=lambda item: (
+                item.evidence_type.value if item.evidence_type is not None else "~",
+                item.evidence_id,
+            ),
         )
     )
 
@@ -780,31 +794,35 @@ def evaluate_contract_policy(
         else:
             outcome = ContractPolicyOutcome.BLOCKED
             reasons.append("unknown contract change is blocked by effective policy")
+    elif not rule.allow_breaking:
+        outcome = ContractPolicyOutcome.BLOCKED
+        reasons.append("breaking contract changes are disabled by effective policy")
     else:
-        if not rule.allow_breaking:
+        accepted_types = {
+            item.evidence_type
+            for item in assessments
+            if item.accepted and item.evidence_type is not None
+        }
+        missing = [item for item in rule.required_evidence if item not in accepted_types]
+        if missing:
             outcome = ContractPolicyOutcome.BLOCKED
-            reasons.append("breaking contract changes are disabled by effective policy")
+            reasons.append(
+                "missing fresh hash-bound evidence: "
+                + ", ".join(item.value for item in missing)
+            )
         else:
-            accepted_types = {
-                item.evidence_type
-                for item in assessments
-                if item.accepted and item.evidence_type is not None
-            }
-            missing = [item for item in rule.required_evidence if item not in accepted_types]
-            if missing:
-                outcome = ContractPolicyOutcome.BLOCKED
-                reasons.append(
-                    "missing fresh hash-bound evidence: "
-                    + ", ".join(item.value for item in missing)
-                )
+            outcome = ContractPolicyOutcome.ALLOWED
+            if rule.required_evidence:
+                reasons.append("all required fresh hash-bound evidence is satisfied")
             else:
-                outcome = ContractPolicyOutcome.ALLOWED
-                if rule.required_evidence:
-                    reasons.append("all required fresh hash-bound evidence is satisfied")
-                else:
-                    reasons.append("breaking contract change is allowed without additional evidence at this criticality")
+                reasons.append(
+                    "breaking contract change is allowed without additional evidence at this criticality"
+                )
 
-    required_evidence = rule.required_evidence if change_class is ContractChangeClass.BREAKING else ()
+    required_evidence = (
+        rule.required_evidence if change_class is ContractChangeClass.BREAKING else ()
+    )
+    canonical_reasons = tuple(sorted(set(reasons)))
     unsigned = {
         "apiVersion": CONTRACT_POLICY_DECISION_API_VERSION,
         "kind": "ContractPolicyDecision",
@@ -820,7 +838,7 @@ def evaluate_contract_policy(
         "requiredEvidence": [item.value for item in required_evidence],
         "classifications": [item.to_dict() for item in classifications],
         "evidence": [item.to_dict() for item in assessments],
-        "reasons": sorted(set(reasons)),
+        "reasons": list(canonical_reasons),
     }
     return ContractPolicyDecision(
         criticality=normalized_criticality,
@@ -834,7 +852,7 @@ def evaluate_contract_policy(
         required_evidence=required_evidence,
         classifications=classifications,
         evidence=assessments,
-        reasons=tuple(sorted(set(reasons))),
+        reasons=canonical_reasons,
         sha256=_hash_json(unsigned),
     )
 
