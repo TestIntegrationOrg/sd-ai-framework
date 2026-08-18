@@ -95,7 +95,7 @@ def test_contract_gate_malformed_policy_is_stable_error_exit_one(tmp_path: Path,
 kind: ContractPolicy
 rules:
   critical:
-    allowUnknown: yes
+    allowUnknown: definitely-not-a-boolean
 """,
     )
     assert (
