@@ -45,7 +45,6 @@ _SOURCE_SUFFIXES = frozenset(
     }
 )
 _JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
-_PYTHON_SUFFIXES = (".py",)
 _POWERSHELL_SUFFIXES = (".ps1", ".psm1")
 
 
@@ -60,26 +59,29 @@ class _ImportReference:
 class _ComponentMapper:
     def __init__(self, project_root: Path, components: tuple[ArchitectureComponent, ...]) -> None:
         self.root = project_root.resolve()
-        self.components = components
         self._roots: list[tuple[PurePosixPath, str]] = []
         self._prefixes: list[tuple[str, str]] = []
         for component in components:
-            for root in component.roots:
-                self._roots.append((PurePosixPath(root), component.component_id))
+            for component_root in component.roots:
+                self._roots.append((PurePosixPath(component_root), component.component_id))
             for prefix in component.module_prefixes:
                 self._prefixes.append((prefix, component.component_id))
-        self._roots.sort(key=lambda item: (-len(item[0].parts), item[0].as_posix(), item[1]))
-        self._prefixes.sort(key=lambda item: (-len(item[0]), item[0], item[1]))
+        self._roots.sort(
+            key=lambda item: (-len(item[0].parts), item[0].as_posix().casefold(), item[0].as_posix(), item[1])
+        )
+        self._prefixes.sort(
+            key=lambda item: (-len(item[0]), item[0].casefold(), item[0], item[1])
+        )
 
     def owner_for_relative_path(self, relative: PurePosixPath) -> str | None:
         matches: list[tuple[int, str]] = []
-        for root, component_id in self._roots:
-            if relative == root or root in relative.parents:
-                matches.append((len(root.parts), component_id))
+        for component_root, component_id in self._roots:
+            if relative == component_root or component_root in relative.parents:
+                matches.append((len(component_root.parts), component_id))
         if not matches:
             return None
         best = max(length for length, _ in matches)
-        owners = sorted({component_id for length, component_id in matches if length == best})
+        owners = sorted({owner for length, owner in matches if length == best})
         if len(owners) != 1:
             raise _fail(
                 "SDAI-ARCH-DEPENDENCY-002",
@@ -95,7 +97,7 @@ class _ComponentMapper:
         if not matches:
             return None
         best = max(length for length, _ in matches)
-        owners = sorted({component_id for length, component_id in matches if length == best})
+        owners = sorted({owner for length, owner in matches if length == best})
         if len(owners) != 1:
             raise _fail(
                 "SDAI-ARCH-DEPENDENCY-002",
@@ -104,15 +106,15 @@ class _ComponentMapper:
         return owners[0]
 
     def existing_component_roots(self) -> tuple[Path, ...]:
-        paths: set[Path] = set()
-        for root, _ in self._roots:
-            candidate = self.root.joinpath(*root.parts)
+        result: set[Path] = set()
+        for component_root, _ in self._roots:
+            candidate = self.root.joinpath(*component_root.parts)
             try:
                 safe = ensure_within_project(self.root, candidate, label="architecture component root")
             except PathSafetyError as exc:
                 raise _fail(
                     "SDAI-ARCH-DEPENDENCY-001",
-                    f"component root escapes project workspace: {root.as_posix()}",
+                    f"component root escapes project workspace: {component_root.as_posix()}",
                 ) from exc
             if not safe.exists():
                 continue
@@ -120,10 +122,10 @@ class _ComponentMapper:
             if not safe.is_dir():
                 raise _fail(
                     "SDAI-ARCH-DEPENDENCY-001",
-                    f"component root must be a directory: {root.as_posix()}",
+                    f"component root must be a directory: {component_root.as_posix()}",
                 )
-            paths.add(safe)
-        return tuple(sorted(paths, key=lambda item: item.relative_to(self.root).as_posix()))
+            result.add(safe)
+        return tuple(sorted(result, key=lambda item: item.relative_to(self.root).as_posix()))
 
 
 def _fail(code: str, message: str) -> ArchitectureDriftError:
@@ -181,7 +183,6 @@ def _read_source(root: Path, path: Path) -> str:
 
 
 def _source_files(mapper: _ComponentMapper) -> tuple[Path, ...]:
-    root = mapper.root
     files: set[Path] = set()
     for component_root in mapper.existing_component_roots():
         for path in component_root.rglob("*"):
@@ -189,11 +190,11 @@ def _source_files(mapper: _ComponentMapper) -> tuple[Path, ...]:
                 if path.suffix.casefold() in _SOURCE_SUFFIXES:
                     raise _fail(
                         "SDAI-ARCH-DEPENDENCY-001",
-                        f"dependency source must not be a symbolic link: {path.relative_to(root).as_posix()}",
+                        f"dependency source must not be a symbolic link: {path.relative_to(mapper.root).as_posix()}",
                     )
                 continue
             if path.is_file() and path.suffix.casefold() in _SOURCE_SUFFIXES:
-                relative = PurePosixPath(path.relative_to(root).as_posix())
+                relative = PurePosixPath(path.relative_to(mapper.root).as_posix())
                 if mapper.owner_for_relative_path(relative) is not None:
                     files.add(path)
             if len(files) > DEPENDENCY_MAX_SOURCE_FILES:
@@ -201,7 +202,17 @@ def _source_files(mapper: _ComponentMapper) -> tuple[Path, ...]:
                     "SDAI-ARCH-DEPENDENCY-001",
                     f"dependency observation exceeds {DEPENDENCY_MAX_SOURCE_FILES} supported source files",
                 )
-    return tuple(sorted(files, key=lambda item: item.relative_to(root).as_posix()))
+    return tuple(sorted(files, key=lambda item: item.relative_to(mapper.root).as_posix()))
+
+
+def _bounded(values: Iterable[_ImportReference], *, source: str) -> tuple[_ImportReference, ...]:
+    result = tuple(values)
+    if len(result) > DEPENDENCY_MAX_IMPORTS_PER_FILE:
+        raise _fail(
+            "SDAI-ARCH-DEPENDENCY-003",
+            f"dependency source exceeds {DEPENDENCY_MAX_IMPORTS_PER_FILE} imports: {source}",
+        )
+    return result
 
 
 def _python_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
@@ -223,11 +234,11 @@ def _python_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
                 result.append(_ImportReference(module, node.lineno, True, node.level))
             elif module:
                 result.append(_ImportReference(module, node.lineno, False))
-    return _bounded_imports(result, source=source)
+    return _bounded(result, source=source)
 
 
-def _strip_c_comments(text: str) -> str:
-    """Remove C-family comments while preserving newlines and string contents."""
+def _strip_c_family_comments(text: str) -> str:
+    """Remove // and /* */ comments while preserving strings and line numbers."""
     output: list[str] = []
     index = 0
     state = "code"
@@ -247,8 +258,8 @@ def _strip_c_comments(text: str) -> str:
                 state = "block-comment"
                 continue
             if char in {"'", '"', "`"}:
-                quote = char
                 state = "string"
+                quote = char
             output.append(char)
             index += 1
             continue
@@ -281,13 +292,13 @@ def _strip_c_comments(text: str) -> str:
 
 
 def _line_imports(text: str, pattern: re.Pattern[str], *, source: str) -> tuple[_ImportReference, ...]:
-    cleaned = _strip_c_comments(text)
-    result: list[_ImportReference] = []
+    cleaned = _strip_c_family_comments(text)
+    imports: list[_ImportReference] = []
     for line_number, line in enumerate(cleaned.splitlines(), start=1):
         match = pattern.match(line)
         if match is not None:
-            result.append(_ImportReference(match.group("module"), line_number, False))
-    return _bounded_imports(result, source=source)
+            imports.append(_ImportReference(match.group("module"), line_number, False))
+    return _bounded(imports, source=source)
 
 
 _JAVA_IMPORT = re.compile(r"^\s*import\s+(?:static\s+)?(?P<module>[A-Za-z_$][A-Za-z0-9_$.]*(?:\.\*)?)\s*;?")
@@ -296,32 +307,7 @@ _CSHARP_IMPORT = re.compile(r"^\s*using\s+(?:static\s+)?(?:[A-Za-z_][A-Za-z0-9_]
 _FSHARP_IMPORT = re.compile(r"^\s*open\s+(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s*$")
 
 
-def _javascript_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
-    cleaned = _strip_c_comments(text)
-    result: list[_ImportReference] = []
-    import_line = re.compile(
-        r"^\s*(?:import|export)\b(?:[^\n]*?\bfrom\s*)?[\"'](?P<module>[^\"']+)[\"']",
-    )
-    bare_import = re.compile(r"^\s*import\s*[\"'](?P<module>[^\"']+)[\"']")
-    require_call = re.compile(r"\brequire\s*\(\s*[\"'](?P<module>[^\"']+)[\"']\s*\)")
-    dynamic_import = re.compile(r"\bimport\s*\(\s*[\"'](?P<module>[^\"']+)[\"']\s*\)")
-    for line_number, line in enumerate(cleaned.splitlines(), start=1):
-        matched: set[tuple[int, str]] = set()
-        for pattern in (import_line, bare_import):
-            match = pattern.match(line)
-            if match is not None:
-                specifier = match.group("module")
-                matched.add((match.start(), specifier))
-        for pattern in (require_call, dynamic_import):
-            for match in pattern.finditer(line):
-                if _position_outside_string(line, match.start()):
-                    matched.add((match.start(), match.group("module")))
-        for _, specifier in sorted(matched):
-            result.append(_ImportReference(specifier, line_number, _is_local_specifier(specifier)))
-    return _bounded_imports(result, source=source)
-
-
-def _position_outside_string(line: str, position: int) -> bool:
+def _outside_string(line: str, position: int) -> bool:
     quote: str | None = None
     escaped = False
     for char in line[:position]:
@@ -338,32 +324,67 @@ def _position_outside_string(line: str, position: int) -> bool:
     return quote is None
 
 
+def _javascript_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
+    """Extract only literal JS/TS module specifiers; dynamic expressions fail closed elsewhere."""
+    cleaned = _strip_c_family_comments(text)
+    imports: list[_ImportReference] = []
+    static_from = re.compile(
+        r"^\s*(?:import|export)\b[^\n]*?\bfrom\s*[\"'](?P<module>[^\"']+)[\"']",
+    )
+    bare_import = re.compile(r"^\s*import\s*[\"'](?P<module>[^\"']+)[\"']")
+    call_import = re.compile(r"\b(?:require|import)\s*\(\s*[\"'](?P<module>[^\"']+)[\"']\s*\)")
+    nonliteral_call = re.compile(r"\b(?:require|import)\s*\(")
+    for line_number, line in enumerate(cleaned.splitlines(), start=1):
+        positions: set[tuple[int, str]] = set()
+        for pattern in (static_from, bare_import):
+            match = pattern.match(line)
+            if match is not None:
+                positions.add((match.start(), match.group("module")))
+        literal_starts: set[int] = set()
+        for match in call_import.finditer(line):
+            if _outside_string(line, match.start()):
+                positions.add((match.start(), match.group("module")))
+                literal_starts.add(match.start())
+        for match in nonliteral_call.finditer(line):
+            if not _outside_string(line, match.start()) or match.start() in literal_starts:
+                continue
+            remainder = line[match.end() :].lstrip()
+            if not remainder.startswith(("'", '"')):
+                raise _fail(
+                    "SDAI-ARCH-DEPENDENCY-003",
+                    f"dynamic JavaScript/TypeScript import cannot be resolved deterministically at {source}:{line_number}",
+                )
+        for _, specifier in sorted(positions):
+            imports.append(_ImportReference(specifier, line_number, _is_local_specifier(specifier)))
+    return _bounded(imports, source=source)
+
+
 def _go_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
-    cleaned = _strip_c_comments(text)
-    result: list[_ImportReference] = []
+    cleaned = _strip_c_family_comments(text)
+    imports: list[_ImportReference] = []
     in_block = False
-    quoted = re.compile(r"(?:[A-Za-z_.][A-Za-z0-9_.]*\s+)?[\"`](?P<module>[^\"`]+)[\"`]")
+    literal = re.compile(r"(?:[A-Za-z_.][A-Za-z0-9_.]*\s+)?[\"`](?P<module>[^\"`]+)[\"`]")
     for line_number, line in enumerate(cleaned.splitlines(), start=1):
         stripped = line.strip()
         if not in_block:
-            if re.match(r"^import\s*\($", stripped):
+            if re.fullmatch(r"import\s*\(", stripped):
                 in_block = True
                 continue
             if not stripped.startswith("import "):
                 continue
-            match = quoted.search(stripped[len("import ") :])
+            match = literal.search(stripped[len("import ") :])
             if match is not None:
-                result.append(_ImportReference(match.group("module"), line_number, False))
+                imports.append(_ImportReference(match.group("module"), line_number, False))
             continue
         if stripped == ")":
             in_block = False
             continue
-        match = quoted.search(stripped)
+        match = literal.search(stripped)
         if match is not None:
-            result.append(_ImportReference(match.group("module"), line_number, False))
+            imports.append(_ImportReference(match.group("module"), line_number, False))
     if in_block:
         raise _fail("SDAI-ARCH-DEPENDENCY-003", f"unterminated Go import block in {source}")
-    return _bounded_imports(result, source=source)
+    return _bounded(imports, source=source)
 
 
 def _strip_powershell_comment(line: str) -> str:
@@ -383,12 +404,15 @@ def _strip_powershell_comment(line: str) -> str:
     return line
 
 
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 def _powershell_imports(text: str, *, source: str) -> tuple[_ImportReference, ...]:
-    result: list[_ImportReference] = []
-    import_module = re.compile(
-        r"^\s*Import-Module\s+(?:-Name\s+)?(?P<module>[^\s;]+)",
-        re.IGNORECASE,
-    )
+    imports: list[_ImportReference] = []
+    import_module = re.compile(r"^\s*Import-Module\s+(?:-Name\s+)?(?P<module>[^\s;]+)", re.IGNORECASE)
     dot_source = re.compile(r"^\s*\.\s+(?P<module>[^\s;]+)")
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = _strip_powershell_comment(raw_line)
@@ -397,31 +421,15 @@ def _powershell_imports(text: str, *, source: str) -> tuple[_ImportReference, ..
             if match is None:
                 continue
             specifier = _unquote(match.group("module"))
-            if not specifier or specifier.startswith("$") or "$" in specifier:
+            if not specifier or "$" in specifier:
                 raise _fail(
                     "SDAI-ARCH-DEPENDENCY-003",
                     f"dynamic PowerShell module path cannot be resolved deterministically at {source}:{line_number}",
                 )
             specifier = specifier.replace("\\", "/")
-            result.append(_ImportReference(specifier, line_number, _is_local_specifier(specifier)))
+            imports.append(_ImportReference(specifier, line_number, _is_local_specifier(specifier)))
             break
-    return _bounded_imports(result, source=source)
-
-
-def _unquote(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
-def _bounded_imports(values: Iterable[_ImportReference], *, source: str) -> tuple[_ImportReference, ...]:
-    result = tuple(values)
-    if len(result) > DEPENDENCY_MAX_IMPORTS_PER_FILE:
-        raise _fail(
-            "SDAI-ARCH-DEPENDENCY-003",
-            f"dependency source exceeds {DEPENDENCY_MAX_IMPORTS_PER_FILE} imports: {source}",
-        )
-    return result
+    return _bounded(imports, source=source)
 
 
 def _imports_for(path: Path, text: str, *, source: str) -> tuple[_ImportReference, ...]:
@@ -446,11 +454,11 @@ def _imports_for(path: Path, text: str, *, source: str) -> tuple[_ImportReferenc
 
 
 def _is_local_specifier(specifier: str) -> bool:
-    normalized = specifier.replace("\\", "/")
-    return normalized.startswith("./") or normalized.startswith("../") or normalized in {".", ".."}
+    value = specifier.replace("\\", "/")
+    return value in {".", ".."} or value.startswith("./") or value.startswith("../")
 
 
-def _normalize_local_candidate(root: Path, importer: Path, specifier: str) -> Path:
+def _local_base(root: Path, importer: Path, specifier: str) -> Path:
     normalized = specifier.replace("\\", "/")
     if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
         raise _fail(
@@ -459,39 +467,38 @@ def _normalize_local_candidate(root: Path, importer: Path, specifier: str) -> Pa
         )
     candidate = importer.parent.joinpath(*PurePosixPath(normalized).parts)
     try:
-        return ensure_within_project(root, candidate, label="local dependency import")
+        safe = ensure_within_project(root, candidate, label="local dependency import")
     except PathSafetyError as exc:
         raise _fail(
             "SDAI-ARCH-DEPENDENCY-004",
             f"local dependency import escapes project root: {specifier!r}",
         ) from exc
+    return safe
 
 
-def _resolve_file_candidates(
+def _local_file_candidates(
     root: Path,
     importer: Path,
     specifier: str,
     *,
     suffixes: tuple[str, ...],
 ) -> tuple[Path, ...]:
-    base = _normalize_local_candidate(root, importer, specifier)
+    base = _local_base(root, importer, specifier)
     candidates: list[Path] = [base]
-    if base.suffix == "":
+    if not base.suffix:
         candidates.extend(Path(str(base) + suffix) for suffix in suffixes)
         candidates.extend(base / ("index" + suffix) for suffix in suffixes)
-    result: list[Path] = []
-    seen: set[Path] = set()
+    result: set[Path] = set()
     for candidate in candidates:
-        if candidate in seen or not candidate.exists():
+        if not candidate.exists():
             continue
-        seen.add(candidate)
         _reject_symlink_chain(root, candidate, label="local dependency target")
         if candidate.is_file() or candidate.is_dir():
-            result.append(candidate)
+            result.add(candidate)
     return tuple(sorted(result, key=lambda item: item.relative_to(root).as_posix()))
 
 
-def _resolve_python_relative(
+def _python_relative_candidates(
     root: Path,
     importer: Path,
     reference: _ImportReference,
@@ -500,56 +507,41 @@ def _resolve_python_relative(
     for _ in range(max(reference.relative_level - 1, 0)):
         base = base.parent
     module_parts = tuple(part for part in reference.specifier.split(".") if part)
-    target = base.joinpath(*module_parts) if module_parts else base
+    candidate = base.joinpath(*module_parts) if module_parts else base
     try:
-        safe = ensure_within_project(root, target, label="relative Python import")
+        safe = ensure_within_project(root, candidate, label="relative Python import")
     except PathSafetyError as exc:
         raise _fail(
             "SDAI-ARCH-DEPENDENCY-004",
             f"relative Python import escapes project root from {importer.relative_to(root).as_posix()}",
         ) from exc
-    candidates: list[Path] = [safe]
-    if safe.suffix == "":
-        candidates.extend((Path(str(safe) + ".py"), safe / "__init__.py"))
-    result: list[Path] = []
-    for candidate in candidates:
-        if candidate.exists():
-            _reject_symlink_chain(root, candidate, label="relative Python import target")
-            if candidate.is_file() or candidate.is_dir():
-                result.append(candidate)
-    unique = {item for item in result}
-    return tuple(sorted(unique, key=lambda item: item.relative_to(root).as_posix()))
+    candidates = (safe, Path(str(safe) + ".py"), safe / "__init__.py")
+    result: set[Path] = set()
+    for item in candidates:
+        if item.exists():
+            _reject_symlink_chain(root, item, label="relative Python import target")
+            if item.is_file() or item.is_dir():
+                result.add(item)
+    return tuple(sorted(result, key=lambda item: item.relative_to(root).as_posix()))
 
 
-def _repository_module_candidates(
-    mapper: _ComponentMapper,
-    specifier: str,
-    *,
-    language: str,
-) -> tuple[Path, ...]:
-    parts = tuple(part for part in re.split(r"[./]", specifier.rstrip(".*")) if part)
+def _python_repository_candidates(mapper: _ComponentMapper, specifier: str) -> tuple[Path, ...]:
+    parts = tuple(part for part in specifier.rstrip(".*").split(".") if part)
     if not parts:
         return ()
-    suffixes: tuple[str, ...]
-    if language == "python":
-        suffixes = _PYTHON_SUFFIXES
-    else:
-        return ()
     result: set[Path] = set()
-    for root_path in mapper.existing_component_roots():
-        base = root_path.joinpath(*parts)
-        candidates = [Path(str(base) + suffix) for suffix in suffixes]
-        candidates.append(base / "__init__.py")
-        if base.is_dir():
-            candidates.append(base)
-        for candidate in candidates:
-            if candidate.exists():
-                _reject_symlink_chain(mapper.root, candidate, label="repository module target")
+    for component_root in mapper.existing_component_roots():
+        base = component_root.joinpath(*parts)
+        for candidate in (Path(str(base) + ".py"), base / "__init__.py", base):
+            if not candidate.exists():
+                continue
+            _reject_symlink_chain(mapper.root, candidate, label="repository module target")
+            if candidate.is_file() or candidate.is_dir():
                 result.add(candidate)
     return tuple(sorted(result, key=lambda item: item.relative_to(mapper.root).as_posix()))
 
 
-def _owner_from_candidates(
+def _owner_for_candidates(
     mapper: _ComponentMapper,
     candidates: tuple[Path, ...],
     *,
@@ -581,12 +573,15 @@ def _owner_from_candidates(
 
 
 def _external_target(specifier: str) -> str:
-    base = specifier.rstrip(".*").split("/")[0] if not specifier.startswith("@") else "/".join(specifier.split("/")[:2])
-    base = base.split(".")[0] if "." in base and "/" not in specifier else base
+    if specifier.startswith("@"):
+        base = "/".join(specifier.split("/")[:2])
+    elif "/" in specifier:
+        base = specifier.split("/", 1)[0]
+    else:
+        base = specifier.split(".", 1)[0]
     slug = re.sub(r"[^A-Za-z0-9._@+\-]+", "-", base).strip("-") or "dependency"
-    slug = slug[:80]
     digest = sha256(specifier.encode("utf-8")).hexdigest()[:16]
-    return f"external:{slug}:{digest}"
+    return f"external:{slug[:80]}:{digest}"
 
 
 def _language(path: Path) -> str:
@@ -597,9 +592,7 @@ def _language(path: Path) -> str:
         return "java"
     if suffix in {".kt", ".kts"}:
         return "kotlin"
-    if suffix == ".cs":
-        return "dotnet"
-    if suffix in {".fs", ".fsx"}:
+    if suffix in {".cs", ".fs", ".fsx"}:
         return "dotnet"
     if suffix in _JS_SUFFIXES:
         return "javascript"
@@ -622,18 +615,18 @@ def _resolve_reference(
         raise _fail("SDAI-ARCH-DEPENDENCY-003", f"empty import specifier at {source}:{reference.line}")
     language = _language(importer)
     if language == "python" and reference.relative_level:
-        return _owner_from_candidates(
+        return _owner_for_candidates(
             mapper,
-            _resolve_python_relative(mapper.root, importer, reference),
+            _python_relative_candidates(mapper.root, importer, reference),
             specifier=("." * reference.relative_level) + specifier,
             source=source,
             line=reference.line,
         )
     if reference.local:
         suffixes = _JS_SUFFIXES if language == "javascript" else _POWERSHELL_SUFFIXES
-        return _owner_from_candidates(
+        return _owner_for_candidates(
             mapper,
-            _resolve_file_candidates(mapper.root, importer, specifier, suffixes=suffixes),
+            _local_file_candidates(mapper.root, importer, specifier, suffixes=suffixes),
             specifier=specifier,
             source=source,
             line=reference.line,
@@ -641,15 +634,16 @@ def _resolve_reference(
     owner = mapper.owner_for_module(specifier.rstrip(".*"))
     if owner is not None:
         return owner
-    repository_candidates = _repository_module_candidates(mapper, specifier, language=language)
-    if repository_candidates:
-        return _owner_from_candidates(
-            mapper,
-            repository_candidates,
-            specifier=specifier,
-            source=source,
-            line=reference.line,
-        )
+    if language == "python":
+        repository_candidates = _python_repository_candidates(mapper, specifier)
+        if repository_candidates:
+            return _owner_for_candidates(
+                mapper,
+                repository_candidates,
+                specifier=specifier,
+                source=source,
+                line=reference.line,
+            )
     return _external_target(specifier)
 
 
@@ -657,13 +651,23 @@ def _aggregate_provenance(values: Iterable[TraceProvenance]) -> tuple[TraceProve
     by_location: dict[tuple[str, int], TraceProvenance] = {}
     for item in values:
         previous = by_location.get(item.location)
-        if previous is not None and previous != item:
-            # Multiple specifiers at one source line are still one deterministic source location.
-            detail = min(previous.detail or "", item.detail or "") or previous.detail or item.detail
-            by_location[item.location] = TraceProvenance(item.source, item.line, detail=detail)
-        else:
+        if previous is None:
             by_location[item.location] = item
-    return tuple(sorted(by_location.values(), key=lambda item: (item.source, item.line, item.detail or "")))
+            continue
+        if previous == item:
+            continue
+        details = sorted({value for value in (previous.detail, item.detail) if value})
+        by_location[item.location] = TraceProvenance(
+            item.source,
+            item.line,
+            detail="; ".join(details),
+        )
+    return tuple(
+        sorted(
+            by_location.values(),
+            key=lambda item: (item.source.casefold(), item.source, item.line, item.detail or ""),
+        )
+    )
 
 
 class DependencyImportObserver:
@@ -676,36 +680,29 @@ class DependencyImportObserver:
         project_root: Path,
         approved: ApprovedArchitecture,
     ) -> ArchitectureObservation:
-        root = project_root.resolve()
         if not isinstance(approved, ApprovedArchitecture):
             raise _fail("SDAI-ARCH-DEPENDENCY-005", "dependency observation requires approved architecture truth")
+        root = project_root.resolve()
         mapper = _ComponentMapper(root, approved.topology.components)
         provenance_by_edge: dict[tuple[str, str], list[TraceProvenance]] = {}
-
         for path in _source_files(mapper):
             relative = PurePosixPath(path.relative_to(root).as_posix())
             source_component = mapper.owner_for_relative_path(relative)
             if source_component is None:
                 continue
-            source_text = _read_source(root, path)
             source = relative.as_posix()
-            for reference in _imports_for(path, source_text, source=source):
-                target_component = _resolve_reference(
-                    mapper,
-                    path,
-                    reference,
-                    source=source,
-                )
-                if target_component == source_component:
+            text = _read_source(root, path)
+            for reference in _imports_for(path, text, source=source):
+                target = _resolve_reference(mapper, path, reference, source=source)
+                if target == source_component:
                     continue
-                provenance_by_edge.setdefault((source_component, target_component), []).append(
+                provenance_by_edge.setdefault((source_component, target), []).append(
                     TraceProvenance(
                         source,
                         reference.line,
                         detail=f"{_language(path)} import {reference.specifier}",
                     )
                 )
-
         facts = tuple(
             ObservedArchitectureFact(
                 kind=ArchitectureFactKind.DEPENDENCY,
@@ -719,7 +716,4 @@ class DependencyImportObserver:
         return ArchitectureObservation(self.observer_id, facts)
 
 
-__all__ = [
-    "DEPENDENCY_OBSERVER_ID",
-    "DependencyImportObserver",
-]
+__all__ = ["DEPENDENCY_OBSERVER_ID", "DependencyImportObserver"]
