@@ -473,7 +473,11 @@ def _local_base(root: Path, importer: Path, specifier: str) -> Path:
             "SDAI-ARCH-DEPENDENCY-004",
             f"local dependency import escapes project root: {specifier!r}",
         ) from exc
-    return safe
+    # ensure_within_project validates the resolved location but deliberately returns
+    # the caller's lexical path. Ownership must use the same normalized path that was
+    # safety-checked; otherwise '..' segments can make a cross-component target look
+    # like it still belongs to the importer component.
+    return safe.resolve(strict=False)
 
 
 def _local_file_candidates(
@@ -515,6 +519,7 @@ def _python_relative_candidates(
             "SDAI-ARCH-DEPENDENCY-004",
             f"relative Python import escapes project root from {importer.relative_to(root).as_posix()}",
         ) from exc
+    safe = safe.resolve(strict=False)
     candidates = (safe, Path(str(safe) + ".py"), safe / "__init__.py")
     result: set[Path] = set()
     for item in candidates:
