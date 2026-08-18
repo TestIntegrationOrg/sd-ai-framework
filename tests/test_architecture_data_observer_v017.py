@@ -111,6 +111,7 @@ def _topology(root: Path, *, with_data_policy: bool = True) -> None:
                 ),
             )
         )
+    facts_yaml = facts if facts else "    []\n"
     approval = f"specs/changes/{FEATURE}/evidence/architecture-approval.json"
     _write(
         root / "specs" / "changes" / FEATURE / "architecture" / "approved-topology.yaml",
@@ -129,7 +130,7 @@ spec:
       roots: [src/reporting]
       modulePrefixes: [acme.reporting]
   facts:
-{facts if facts else '    []\n'}""",
+{facts_yaml}""",
     )
 
 
@@ -219,8 +220,8 @@ def test_cross_component_write_matches_forbidden_policy_with_source_provenance(t
 
     approved, observation = _observe(root)
     report = compare_architecture(approved, (observation,))
-
     forbidden = [item for item in report.findings if item.code == "ARCH-DRIFT-FORBIDDEN-PRESENT"]
+
     assert len(forbidden) == 1
     assert forbidden[0].approved_fact_id == "CUSTOMERS-REPORT-WRITE"
     assert forbidden[0].observed_provenance[0].source == "src/reporting/mutation.sql"
@@ -235,10 +236,7 @@ def test_data_ownership_move_is_required_missing_and_unexpected_new_owner(tmp_pa
     report = compare_architecture(approved, (observation,))
     ownership = [item for item in report.findings if item.kind is ArchitectureFactKind.DATA_OWNERSHIP]
 
-    assert {item.code for item in ownership} == {
-        "ARCH-DRIFT-REQUIRED-MISSING",
-        "ARCH-DRIFT-UNEXPECTED-PRESENT",
-    }
+    assert {item.code for item in ownership} == {"ARCH-DRIFT-REQUIRED-MISSING", "ARCH-DRIFT-UNEXPECTED-PRESENT"}
     unexpected = next(item for item in ownership if item.code == "ARCH-DRIFT-UNEXPECTED-PRESENT")
     assert unexpected.source == "reporting"
     assert unexpected.observed_provenance[0].source == "src/reporting/migrations/001.sql"
