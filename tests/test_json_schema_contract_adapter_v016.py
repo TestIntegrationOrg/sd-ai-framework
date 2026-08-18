@@ -65,6 +65,53 @@ def test_local_refs_are_allowed_and_remote_refs_are_rejected(tmp_path: Path) -> 
     }
 
 
+def test_root_and_plain_name_anchor_refs_are_local(tmp_path: Path) -> None:
+    root_ref = _snapshot(tmp_path, "root-ref", {"$ref": "#"})
+    assert check_contract(root_ref, _registry()).valid
+
+    anchor_ref = _snapshot(
+        tmp_path,
+        "anchor-ref",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"identifier": {"$anchor": "identifier", "type": "string"}},
+            "properties": {"id": {"$ref": "#identifier"}},
+        },
+    )
+    assert check_contract(anchor_ref, _registry()).valid
+
+    unresolved = _snapshot(tmp_path, "unresolved-anchor", {"$ref": "#missing"})
+    codes = {item.code for item in check_contract(unresolved, _registry()).findings}
+    assert "SDAI-CONTRACT-JSONSCHEMA-008" in codes
+    assert "SDAI-CONTRACT-JSONSCHEMA-007" not in codes
+
+
+def test_duplicate_anchor_and_dynamic_reference_fail_closed(tmp_path: Path) -> None:
+    duplicate = _snapshot(
+        tmp_path,
+        "duplicate-anchor",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {
+                "left": {"$anchor": "shared", "type": "string"},
+                "right": {"$anchor": "shared", "type": "integer"},
+            },
+        },
+    )
+    assert "SDAI-CONTRACT-JSONSCHEMA-005" in {
+        item.code for item in check_contract(duplicate, _registry()).findings
+    }
+
+    dynamic = _snapshot(
+        tmp_path,
+        "dynamic-ref",
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "$dynamicRef": "#node"},
+    )
+    assert "SDAI-CONTRACT-JSONSCHEMA-009" in {
+        item.code for item in check_contract(dynamic, _registry()).findings
+    }
+
+
 def test_type_enum_and_required_narrowing_are_breaking(tmp_path: Path) -> None:
     before = _snapshot(
         tmp_path,
@@ -113,11 +160,114 @@ def test_bounds_and_additional_properties_tightening_are_breaking(tmp_path: Path
     assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-015" in codes
 
 
+def test_additional_properties_schema_transition_is_breaking(tmp_path: Path) -> None:
+    before = _snapshot(tmp_path, "before", {"type": "object"})
+    after = _snapshot(
+        tmp_path,
+        "after",
+        {"type": "object", "additionalProperties": {"type": "string"}},
+    )
+    codes = {item.code for item in diff_contracts(before, after, _registry()).findings}
+    assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-015" in codes
+    assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-010" in codes
+
+
+def test_declaring_property_can_restrict_previously_additional_value(tmp_path: Path) -> None:
+    before = _snapshot(tmp_path, "before", {"type": "object"})
+    after = _snapshot(
+        tmp_path,
+        "after",
+        {"type": "object", "properties": {"id": {"type": "string"}}},
+    )
+    result = diff_contracts(before, after, _registry())
+    assert not result.compatible
+    assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-017" in {item.code for item in result.findings}
+
+
+def test_declaring_property_is_widening_when_it_was_previously_forbidden(tmp_path: Path) -> None:
+    before = _snapshot(tmp_path, "before", {"type": "object", "additionalProperties": False})
+    after = _snapshot(
+        tmp_path,
+        "after",
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"id": {"type": "string"}},
+        },
+    )
+    assert diff_contracts(before, after, _registry()).compatible
+
+
+def test_removing_declared_property_is_breaking_when_additional_is_forbidden(tmp_path: Path) -> None:
+    before = _snapshot(
+        tmp_path,
+        "before",
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"id": {"type": "string"}},
+        },
+    )
+    after = _snapshot(tmp_path, "after", {"type": "object", "additionalProperties": False})
+    result = diff_contracts(before, after, _registry())
+    assert not result.compatible
+    assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-018" in {item.code for item in result.findings}
+
+
 def test_composition_change_is_classified(tmp_path: Path) -> None:
     before = _snapshot(tmp_path, "before", {"oneOf": [{"type": "string"}, {"type": "integer"}]})
     after = _snapshot(tmp_path, "after", {"oneOf": [{"type": "string"}]})
     codes = {item.code for item in diff_contracts(before, after, _registry()).findings}
     assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-016" in codes
+
+
+def test_modern_ref_sibling_assertion_change_is_classified(tmp_path: Path) -> None:
+    before = _snapshot(
+        tmp_path,
+        "before",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"value": {"type": "string"}},
+            "$ref": "#/$defs/value",
+            "minLength": 1,
+        },
+    )
+    after = _snapshot(
+        tmp_path,
+        "after",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {"value": {"type": "string"}},
+            "$ref": "#/$defs/value",
+            "minLength": 2,
+        },
+    )
+    codes = {item.code for item in diff_contracts(before, after, _registry()).findings}
+    assert "SDAI-CONTRACT-JSONSCHEMA-DIFF-016" in codes
+
+
+def test_draft7_ref_siblings_are_ignored_for_compatibility(tmp_path: Path) -> None:
+    before = _snapshot(
+        tmp_path,
+        "before",
+        {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "definitions": {"value": {"type": "string"}},
+            "$ref": "#/definitions/value",
+            "minLength": 1,
+        },
+    )
+    after = _snapshot(
+        tmp_path,
+        "after",
+        {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "definitions": {"value": {"type": "string"}},
+            "$ref": "#/definitions/value",
+            "minLength": 2,
+        },
+    )
+    assert diff_contracts(before, after, _registry()).compatible
 
 
 def test_widening_is_backward_compatible_but_forward_breaking(tmp_path: Path) -> None:
