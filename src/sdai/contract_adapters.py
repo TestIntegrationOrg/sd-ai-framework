@@ -6,7 +6,7 @@ from sdai.asyncapi_contracts import AsyncAPIContractAdapter
 from sdai.contracts import ContractAdapterRegistry, ContractSnapshot
 from sdai.json_schema_contracts import JSONSchemaContractAdapter
 from sdai.openapi_directional import OpenAPIContractAdapter
-from sdai.protobuf_contracts import ProtobufContractAdapter
+from sdai.protobuf_directional import ProtobufContractAdapter
 
 
 def default_contract_registry(
