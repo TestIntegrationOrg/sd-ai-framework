@@ -187,12 +187,8 @@ def _slug(value: str, *, limit: int = 48) -> str:
 
 def deployment_subject_id(source_id: str, platform: str, namespace: str, kind: str, name: str) -> str:
     parts = (
-        "workload",
-        _slug(source_id, limit=32),
-        _slug(platform, limit=16),
-        _slug(namespace, limit=40),
-        _slug(kind.casefold(), limit=28),
-        _slug(name, limit=48),
+        "workload", _slug(source_id, limit=32), _slug(platform, limit=16),
+        _slug(namespace, limit=40), _slug(kind.casefold(), limit=28), _slug(name, limit=48),
     )
     value = ":".join(parts)
     if len(value) <= 240:
@@ -214,11 +210,7 @@ def _provenance(source_path: str, line: int, detail: str) -> tuple[TraceProvenan
 
 
 def _component_candidates(
-    repository: ArchitectureRepositoryIndex,
-    source_path: str,
-    *,
-    name: str,
-    explicit: Iterable[str | None],
+    repository: ArchitectureRepositoryIndex, source_path: str, *, name: str, explicit: Iterable[str | None]
 ) -> str:
     components = set(repository.component_ids)
     candidates: set[str] = set()
@@ -238,10 +230,7 @@ def _component_candidates(
     if len(candidates) != 1:
         if not candidates:
             raise _fail("SDAI-ARCH-DEPLOY-004", f"deployment resource {name!r} has no deterministic component mapping")
-        raise _fail(
-            "SDAI-ARCH-DEPLOY-004",
-            f"deployment resource {name!r} has ambiguous component mapping: {', '.join(sorted(candidates))}",
-        )
+        raise _fail("SDAI-ARCH-DEPLOY-004", f"deployment resource {name!r} has ambiguous component mapping: {', '.join(sorted(candidates))}")
     return next(iter(candidates))
 
 
@@ -275,21 +264,11 @@ def _ports(values: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
     return [unique[key] for key in sorted(unique)]
 
 
-def _fact(
-    *, source: str, target: str, attributes: Mapping[str, object], provenance: tuple[TraceProvenance, ...]
-) -> ObservedArchitectureFact:
-    return ObservedArchitectureFact(
-        kind=ArchitectureFactKind.DEPLOYMENT,
-        source=source,
-        target=target,
-        attributes=attributes,
-        provenance=provenance,
-    )
+def _fact(*, source: str, target: str, attributes: Mapping[str, object], provenance: tuple[TraceProvenance, ...]) -> ObservedArchitectureFact:
+    return ObservedArchitectureFact(kind=ArchitectureFactKind.DEPLOYMENT, source=source, target=target, attributes=attributes, provenance=provenance)
 
 
-def _exposure_fact(
-    *, component: str, resource_target: str, exposure: str, attributes: Mapping[str, object], provenance: tuple[TraceProvenance, ...]
-) -> ObservedArchitectureFact:
+def _exposure_fact(*, component: str, resource_target: str, exposure: str, attributes: Mapping[str, object], provenance: tuple[TraceProvenance, ...]) -> ObservedArchitectureFact:
     payload = dict(attributes)
     payload["resource"] = resource_target
     source = _EXTERNAL_SUBJECT if exposure == "public" else component
@@ -298,13 +277,9 @@ def _exposure_fact(
 
 def _k8s_component_labels(document: Mapping[str, object]) -> tuple[str | None, str | None]:
     metadata = _mapping(document.get("metadata"))
-    metadata_labels = _mapping(metadata.get("labels"))
-    direct = _string(metadata_labels.get("sdai.io/component"))
-    spec = _mapping(document.get("spec"))
-    template = _mapping(spec.get("template"))
-    template_metadata = _mapping(template.get("metadata"))
-    template_labels = _mapping(template_metadata.get("labels"))
-    nested = _string(template_labels.get("sdai.io/component"))
+    direct = _string(_mapping(metadata.get("labels")).get("sdai.io/component"))
+    template = _mapping(_mapping(document.get("spec")).get("template"))
+    nested = _string(_mapping(_mapping(template.get("metadata")).get("labels")).get("sdai.io/component"))
     return direct, nested
 
 
@@ -317,29 +292,22 @@ def _k8s_container_ports(document: Mapping[str, object]) -> list[dict[str, objec
     if isinstance(containers, list):
         for container in containers:
             ports = _mapping(container).get("ports")
-            if not isinstance(ports, list):
-                continue
-            for port in ports:
-                mapping = _mapping(port)
-                container_port = mapping.get("containerPort")
-                if container_port is not None:
-                    raw_ports.append({"port": container_port, "protocol": mapping.get("protocol", "TCP")})
+            if isinstance(ports, list):
+                for port in ports:
+                    mapping = _mapping(port)
+                    if mapping.get("containerPort") is not None:
+                        raw_ports.append({"port": mapping.get("containerPort"), "protocol": mapping.get("protocol", "TCP")})
     return _ports(raw_ports)
 
 
 def _k8s_service_ports(document: Mapping[str, object]) -> list[dict[str, object]]:
-    spec = _mapping(document.get("spec"))
+    values = _mapping(document.get("spec")).get("ports")
     raw_ports: list[Mapping[str, object]] = []
-    values = spec.get("ports")
     if isinstance(values, list):
         for raw in values:
             item = _mapping(raw)
             if item.get("port") is not None:
-                raw_ports.append({
-                    "port": item.get("port"),
-                    "targetPort": item.get("targetPort"),
-                    "protocol": item.get("protocol", "TCP"),
-                })
+                raw_ports.append({"port": item.get("port"), "targetPort": item.get("targetPort"), "protocol": item.get("protocol", "TCP")})
     return _ports(raw_ports)
 
 
@@ -366,19 +334,17 @@ def _parse_yaml_documents(text: str, *, source_path: str) -> tuple[Mapping[str, 
 
 def _k8s_identity(document: Mapping[str, object], *, kind: str) -> tuple[str, str]:
     metadata = _mapping(document.get("metadata"))
-    name = _safe_name(metadata.get("name"), label=f"Kubernetes {kind} metadata.name")
-    namespace = _safe_name(metadata.get("namespace") or "default", label=f"Kubernetes {kind} metadata.namespace")
-    return name, namespace
+    return (
+        _safe_name(metadata.get("name"), label=f"Kubernetes {kind} metadata.name"),
+        _safe_name(metadata.get("namespace") or "default", label=f"Kubernetes {kind} metadata.namespace"),
+    )
 
 
-def _kubernetes_facts(
-    repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str
-) -> tuple[ObservedArchitectureFact, ...]:
+def _kubernetes_facts(repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str) -> tuple[ObservedArchitectureFact, ...]:
     documents = _parse_yaml_documents(text, source_path=source.path)
     facts: list[ObservedArchitectureFact] = []
     service_components: dict[tuple[str, str], str] = {}
 
-    # First observe workloads.
     for index, document in enumerate(documents, start=1):
         kind = _string(document.get("kind"))
         if kind not in _K8S_WORKLOAD_KINDS:
@@ -387,25 +353,17 @@ def _kubernetes_facts(
         direct, nested = _k8s_component_labels(document)
         component = _component_candidates(repository, source.path, name=name, explicit=(direct, nested))
         target = deployment_subject_id(source.source_id, "kubernetes", namespace, kind, name)
-        facts.append(_fact(
-            source=component,
-            target=target,
-            attributes={
-                "role": "workload", "platform": "kubernetes", "sourceId": source.source_id,
-                "environment": source.environment, "namespace": namespace, "workloadKind": kind,
-                "name": name, "direction": "placement", "ports": _k8s_container_ports(document),
-            },
-            provenance=_provenance(source.path, index, f"Kubernetes {kind} {namespace}/{name}"),
-        ))
+        facts.append(_fact(source=component, target=target, attributes={
+            "role": "workload", "platform": "kubernetes", "sourceId": source.source_id,
+            "environment": source.environment, "namespace": namespace, "workloadKind": kind,
+            "name": name, "direction": "placement", "ports": _k8s_container_ports(document),
+        }, provenance=_provenance(source.path, index, f"Kubernetes {kind} {namespace}/{name}")))
 
-    # Resolve Services before Ingress so backend resolution is document-order independent.
     for document in documents:
         if _string(document.get("kind")) != "Service":
             continue
         name, namespace = _k8s_identity(document, kind="Service")
-        metadata = _mapping(document.get("metadata"))
-        labels = _mapping(metadata.get("labels"))
-        explicit = _string(labels.get("sdai.io/component"))
+        explicit = _string(_mapping(_mapping(document.get("metadata")).get("labels")).get("sdai.io/component"))
         component = _component_candidates(repository, source.path, name=name, explicit=(explicit,))
         key = (namespace, name)
         previous = service_components.get(key)
@@ -413,15 +371,12 @@ def _kubernetes_facts(
             raise _fail("SDAI-ARCH-DEPLOY-004", f"Kubernetes Service {namespace}/{name} has conflicting component mappings")
         service_components[key] = component
 
-    # Then observe Service/Ingress exposure.
     for index, document in enumerate(documents, start=1):
         kind = _string(document.get("kind"))
         if kind not in {"Service", "Ingress"}:
             continue
         name, namespace = _k8s_identity(document, kind=kind)
-        metadata = _mapping(document.get("metadata"))
-        labels = _mapping(metadata.get("labels"))
-        explicit = _string(labels.get("sdai.io/component"))
+        explicit = _string(_mapping(_mapping(document.get("metadata")).get("labels")).get("sdai.io/component"))
         if kind == "Service":
             component = service_components[(namespace, name)]
             spec = _mapping(document.get("spec"))
@@ -434,9 +389,7 @@ def _kubernetes_facts(
             else:
                 spec = _mapping(document.get("spec"))
                 backend_names: set[str] = set()
-                default_backend = _mapping(spec.get("defaultBackend"))
-                default_service = _mapping(default_backend.get("service"))
-                default_name = _string(default_service.get("name"))
+                default_name = _string(_mapping(_mapping(spec.get("defaultBackend")).get("service")).get("name"))
                 if default_name is not None:
                     backend_names.add(default_name)
                 rules = spec.get("rules")
@@ -450,25 +403,21 @@ def _kubernetes_facts(
                             service_name = _string(_mapping(backend.get("service")).get("name"))
                             if service_name is not None:
                                 backend_names.add(service_name)
-                resolved = {service_components[(namespace, backend)] for backend in backend_names if (namespace, backend) in service_components}
-                if len(resolved) != 1 or len(resolved) != len({service_components.get((namespace, backend)) for backend in backend_names} - {None}):
+                if not backend_names or any((namespace, backend) not in service_components for backend in backend_names):
+                    raise _fail("SDAI-ARCH-DEPLOY-004", f"Kubernetes Ingress {name!r} has ambiguous/unresolved component backends")
+                resolved = {service_components[(namespace, backend)] for backend in backend_names}
+                if len(resolved) != 1:
                     raise _fail("SDAI-ARCH-DEPLOY-004", f"Kubernetes Ingress {name!r} has ambiguous/unresolved component backends")
                 component = next(iter(resolved))
             spec = _mapping(document.get("spec"))
             exposure = "public"
             ports = [{"port": 443, "protocol": "HTTPS"}] if isinstance(spec.get("tls"), list) and spec.get("tls") else [{"port": 80, "protocol": "HTTP"}]
         resource_target = deployment_subject_id(source.source_id, "kubernetes", namespace, kind, name)
-        facts.append(_exposure_fact(
-            component=component,
-            resource_target=resource_target,
-            exposure=exposure,
-            attributes={
-                "role": "exposure", "platform": "kubernetes", "sourceId": source.source_id,
-                "environment": source.environment, "namespace": namespace, "resourceKind": kind,
-                "name": name, "exposure": exposure, "direction": "inbound", "ports": ports,
-            },
-            provenance=_provenance(source.path, index, f"Kubernetes {kind} {namespace}/{name}"),
-        ))
+        facts.append(_exposure_fact(component=component, resource_target=resource_target, exposure=exposure, attributes={
+            "role": "exposure", "platform": "kubernetes", "sourceId": source.source_id,
+            "environment": source.environment, "namespace": namespace, "resourceKind": kind,
+            "name": name, "exposure": exposure, "direction": "inbound", "ports": ports,
+        }, provenance=_provenance(source.path, index, f"Kubernetes {kind} {namespace}/{name}")))
     return tuple(facts)
 
 
@@ -503,16 +452,14 @@ def _compose_ports(values: object) -> tuple[list[dict[str, object]], str | None]
             raw_ports.append({"port": value, "protocol": "TCP"})
             continue
         if isinstance(value, Mapping):
-            target = value.get("target")
-            published = value.get("published")
             protocol_value = value.get("protocol", "tcp")
             if not isinstance(protocol_value, str):
                 raise _fail("SDAI-ARCH-DEPLOY-005", "Compose port protocol must be text")
-            item: dict[str, object] = {"port": target, "protocol": protocol_value.upper()}
+            item: dict[str, object] = {"port": value.get("target"), "protocol": protocol_value.upper()}
+            published = value.get("published")
             if published is not None:
                 item["published"] = published
-                host_ip = _string(value.get("host_ip"))
-                if host_ip not in {"127.0.0.1", "::1", "localhost"}:
+                if _string(value.get("host_ip")) not in {"127.0.0.1", "::1", "localhost"}:
                     exposure = "public"
             raw_ports.append(item)
             continue
@@ -546,9 +493,7 @@ def _compose_ports(values: object) -> tuple[list[dict[str, object]], str | None]
     return _ports(raw_ports), exposure if raw_ports else None
 
 
-def _compose_facts(
-    repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str
-) -> tuple[ObservedArchitectureFact, ...]:
+def _compose_facts(repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str) -> tuple[ObservedArchitectureFact, ...]:
     documents = _parse_yaml_documents(text, source_path=source.path)
     if len(documents) != 1:
         raise _fail("SDAI-ARCH-DEPLOY-005", "Compose source must contain exactly one YAML document")
@@ -558,7 +503,6 @@ def _compose_facts(
     components: dict[str, str] = {}
     facts: list[ObservedArchitectureFact] = []
     namespace = f"compose:{_slug(source.source_id, limit=40)}"
-
     for raw_name in sorted(services):
         name = _safe_name(raw_name, label="Compose service name")
         service = _mapping(services[raw_name])
@@ -566,29 +510,17 @@ def _compose_facts(
         target = deployment_subject_id(source.source_id, "compose", namespace, "service", name)
         ports, exposure = _compose_ports(service.get("ports"))
         components[name] = component
-        facts.append(_fact(
-            source=component,
-            target=target,
-            attributes={
-                "role": "workload", "platform": "compose", "sourceId": source.source_id,
-                "environment": source.environment, "namespace": namespace, "workloadKind": "service",
-                "name": name, "direction": "placement", "ports": ports,
-            },
-            provenance=_provenance(source.path, 1, f"Compose service {name}"),
-        ))
+        facts.append(_fact(source=component, target=target, attributes={
+            "role": "workload", "platform": "compose", "sourceId": source.source_id,
+            "environment": source.environment, "namespace": namespace, "workloadKind": "service",
+            "name": name, "direction": "placement", "ports": ports,
+        }, provenance=_provenance(source.path, 1, f"Compose service {name}")))
         if exposure is not None:
-            facts.append(_exposure_fact(
-                component=component,
-                resource_target=target,
-                exposure=exposure,
-                attributes={
-                    "role": "exposure", "platform": "compose", "sourceId": source.source_id,
-                    "environment": source.environment, "namespace": namespace, "resourceKind": "service",
-                    "name": name, "exposure": exposure, "direction": "inbound", "ports": ports,
-                },
-                provenance=_provenance(source.path, 1, f"Compose service exposure {name}"),
-            ))
-
+            facts.append(_exposure_fact(component=component, resource_target=target, exposure=exposure, attributes={
+                "role": "exposure", "platform": "compose", "sourceId": source.source_id,
+                "environment": source.environment, "namespace": namespace, "resourceKind": "service",
+                "name": name, "exposure": exposure, "direction": "inbound", "ports": ports,
+            }, provenance=_provenance(source.path, 1, f"Compose service exposure {name}")))
     for raw_name in sorted(services):
         name = _safe_name(raw_name, label="Compose service name")
         service = _mapping(services[raw_name])
@@ -608,18 +540,12 @@ def _compose_facts(
         for dependency in sorted(set(names)):
             if dependency not in components:
                 raise _fail("SDAI-ARCH-DEPLOY-005", f"Compose service {name!r} depends on unknown service {dependency!r}")
-            source_component = components[name]
-            target_component = components[dependency]
+            source_component, target_component = components[name], components[dependency]
             if source_component != target_component:
-                facts.append(_fact(
-                    source=source_component,
-                    target=target_component,
-                    attributes={
-                        "role": "service-dependency", "platform": "compose", "sourceId": source.source_id,
-                        "environment": source.environment, "dependency": dependency, "direction": "outbound",
-                    },
-                    provenance=_provenance(source.path, 1, f"Compose depends_on {name} -> {dependency}"),
-                ))
+                facts.append(_fact(source=source_component, target=target_component, attributes={
+                    "role": "service-dependency", "platform": "compose", "sourceId": source.source_id,
+                    "environment": source.environment, "dependency": dependency, "direction": "outbound",
+                }, provenance=_provenance(source.path, 1, f"Compose depends_on {name} -> {dependency}")))
     return tuple(facts)
 
 
@@ -716,8 +642,7 @@ def _terraform_resources(text: str) -> tuple[_TerraformResource, ...]:
         opening = cleaned.find("{", match.start())
         closing = _matching_brace(cleaned, opening)
         line = cleaned.count("\n", 0, match.start()) + 1
-        resource_type = match.group("type")
-        name = match.group("name")
+        resource_type, name = match.group("type"), match.group("name")
         resources.append(_TerraformResource(resource_type, name, cleaned[opening + 1 : closing], line, f"{resource_type}.{name}"))
         position = closing + 1
         if len(resources) > DEPLOYMENT_MAX_DOCUMENTS:
@@ -747,9 +672,7 @@ def _hcl_port(block: str) -> int | None:
     return None
 
 
-def _terraform_facts(
-    repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str
-) -> tuple[ObservedArchitectureFact, ...]:
+def _terraform_facts(repository: ArchitectureRepositoryIndex, source: DeploymentSource, text: str) -> tuple[ObservedArchitectureFact, ...]:
     resources = _terraform_resources(text)
     facts: list[ObservedArchitectureFact] = []
     components_by_ref: dict[str, str] = {}
@@ -769,29 +692,17 @@ def _terraform_facts(
         target = deployment_subject_id(source.source_id, "terraform", namespace, resource.resource_type, resource.name)
         components_by_ref[resource.reference] = component
         ports = [] if port is None else [{"port": port, "protocol": protocol}]
-        facts.append(_fact(
-            source=component,
-            target=target,
-            attributes={
-                "role": "workload", "platform": "terraform", "sourceId": source.source_id,
-                "environment": source.environment, "namespace": namespace, "workloadKind": resource.resource_type,
-                "name": resource.name, "direction": "placement", "ports": ports,
-            },
-            provenance=_provenance(source.path, resource.line, f"Terraform resource {resource.reference}"),
-        ))
+        facts.append(_fact(source=component, target=target, attributes={
+            "role": "workload", "platform": "terraform", "sourceId": source.source_id,
+            "environment": source.environment, "namespace": namespace, "workloadKind": resource.resource_type,
+            "name": resource.name, "direction": "placement", "ports": ports,
+        }, provenance=_provenance(source.path, resource.line, f"Terraform resource {resource.reference}")))
         if exposure is not None:
-            facts.append(_exposure_fact(
-                component=component,
-                resource_target=target,
-                exposure=exposure,
-                attributes={
-                    "role": "exposure", "platform": "terraform", "sourceId": source.source_id,
-                    "environment": source.environment, "namespace": namespace, "resourceKind": resource.resource_type,
-                    "name": resource.name, "exposure": exposure, "direction": "inbound", "ports": ports,
-                },
-                provenance=_provenance(source.path, resource.line, f"Terraform exposure {resource.reference}"),
-            ))
-
+            facts.append(_exposure_fact(component=component, resource_target=target, exposure=exposure, attributes={
+                "role": "exposure", "platform": "terraform", "sourceId": source.source_id,
+                "environment": source.environment, "namespace": namespace, "resourceKind": resource.resource_type,
+                "name": resource.name, "exposure": exposure, "direction": "inbound", "ports": ports,
+            }, provenance=_provenance(source.path, resource.line, f"Terraform exposure {resource.reference}")))
     refs = set(components_by_ref)
     for resource in resources:
         source_component = components_by_ref.get(resource.reference)
@@ -805,15 +716,10 @@ def _terraform_facts(
                 continue
             target_component = components_by_ref[dependency]
             if target_component != source_component:
-                facts.append(_fact(
-                    source=source_component,
-                    target=target_component,
-                    attributes={
-                        "role": "service-dependency", "platform": "terraform", "sourceId": source.source_id,
-                        "environment": source.environment, "dependency": dependency, "direction": "outbound",
-                    },
-                    provenance=_provenance(source.path, resource.line, f"Terraform depends_on {resource.reference} -> {dependency}"),
-                ))
+                facts.append(_fact(source=source_component, target=target_component, attributes={
+                    "role": "service-dependency", "platform": "terraform", "sourceId": source.source_id,
+                    "environment": source.environment, "dependency": dependency, "direction": "outbound",
+                }, provenance=_provenance(source.path, resource.line, f"Terraform depends_on {resource.reference} -> {dependency}")))
     return tuple(facts)
 
 
@@ -839,10 +745,7 @@ def _aggregate(values: Iterable[ObservedArchitectureFact]) -> tuple[ObservedArch
                 if previous is None or (value.detail or "") < (previous.detail or ""):
                     provenance[value.location] = value
         result.append(ObservedArchitectureFact(
-            kind=first.kind,
-            source=first.source,
-            target=first.target,
-            attributes=first.attributes,
+            kind=first.kind, source=first.source, target=first.target, attributes=first.attributes,
             provenance=tuple(sorted(provenance.values(), key=lambda item: (item.source.casefold(), item.source, item.line, item.detail or ""))),
         ))
     if len(result) > DEPLOYMENT_MAX_FACTS:
@@ -856,16 +759,13 @@ def _placements(facts: Iterable[ObservedArchitectureFact]) -> dict[str, list[_Pl
         attrs = json.loads(json.dumps(dict(fact.attributes), sort_keys=True, separators=(",", ":")))
         if attrs.get("role") != "workload":
             continue
-        environment = attrs.get("environment")
-        namespace = attrs.get("namespace")
+        environment, namespace = attrs.get("environment"), attrs.get("namespace")
         if isinstance(environment, str) and isinstance(namespace, str):
             result.setdefault(fact.source, []).append(_Placement(fact.source, fact.target, environment, namespace, fact.provenance))
     return result
 
 
-def _constraint_facts(
-    approved: ApprovedArchitecture, observed: tuple[ObservedArchitectureFact, ...]
-) -> tuple[ObservedArchitectureFact, ...]:
+def _constraint_facts(approved: ApprovedArchitecture, observed: tuple[ObservedArchitectureFact, ...]) -> tuple[ObservedArchitectureFact, ...]:
     placements = _placements(observed)
     component_ids = {component.component_id for component in approved.topology.components}
     result: list[ObservedArchitectureFact] = []
@@ -897,12 +797,8 @@ def _constraint_facts(
             else tuple(p for placement in (*left, *right) for p in placement.provenance)
         )
         unique = {(p.source, p.line, p.detail or ""): p for p in proof}
-        result.append(_fact(
-            source=fact.source,
-            target=fact.target,
-            attributes=fact.attributes,
-            provenance=tuple(sorted(unique.values(), key=lambda p: (p.source, p.line, p.detail or ""))),
-        ))
+        result.append(_fact(source=fact.source, target=fact.target, attributes=fact.attributes,
+            provenance=tuple(sorted(unique.values(), key=lambda p: (p.source, p.line, p.detail or "")))))
     return tuple(result)
 
 
@@ -934,11 +830,6 @@ class DeploymentTopologyObserver:
 
 
 __all__ = [
-    "DEPLOYMENT_OBSERVER_ID",
-    "DEPLOYMENT_SOURCES_API_VERSION",
-    "DEPLOYMENT_SOURCES_PATH",
-    "DeploymentSource",
-    "DeploymentTopologyObserver",
-    "deployment_subject_id",
-    "load_deployment_sources",
+    "DEPLOYMENT_OBSERVER_ID", "DEPLOYMENT_SOURCES_API_VERSION", "DEPLOYMENT_SOURCES_PATH",
+    "DeploymentSource", "DeploymentTopologyObserver", "deployment_subject_id", "load_deployment_sources",
 ]
