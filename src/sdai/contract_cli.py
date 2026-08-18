@@ -9,10 +9,11 @@ from sdai.contracts import (
     CompatibilityDirection,
     ContractAdapterRegistry,
     ContractError,
+    ContractInspection,
+    ContractSnapshot,
     check_contract,
     diff_contracts,
     discover_contracts,
-    find_contract_source,
     load_explicit_snapshot,
 )
 
@@ -64,6 +65,13 @@ def _ensure_initialized(root: Path) -> None:
         raise ContractError("SDAI-CONTRACT-PROJECT-001", "Not an SD-AI project. Run `sdai init` first.")
 
 
+def _select_source(inspection: ContractInspection, source_id: str) -> ContractSnapshot:
+    for snapshot in inspection.sources:
+        if snapshot.source.source_id == source_id:
+            return snapshot
+    raise ContractError("SDAI-CONTRACT-SOURCE-010", f"contract source '{source_id}' is not declared")
+
+
 def _print_error(error: ContractError, *, as_json: bool) -> int:
     if as_json:
         sys.stdout.write(error.to_json())
@@ -82,25 +90,25 @@ def main(
     try:
         root = _root(args.path)
         _ensure_initialized(root)
-        adapters = registry if registry is not None else default_contract_registry()
+        inspection = discover_contracts(root, args.manifest)
 
         if args.action == "inspect":
-            result = discover_contracts(root, args.manifest)
             if as_json:
-                sys.stdout.write(result.to_json())
+                sys.stdout.write(inspection.to_json())
             else:
                 print(
-                    f"Contract sources={len(result.sources)} manifest={result.manifest_sha256} "
-                    f"snapshot={result.sha256}"
+                    f"Contract sources={len(inspection.sources)} manifest={inspection.manifest_sha256} "
+                    f"snapshot={inspection.sha256}"
                 )
-                for item in result.sources:
+                for item in inspection.sources:
                     print(
                         f"  {item.source.source_id} kind={item.source.kind} path={item.source.path} "
                         f"sha256={item.sha256} bytes={item.size_bytes}"
                     )
             return 0
 
-        snapshot = find_contract_source(root, args.source, args.manifest)
+        adapters = registry if registry is not None else default_contract_registry(inspection.sources)
+        snapshot = _select_source(inspection, args.source)
         if args.action == "check":
             result = check_contract(snapshot, adapters)
             if as_json:
