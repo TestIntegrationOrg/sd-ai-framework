@@ -114,6 +114,44 @@ def test_rollback_refuses_tampered_target_before_mutating_anything(tmp_path: Pat
     assert untouched.read_bytes() == untouched_before
 
 
+def test_rollback_refuses_tampered_manifest_before_mutating_targets(tmp_path: Path) -> None:
+    _legacy_project(tmp_path)
+    result = apply_migration(tmp_path)
+    assert result.migration_id is not None
+    assert result.manifest_path is not None
+    target_change = next(item for item in result.changes if item.action == "create")
+    target = tmp_path.joinpath(*Path(target_change.path).parts)
+    target_before = target.read_bytes()
+    manifest = tmp_path.joinpath(*Path(result.manifest_path).parts)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["frameworkVersion"] = "tampered"
+    manifest.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(MigrationSafetyError, match="integrity mismatch"):
+        rollback_migration(tmp_path, result.migration_id)
+
+    assert target.read_bytes() == target_before
+
+
+def test_plan_fails_closed_when_scaffold_target_is_behind_symlink(tmp_path: Path) -> None:
+    _legacy_project(tmp_path)
+    outside = tmp_path / "outside-agents"
+    outside.mkdir()
+    link = tmp_path / ".sdai" / "agents"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable on this runner: {exc}")
+
+    with pytest.raises(MigrationSafetyError, match="blocked by managed symlink"):
+        plan_migration(tmp_path)
+    assert not any(outside.iterdir())
+
+
 def test_migrate_json_cli_is_machine_clean(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _legacy_project(tmp_path)
 
