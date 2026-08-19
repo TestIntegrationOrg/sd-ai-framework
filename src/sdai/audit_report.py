@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from sdai.audit_contracts import AUDIT_EVENTS_RELATIVE_PATH, AuditProvenanceError, _feature_workspace
+from sdai.audit_contracts import (
+    AUDIT_EVENTS_RELATIVE_PATH,
+    AuditProvenanceError,
+    _feature_workspace,
+    _safe_component_chain,
+)
 from sdai.audit_ledger import AuditLedger
 from sdai.audit_provenance import AuditEvent
 from sdai.audit_trace import AuditTraceError, build_audit_trace_index
@@ -116,10 +121,7 @@ class AuditSelectors:
 
 
 def _binding_matches(event: AuditEvent, selector: str) -> bool:
-    return any(
-        selector in {item.kind, item.source, item.sha256}
-        for item in event.bindings
-    )
+    return any(selector in {item.kind, item.source, item.sha256} for item in event.bindings)
 
 
 def _matches(event: AuditEvent, selectors: AuditSelectors) -> bool:
@@ -137,8 +139,8 @@ def _matches(event: AuditEvent, selectors: AuditSelectors) -> bool:
     return all(checks)
 
 
-def _audit_source(root: Path, workspace: Path) -> str:
-    return (workspace / AUDIT_EVENTS_RELATIVE_PATH).relative_to(root).as_posix()
+def _audit_source(root: Path, events_path: Path) -> str:
+    return events_path.relative_to(root).as_posix()
 
 
 def _selected_node_ids(events: Iterable[AuditEvent]) -> frozenset[str]:
@@ -288,7 +290,6 @@ class AuditReport:
         return _canonical_bytes(self.body).decode("utf-8") + "\n"
 
 
-
 def build_audit_report(
     project_root: Path,
     feature_id: str,
@@ -299,15 +300,20 @@ def build_audit_report(
     selectors = selectors or AuditSelectors()
     try:
         workspace = _feature_workspace(root, feature_id)
+        feature = workspace.name
+        events_path = _safe_component_chain(
+            root,
+            workspace / AUDIT_EVENTS_RELATIVE_PATH,
+            label="audit report events path",
+        )
     except AuditProvenanceError as exc:
         raise _fail("SDAI-AUDIT-REPORT-002", str(exc)) from exc
 
-    source = _audit_source(root, workspace)
-    events_path = workspace / AUDIT_EVENTS_RELATIVE_PATH
+    source = _audit_source(root, events_path)
     if not events_path.exists():
         body: dict[str, object] = {
             "apiVersion": AUDIT_REPORT_API_VERSION,
-            "featureId": feature_id,
+            "featureId": feature,
             "status": "no-events",
             "auditSource": source,
             "eventCount": 0,
@@ -331,7 +337,7 @@ def build_audit_report(
         return AuditReport(body, 3)
 
     try:
-        ledger = AuditLedger(root, feature_id)
+        ledger = AuditLedger(root, feature)
         snapshot = ledger.verify()
         events = ledger.read()
     except AuditProvenanceError:
@@ -354,12 +360,12 @@ def build_audit_report(
     relationships, has_linkage_gaps = _relationship_summary(
         root,
         workspace,
-        feature_id,
+        feature,
         selected,
     )
     body = {
         "apiVersion": AUDIT_REPORT_API_VERSION,
-        "featureId": feature_id,
+        "featureId": feature,
         "status": "verified" if events else "no-events",
         "auditSource": source,
         "eventCount": len(events),
