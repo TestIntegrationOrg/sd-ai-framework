@@ -22,7 +22,9 @@ from sdai.providers.control import ProviderCancellationToken, ProviderCancelledE
 
 
 PROVIDER_RETRY_API_VERSION = "sdai.provider-retry/v1"
-_RETRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+# Reserve five characters for the derived diagnostic suffix `-a001` so every
+# retry id accepted here can produce a valid <=128-character attempt id.
+_RETRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$")
 
 
 class ProviderRetryError(RuntimeError):
@@ -52,7 +54,10 @@ def _canonical_sha256(value: object) -> str:
 
 def _safe_retry_id(value: str) -> str:
     if not isinstance(value, str) or _RETRY_ID.fullmatch(value) is None:
-        raise _fail("SDAI-PROVIDER-RETRY-001", "retry id must be a safe portable identifier")
+        raise _fail(
+            "SDAI-PROVIDER-RETRY-001",
+            "retry id must be a safe portable identifier of at most 123 characters",
+        )
     return value
 
 
@@ -190,7 +195,10 @@ def classify_provider_failure(error: BaseException) -> FailureClassification:
             return FailureClassification(
                 ProviderFailureCategory.RATE_LIMIT, True, "provider-rate-limit", exception_type
             )
-        if any(token in message for token in ("401", "403", "unauthorized", "forbidden", "authentication")):
+        if any(
+            token in message
+            for token in ("401", "403", "unauthorized", "forbidden", "authentication")
+        ):
             return FailureClassification(
                 ProviderFailureCategory.AUTHENTICATION,
                 False,
@@ -215,7 +223,9 @@ def classify_provider_failure(error: BaseException) -> FailureClassification:
                 "provider-transient-execution",
                 exception_type,
             )
-        if any(token in message for token in ("invalid utf-8", "returned no output", "malformed")):
+        if any(
+            token in message for token in ("invalid utf-8", "returned no output", "malformed")
+        ):
             return FailureClassification(
                 ProviderFailureCategory.MALFORMED_OUTPUT,
                 False,
@@ -266,6 +276,10 @@ class RetryPolicy:
             raise ValueError("multiplier must be between 1 and 10")
         if not 0 <= self.jitter_basis_points <= 5_000:
             raise ValueError("jitter_basis_points must be between 0 and 5000")
+        if any(
+            not isinstance(item, ProviderFailureCategory) for item in self.retryable_categories
+        ):
+            raise ValueError("retryable_categories must contain ProviderFailureCategory values")
         if len(set(self.retryable_categories)) != len(self.retryable_categories):
             raise ValueError("retryable_categories must not contain duplicates")
 
@@ -317,9 +331,7 @@ def retry_delay_ms(
     )
     if delay == 0 or policy.jitter_basis_points == 0:
         return delay
-    digest = sha256(
-        f"{seed}|{failed_attempt}|{category.value}".encode("utf-8")
-    ).digest()
+    digest = sha256(f"{seed}|{failed_attempt}|{category.value}".encode("utf-8")).digest()
     span = policy.jitter_basis_points
     delta_bp = int.from_bytes(digest[:8], "big") % (2 * span + 1) - span
     jittered = delay + (delay * delta_bp // 10_000)
@@ -450,9 +462,13 @@ class ProviderRetryRecorder:
                 stream.flush()
                 os.fsync(stream.fileno())
         except FileExistsError as exc:
-            raise _fail("SDAI-PROVIDER-RETRY-003", f"retry evidence already exists: {filename}") from exc
+            raise _fail(
+                "SDAI-PROVIDER-RETRY-003", f"retry evidence already exists: {filename}"
+            ) from exc
         except OSError as exc:
-            raise _fail("SDAI-PROVIDER-RETRY-003", f"unable to persist retry evidence: {filename}") from exc
+            raise _fail(
+                "SDAI-PROVIDER-RETRY-003", f"unable to persist retry evidence: {filename}"
+            ) from exc
 
     def policy(self, policy: RetryPolicy) -> None:
         self._persist(
@@ -526,14 +542,13 @@ def execute_with_retry(
     if escalation is not None and not callable(escalation):
         raise TypeError("escalation must be callable")
 
+    effective_id_factory = retry_id_factory or (lambda: uuid4().hex)
     recorder = ProviderRetryRecorder.optional_for(
         runtime.project_root,
         invocation.feature_id,
-        id_factory=retry_id_factory or (lambda: uuid4().hex),
+        id_factory=effective_id_factory,
     )
-    retry_id = recorder.retry_id if recorder is not None else _safe_retry_id(
-        (retry_id_factory or (lambda: uuid4().hex))()
-    )
+    retry_id = recorder.retry_id if recorder is not None else _safe_retry_id(effective_id_factory())
     if recorder is not None:
         recorder.policy(effective_policy)
     seed = _retry_seed(invocation)
@@ -588,7 +603,10 @@ def execute_with_retry(
             )
         return result
 
-    raise _fail("SDAI-PROVIDER-RETRY-004", "retry controller exhausted without terminal result")
+    raise _fail(
+        "SDAI-PROVIDER-RETRY-004",
+        "retry controller exhausted without terminal result",
+    )
 
 
 __all__ = [
