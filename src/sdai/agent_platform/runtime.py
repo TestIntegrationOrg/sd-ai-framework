@@ -7,6 +7,7 @@ from sdai.agent_platform.audit import AgentAuditRecorder
 from sdai.agent_platform.context import load_governance_context
 from sdai.agent_platform.context_plan import (
     ContextPlan,
+    ContextPlanError,
     build_context_plan as plan_context,
     selected_skill_names,
 )
@@ -100,6 +101,32 @@ class AgentRuntime:
         """Return the configured hard limit used for explicit isolated context."""
         return _max_context_chars(self.project_root.resolve())
 
+    def _resolved_context_plan(
+        self,
+        feature_id: str,
+        capability: Capability,
+        *,
+        profile_name: str | None,
+        agent_name: str | None,
+        mode: ExecutionMode,
+    ) -> tuple[ContextPlan, AgentDefinition | None, object, EffectiveConfiguration]:
+        project_root = self.project_root.resolve()
+        policy = self._policy()
+        definition = _resolve_semantic_definition(project_root, capability, agent_name)
+        requested_profile = profile_name or (definition.profile if definition else None)
+        profile = resolve_profile(project_root, capability, requested_profile)
+        policy.assert_profile_allowed(profile, capability, mode)
+        plan = plan_context(
+            project_root,
+            feature_id,
+            capability,
+            max_chars_per_file=_max_context_chars(project_root),
+            profile_skills=profile.skills,
+            agent_skills=definition.skills if definition else (),
+            policy_skills=policy.required_skills(capability),
+        )
+        return plan, definition, profile, policy
+
     def build_context_plan(
         self,
         feature_id: str,
@@ -110,21 +137,14 @@ class AgentRuntime:
         mode: ExecutionMode = ExecutionMode.ADVISORY,
     ) -> ContextPlan:
         """Build the deterministic, provider-free context plan for one invocation."""
-        project_root = self.project_root.resolve()
-        policy = self._policy()
-        definition = _resolve_semantic_definition(project_root, capability, agent_name)
-        requested_profile = profile_name or (definition.profile if definition else None)
-        profile = resolve_profile(project_root, capability, requested_profile)
-        policy.assert_profile_allowed(profile, capability, mode)
-        return plan_context(
-            project_root,
+        plan, _, _, _ = self._resolved_context_plan(
             feature_id,
             capability,
-            max_chars_per_file=_max_context_chars(project_root),
-            profile_skills=profile.skills,
-            agent_skills=definition.skills if definition else (),
-            policy_skills=policy.required_skills(capability),
+            profile_name=profile_name,
+            agent_name=agent_name,
+            mode=mode,
         )
+        return plan
 
     def _build_invocation(
         self,
@@ -135,7 +155,11 @@ class AgentRuntime:
         agent_name: str | None,
         mode: ExecutionMode,
         explicit_context: str | None,
+        context_plan: ContextPlan | None = None,
     ) -> AgentInvocation:
+        if explicit_context is not None and context_plan is not None:
+            raise ValueError("explicit context and context plan are mutually exclusive")
+
         project_root = self.project_root.resolve()
         policy = self._policy()
         definition = _resolve_semantic_definition(project_root, capability, agent_name)
@@ -149,15 +173,38 @@ class AgentRuntime:
         policy_skills = policy.required_skills(capability)
 
         if explicit_context is None:
-            context_plan = plan_context(
-                project_root,
-                feature_id,
-                capability,
-                max_chars_per_file=max_context_chars,
-                profile_skills=profile.skills,
-                agent_skills=definition.skills if definition else (),
-                policy_skills=policy_skills,
-            )
+            if context_plan is None:
+                context_plan = plan_context(
+                    project_root,
+                    feature_id,
+                    capability,
+                    max_chars_per_file=max_context_chars,
+                    profile_skills=profile.skills,
+                    agent_skills=definition.skills if definition else (),
+                    policy_skills=policy_skills,
+                )
+            else:
+                if context_plan.feature_id != feature_id or context_plan.capability != capability:
+                    raise ContextPlanError(
+                        "SDAI-CONTEXT-PLAN-007: supplied context plan does not match invocation feature/capability"
+                    )
+                # A caller may retain a plan between explanation and invocation. Rebuild
+                # the canonical current plan and require byte-stable identity before
+                # composing any prompt so policy, artifact, skill, or budget drift is
+                # detected rather than silently using stale planned context.
+                current = plan_context(
+                    project_root,
+                    feature_id,
+                    capability,
+                    max_chars_per_file=max_context_chars,
+                    profile_skills=profile.skills,
+                    agent_skills=definition.skills if definition else (),
+                    policy_skills=policy_skills,
+                )
+                if current.sha256 != context_plan.sha256:
+                    raise ContextPlanError(
+                        "SDAI-CONTEXT-PLAN-007: supplied context plan is stale or no longer canonical"
+                    )
             feature_context = context_plan.render_feature_context(project_root)
             governance = context_plan.render_governance_context(project_root)
             skills = context_plan.render_skills(project_root)
@@ -239,6 +286,31 @@ class AgentRuntime:
             agent_name=agent_name,
             mode=mode,
             explicit_context=None,
+        )
+
+    def build_invocation_from_context_plan(
+        self,
+        context_plan: ContextPlan,
+        *,
+        profile_name: str | None = None,
+        agent_name: str | None = None,
+        mode: ExecutionMode = ExecutionMode.ADVISORY,
+    ) -> AgentInvocation:
+        """Compose a governed invocation from one still-canonical context plan.
+
+        No provider is created. The current canonical plan is recomputed and must
+        match the supplied plan before raw context is rendered into the prompt.
+        """
+        if not isinstance(context_plan, ContextPlan):
+            raise TypeError("context_plan must be a ContextPlan")
+        return self._build_invocation(
+            context_plan.feature_id,
+            context_plan.capability,
+            profile_name=profile_name,
+            agent_name=agent_name,
+            mode=mode,
+            explicit_context=None,
+            context_plan=context_plan,
         )
 
     def build_explicit_context_invocation(
