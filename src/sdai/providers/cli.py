@@ -72,7 +72,9 @@ def _decode_provider_output(data: bytes, *, provider: str, stream: str) -> str:
     try:
         return data.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
-        preview = _escaped_byte_preview(data, exc.start, min(len(data), exc.end + 8))
+        # Expose only the offending bytes. Adjacent provider output may contain
+        # sensitive content and is not needed to diagnose the encoding boundary.
+        preview = _escaped_byte_preview(data, exc.start, exc.end)
         raise ProviderEncodingError(provider, stream, exc.start, preview) from exc
 
 
@@ -392,6 +394,9 @@ class CliProvider(Provider):
         cancelled = False
         try:
             while process.poll() is None:
+                if not thread_errors.empty():
+                    _terminate_process(process)
+                    break
                 if first_output_signal.is_set() and not first_output_reported:
                     progress(ProviderProgressEvent("first-output", "stdout-observed"))
                     first_output_reported = True
