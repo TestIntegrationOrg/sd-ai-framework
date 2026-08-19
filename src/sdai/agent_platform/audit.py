@@ -18,6 +18,7 @@ from sdai.audit_provenance import (
     AuditExecution,
     AuditProvenanceError,
 )
+from sdai.models import validate_feature_id
 from sdai.pack_lifecycle import load_install_state
 from sdai.path_safety import PathSafetyError, ensure_within_project
 
@@ -45,6 +46,15 @@ class AgentAuditError(AuditProvenanceError):
 
 def _fail(code: str, message: str) -> AgentAuditError:
     return AgentAuditError(f"{code}: {message}")
+
+
+def _safe_feature_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise _fail("SDAI-AGENT-AUDIT-001", "feature id must be a string")
+    try:
+        return validate_feature_id(value)
+    except ValueError as exc:
+        raise _fail("SDAI-AGENT-AUDIT-001", f"invalid feature id: {value!r}") from exc
 
 
 def _hash_bytes(value: bytes) -> str:
@@ -200,9 +210,10 @@ class AgentAuditRecorder:
     @classmethod
     def optional_for(cls, project_root: Path, feature_id: str) -> "AgentAuditRecorder | None":
         root = project_root.resolve()
-        if not _feature_workspace_exists(root, feature_id):
+        feature = _safe_feature_id(feature_id)
+        if not _feature_workspace_exists(root, feature):
             return None
-        return cls(root=root, feature_id=feature_id, ledger=AuditLedger(root, feature_id))
+        return cls(root=root, feature_id=feature, ledger=AuditLedger(root, feature))
 
     def prepare(
         self,
