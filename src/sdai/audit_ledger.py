@@ -13,6 +13,7 @@ from sdai.audit_contracts import (
     _ZERO_HASH,
     _canonical_bytes,
     _fail,
+    _feature_id,
     _feature_workspace,
     _safe_component_chain,
     _sha256_bytes,
@@ -25,7 +26,7 @@ from sdai.audit_provenance import (
     AuditExecution,
     AuditLedgerSnapshot,
 )
-from sdai.models import validate_feature_id
+
 
 _LOCK_ANCHOR = b"SDAI-AUDIT-LOCK-v1\n"
 
@@ -130,7 +131,7 @@ class AuditLedger:
 
     def __init__(self, project_root: Path, feature_id: str) -> None:
         self.project_root = project_root.resolve()
-        self.feature_id = validate_feature_id(feature_id)
+        self.feature_id = _feature_id(feature_id)
         self.feature_workspace = _feature_workspace(self.project_root, self.feature_id)
         self.audit_dir = _safe_component_chain(
             self.project_root,
@@ -193,7 +194,9 @@ class AuditLedger:
                 )
         events: list[AuditEvent] = []
         previous = _ZERO_HASH
-        for index, raw_line in enumerate(working.splitlines(), start=1):
+        # Split on the canonical LF byte only. bytes.splitlines() would silently
+        # discard CR from CRLF and could make non-canonical ledger bytes appear valid.
+        for index, raw_line in enumerate(working[:-1].split(b"\n"), start=1):
             if not raw_line:
                 raise _fail("SDAI-AUDIT-005", f"audit ledger line {index} is empty")
             if len(raw_line) > AUDIT_MAX_EVENT_BYTES:
@@ -268,6 +271,8 @@ class AuditLedger:
     ) -> AuditEvent:
         with self._lock():
             events = self._read_locked(recover_tail=True)
+            if len(events) >= AUDIT_MAX_EVENTS:
+                raise _fail("SDAI-AUDIT-005", "audit ledger reached the event count limit")
             sequence = len(events) + 1
             previous = events[-1].sha256 if events else _ZERO_HASH
             event = AuditEvent.create(
