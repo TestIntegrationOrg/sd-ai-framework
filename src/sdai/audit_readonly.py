@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Mapping
 
 from sdai.audit_contracts import AUDIT_MAX_EVENT_BYTES, AUDIT_MAX_EVENTS, AUDIT_MAX_LEDGER_BYTES
-from sdai.audit_provenance import AUDIT_ZERO_HASH, AuditEvent
+from sdai.audit_provenance import AuditEvent
 from sdai.models import FeatureContext, validate_feature_id
 from sdai.path_safety import PathSafetyError, ensure_within_project
 
 
 READ_ONLY_AUDIT_API_VERSION = "sdai.audit-readonly/v1"
 _MAX_RETURNED_EVENTS = 500
+_ZERO_HASH = "sha256:" + ("0" * 64)
 
 
 class ReadOnlyAuditError(RuntimeError):
@@ -24,13 +25,16 @@ def _fail(code: str, message: str) -> ReadOnlyAuditError:
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise _fail("SDAI-AUDIT-READONLY-004", "audit value is not canonical JSON") from exc
 
 
 def _sha_bytes(value: bytes) -> str:
@@ -55,19 +59,22 @@ def _safe(root: Path, candidate: Path, *, label: str) -> Path:
     return safe
 
 
+def _event_status(event: AuditEvent) -> str | None:
+    value = event.metadata.get("status")
+    return value if isinstance(value, str) else None
+
+
 def _event_summary(event: AuditEvent) -> dict[str, object]:
-    payload = event.to_dict()
-    execution = payload.get("execution")
     return {
         "sequence": event.sequence,
         "eventId": event.event_id,
-        "eventSha256": event.event_sha256,
+        "eventSha256": event.sha256,
         "occurredAt": event.occurred_at,
         "category": event.category,
         "actorKind": event.actor.kind,
         "action": event.action.kind,
-        "status": event.action.status,
-        "execution": dict(execution) if isinstance(execution, dict) else {},
+        "status": _event_status(event),
+        "execution": event.execution.to_dict(),
         "bindings": [item.to_dict() for item in event.bindings],
     }
 
@@ -78,6 +85,29 @@ def _matches(event: AuditEvent, *, run_id: str | None, task_id: str | None) -> b
     if task_id is not None and event.execution.task_id != task_id:
         return False
     return True
+
+
+def _verified_prefix(raw: bytes) -> tuple[bytes, int]:
+    """Return canonical complete-record bytes plus recoverable incomplete-tail size.
+
+    The normal AuditLedger may truncate an incomplete crash tail while holding its
+    write lock. Unified diagnostics is intentionally read-only, so it recognizes the
+    same recoverable condition but never mutates the file. A complete JSON record
+    missing its canonical newline remains corruption and fails closed.
+    """
+    if not raw or raw.endswith(b"\n"):
+        return raw, 0
+    boundary = raw.rfind(b"\n")
+    tail = raw[boundary + 1 :]
+    try:
+        json.loads(tail.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        prefix = raw[: boundary + 1] if boundary >= 0 else b""
+        return prefix, len(tail)
+    raise _fail(
+        "SDAI-AUDIT-READONLY-004",
+        "audit ledger contains a complete noncanonical record missing the canonical newline",
+    )
 
 
 def read_verified_audit(
@@ -93,6 +123,7 @@ def read_verified_audit(
     workspace = FeatureContext(root, feature).feature_dir
     if not workspace.exists() or workspace.is_symlink() or not workspace.is_dir():
         raise _fail("SDAI-AUDIT-READONLY-001", "feature workspace is missing or unsafe")
+    _safe(root, workspace, label="audit feature workspace")
     events_path = _safe(
         root,
         workspace / ".sdai" / "audit" / "events.jsonl",
@@ -107,7 +138,8 @@ def read_verified_audit(
             "selectedCount": 0,
             "returnedCount": 0,
             "truncated": False,
-            "ledgerHeadSha256": AUDIT_ZERO_HASH,
+            "recoverableCrashTailBytes": 0,
+            "ledgerHeadSha256": _ZERO_HASH,
             "exportSha256": _sha_bytes(b""),
             "events": [],
         }
@@ -121,36 +153,38 @@ def read_verified_audit(
         raise _fail("SDAI-AUDIT-READONLY-002", "unable to read audit ledger") from exc
     if len(raw) > AUDIT_MAX_LEDGER_BYTES:
         raise _fail("SDAI-AUDIT-READONLY-003", "audit ledger exceeds bounded size")
-    if raw and not raw.endswith(b"\n"):
-        raise _fail("SDAI-AUDIT-READONLY-004", "audit ledger has an incomplete crash tail")
-    lines = raw.splitlines(keepends=True)
-    if len(lines) > AUDIT_MAX_EVENTS:
+
+    verified, crash_tail_bytes = _verified_prefix(raw)
+    raw_lines = verified[:-1].split(b"\n") if verified else []
+    if len(raw_lines) > AUDIT_MAX_EVENTS:
         raise _fail("SDAI-AUDIT-READONLY-003", "audit ledger exceeds event limit")
 
     events: list[AuditEvent] = []
-    expected_previous = AUDIT_ZERO_HASH
-    for index, line in enumerate(lines):
-        if not line.endswith(b"\n") or len(line) > AUDIT_MAX_EVENT_BYTES:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event line is invalid")
+    expected_previous = _ZERO_HASH
+    for index, raw_line in enumerate(raw_lines, start=1):
+        if not raw_line:
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} is empty")
+        if len(raw_line) > AUDIT_MAX_EVENT_BYTES:
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} exceeds event limit")
         try:
-            text = line[:-1].decode("utf-8", errors="strict")
-            payload = json.loads(text)
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event is not valid UTF-8 JSON") from exc
+            payload = json.loads(raw_line.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} is invalid JSON") from exc
         if not isinstance(payload, Mapping):
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event must be a JSON object")
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} must be a JSON object")
         try:
             event = AuditEvent.from_mapping(payload)
         except Exception as exc:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event contract/hash is invalid") from exc
-        if event.feature_id != feature or event.sequence != index:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event identity/sequence is invalid")
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} contract/hash is invalid") from exc
+        if raw_line != _canonical_bytes(event.to_dict()):
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} is not canonical JSON")
+        if event.feature_id != feature:
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger line {index} belongs to another feature")
+        if event.sequence != index:
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit ledger sequence gap at line {index}")
         if event.previous_sha256 != expected_previous:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit hash chain is invalid")
-        canonical = _canonical_bytes(event.to_dict()) + b"\n"
-        if canonical != line:
-            raise _fail("SDAI-AUDIT-READONLY-004", "audit event bytes are not canonical")
-        expected_previous = event.event_sha256
+            raise _fail("SDAI-AUDIT-READONLY-004", f"audit hash chain mismatch at line {index}")
+        expected_previous = event.sha256
         events.append(event)
 
     selected = [event for event in events if _matches(event, run_id=run_id, task_id=task_id)]
@@ -158,13 +192,14 @@ def read_verified_audit(
     body = {
         "apiVersion": READ_ONLY_AUDIT_API_VERSION,
         "featureId": feature,
-        "status": "ok" if events else "no-events",
+        "status": "partial" if crash_tail_bytes else ("ok" if events else "no-events"),
         "eventCount": len(events),
         "selectedCount": len(selected),
         "returnedCount": len(returned),
         "truncated": len(selected) > len(returned),
-        "ledgerHeadSha256": events[-1].event_sha256 if events else AUDIT_ZERO_HASH,
-        "exportSha256": _sha_bytes(raw),
+        "recoverableCrashTailBytes": crash_tail_bytes,
+        "ledgerHeadSha256": events[-1].sha256 if events else _ZERO_HASH,
+        "exportSha256": _sha_bytes(verified),
         "events": [_event_summary(event) for event in returned],
     }
     body["reportSha256"] = _sha_bytes(_canonical_bytes(body))
