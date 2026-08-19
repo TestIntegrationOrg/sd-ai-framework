@@ -15,6 +15,7 @@ from sdai.agent_platform.models import AgentInvocation
 from sdai.models import FeatureContext, validate_feature_id
 from sdai.path_safety import PathSafetyError, ensure_within_project
 from sdai.providers.base import ProviderCapabilities
+from sdai.providers.control import ProviderCancelledError
 
 
 PROVIDER_DIAGNOSTIC_API_VERSION = "sdai.provider-diagnostic/v1"
@@ -59,6 +60,14 @@ def _safe_attempt_id(value: str) -> str:
     return value
 
 
+def _safe_reason(value: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise _fail("SDAI-PROVIDER-DIAG-001", "progress reason must contain 1..128 characters")
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in value):
+        raise _fail("SDAI-PROVIDER-DIAG-001", "progress reason must be printable ASCII")
+    return value
+
+
 def _safe_chain(root: Path, candidate: Path, *, label: str) -> Path:
     try:
         safe = ensure_within_project(root, candidate, label=label)
@@ -87,7 +96,9 @@ def _routing_document_sha256(serialized: str | None) -> str | None:
 
 def _failure_classification(error: BaseException, *, stage: str) -> Mapping[str, str]:
     type_name = type(error).__name__[:128] or "Exception"
-    if isinstance(error, TimeoutError) or type_name == "TimeoutExpired":
+    if isinstance(error, ProviderCancelledError):
+        category = "cancelled"
+    elif isinstance(error, TimeoutError) or type_name == "TimeoutExpired":
         category = "timeout"
     elif isinstance(error, FileNotFoundError):
         category = "provider-not-found"
@@ -141,6 +152,7 @@ class ProviderDiagnosticEvent:
     total_ns: int
     first_output: Mapping[str, object]
     status: str
+    progress_reason: str | None = None
     failure: Mapping[str, str] | None = None
 
     def _body(self) -> dict[str, object]:
@@ -172,6 +184,7 @@ class ProviderDiagnosticEvent:
                 "firstOutput": dict(self.first_output),
             },
             "status": self.status,
+            "progressReason": self.progress_reason,
             "failure": dict(self.failure) if self.failure is not None else None,
         }
 
@@ -206,8 +219,10 @@ class ProviderDiagnosticRecorder:
     attempt_dir: Path | None = None
     started_ns: int | None = None
     ready_ns: int | None = None
+    first_output_ns: int | None = None
     audit_start_sha256: str | None = None
     capabilities: ProviderCapabilities | None = None
+    next_sequence: int = 0
     terminal: bool = False
 
     @classmethod
@@ -265,6 +280,15 @@ class ProviderDiagnosticRecorder:
         source = path.relative_to(self.root).as_posix()
         return PersistedProviderDiagnostic(event, source, _sha256_bytes(data))
 
+    def _first_output(self, reason: str) -> Mapping[str, object]:
+        if self.first_output_ns is not None and self.ready_ns is not None:
+            return {
+                "available": True,
+                "elapsedNs": self.first_output_ns - self.ready_ns,
+                "reason": "provider-reported",
+            }
+        return {"available": False, "elapsedNs": None, "reason": reason}
+
     def _event(
         self,
         *,
@@ -274,13 +298,14 @@ class ProviderDiagnosticRecorder:
         now_ns: int,
         failure: Mapping[str, str] | None = None,
         first_output_reason: str,
+        progress_reason: str | None = None,
     ) -> ProviderDiagnosticEvent:
         if self.started_ns is None or self.attempt_id is None:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt was not started")
         if now_ns < self.started_ns:
             raise _fail("SDAI-PROVIDER-DIAG-001", "diagnostic monotonic clock moved backwards")
         if self.ready_ns is None:
-            startup_ns = now_ns - self.started_ns if phase == "failed" else None
+            startup_ns = now_ns - self.started_ns if phase in {"failed", "cancelled"} else None
             invocation_ns = None
         else:
             startup_ns = self.ready_ns - self.started_ns
@@ -304,12 +329,9 @@ class ProviderDiagnosticRecorder:
             startup_ns=startup_ns,
             invocation_ns=invocation_ns,
             total_ns=now_ns - self.started_ns,
-            first_output={
-                "available": False,
-                "elapsedNs": None,
-                "reason": first_output_reason,
-            },
+            first_output=self._first_output(first_output_reason),
             status=status,
+            progress_reason=progress_reason,
             failure=failure,
         )
 
@@ -335,6 +357,7 @@ class ProviderDiagnosticRecorder:
         self.attempt_dir = attempt_dir
         self.audit_start_sha256 = audit_start_sha256
         self.started_ns = self.clock.monotonic_ns()
+        self.next_sequence = 1
         event = self._event(
             sequence=0,
             phase="started",
@@ -353,8 +376,10 @@ class ProviderDiagnosticRecorder:
             raise _fail("SDAI-PROVIDER-DIAG-001", "provider capabilities are invalid")
         self.capabilities = capabilities
         self.ready_ns = self.clock.monotonic_ns()
+        sequence = self.next_sequence
+        self.next_sequence += 1
         event = self._event(
-            sequence=1,
+            sequence=sequence,
             phase="provider-ready",
             status="ready",
             now_ns=self.ready_ns,
@@ -364,7 +389,52 @@ class ProviderDiagnosticRecorder:
                 else "provider-complete-interface"
             ),
         )
-        return self._persist(event, "001-provider-ready.json")
+        return self._persist(event, f"{sequence:03d}-provider-ready.json")
+
+    def first_output(self, *, reason: str) -> PersistedProviderDiagnostic:
+        if self.terminal or self.ready_ns is None:
+            raise _fail("SDAI-PROVIDER-DIAG-003", "provider is not in a running state")
+        if self.capabilities is None or not self.capabilities.first_output_timing:
+            raise _fail("SDAI-PROVIDER-DIAG-004", "provider reported unsupported first-output timing")
+        if self.first_output_ns is not None:
+            raise _fail("SDAI-PROVIDER-DIAG-004", "provider first-output was already reported")
+        now_ns = self.clock.monotonic_ns()
+        if now_ns < self.ready_ns:
+            raise _fail("SDAI-PROVIDER-DIAG-001", "diagnostic monotonic clock moved backwards")
+        self.first_output_ns = now_ns
+        sequence = self.next_sequence
+        self.next_sequence += 1
+        event = self._event(
+            sequence=sequence,
+            phase="first-output",
+            status="running",
+            now_ns=now_ns,
+            first_output_reason="provider-reported",
+            progress_reason=_safe_reason(reason),
+        )
+        return self._persist(event, f"{sequence:03d}-first-output.json")
+
+    def heartbeat(self, *, reason: str) -> PersistedProviderDiagnostic:
+        if self.terminal or self.ready_ns is None:
+            raise _fail("SDAI-PROVIDER-DIAG-003", "provider is not in a running state")
+        if self.capabilities is None or not self.capabilities.heartbeat:
+            raise _fail("SDAI-PROVIDER-DIAG-004", "provider reported unsupported heartbeat")
+        now_ns = self.clock.monotonic_ns()
+        sequence = self.next_sequence
+        self.next_sequence += 1
+        event = self._event(
+            sequence=sequence,
+            phase="heartbeat",
+            status="running",
+            now_ns=now_ns,
+            first_output_reason=(
+                "provider-hook-not-reported"
+                if self.capabilities.first_output_timing
+                else "provider-complete-interface"
+            ),
+            progress_reason=_safe_reason(reason),
+        )
+        return self._persist(event, f"{sequence:03d}-heartbeat.json")
 
     def completed(self) -> PersistedProviderDiagnostic:
         if self.terminal:
@@ -373,8 +443,9 @@ class ProviderDiagnosticRecorder:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider was not marked ready")
         now_ns = self.clock.monotonic_ns()
         self.terminal = True
+        sequence = self.next_sequence
         event = self._event(
-            sequence=2,
+            sequence=sequence,
             phase="completed",
             status="succeeded",
             now_ns=now_ns,
@@ -384,16 +455,43 @@ class ProviderDiagnosticRecorder:
                 else "provider-complete-interface"
             ),
         )
-        return self._persist(event, "002-completed.json")
+        return self._persist(event, f"{sequence:03d}-completed.json")
+
+    def cancelled(self, error: ProviderCancelledError) -> PersistedProviderDiagnostic:
+        if self.terminal:
+            raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt is terminal")
+        now_ns = self.clock.monotonic_ns()
+        self.terminal = True
+        sequence = 1 if self.ready_ns is None else self.next_sequence
+        event = self._event(
+            sequence=sequence,
+            phase="cancelled",
+            status="cancelled",
+            now_ns=now_ns,
+            failure=_failure_classification(error, stage="invocation"),
+            first_output_reason=(
+                "provider-not-created"
+                if self.ready_ns is None
+                else (
+                    "provider-hook-not-reported"
+                    if self.capabilities is not None and self.capabilities.first_output_timing
+                    else "provider-complete-interface"
+                )
+            ),
+            progress_reason="cancelled-by-request",
+        )
+        return self._persist(event, f"{sequence:03d}-cancelled.json")
 
     def failed(self, error: BaseException, *, stage: str) -> PersistedProviderDiagnostic:
+        if isinstance(error, ProviderCancelledError):
+            return self.cancelled(error)
         if self.terminal:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt is terminal")
         if stage not in {"startup", "invocation"}:
             raise _fail("SDAI-PROVIDER-DIAG-001", "diagnostic failure stage is invalid")
         now_ns = self.clock.monotonic_ns()
         self.terminal = True
-        sequence = 1 if self.ready_ns is None else 2
+        sequence = 1 if self.ready_ns is None else self.next_sequence
         event = self._event(
             sequence=sequence,
             phase="failed",
