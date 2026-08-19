@@ -155,7 +155,7 @@ class AuditBinding:
     sha256: str
 
     def __post_init__(self) -> None:
-        if self.kind not in _BINDING_KINDS:
+        if not isinstance(self.kind, str) or self.kind not in _BINDING_KINDS:
             raise _fail("SDAI-AUDIT-002", f"unsupported audit binding kind: {self.kind!r}")
         object.__setattr__(self, "source", _reference(self.source, label="binding.source"))
         if not isinstance(self.sha256, str) or _SHA256.fullmatch(self.sha256) is None:
@@ -196,7 +196,7 @@ class AuditEvent:
         expected_event_id = f"{feature}:{self.sequence:08d}"
         if self.event_id != expected_event_id:
             raise _fail("SDAI-AUDIT-002", f"eventId mismatch; expected {expected_event_id!r}")
-        if self.category not in _EVENT_CATEGORIES:
+        if not isinstance(self.category, str) or self.category not in _EVENT_CATEGORIES:
             raise _fail("SDAI-AUDIT-002", f"unsupported audit category: {self.category!r}")
         object.__setattr__(self, "occurred_at", _timestamp(self.occurred_at))
         if not isinstance(self.actor, AuditActor) or not isinstance(self.action, AuditAction):
@@ -255,6 +255,10 @@ class AuditEvent:
         metadata: Mapping[str, object] | None = None,
         previous_sha256: str = _ZERO_HASH,
     ) -> "AuditEvent":
+        if not isinstance(actor, AuditActor) or not isinstance(action, AuditAction):
+            raise _fail("SDAI-AUDIT-002", "audit actor/action must be validated objects")
+        if execution is not None and not isinstance(execution, AuditExecution):
+            raise _fail("SDAI-AUDIT-002", "audit execution must be a validated object or null")
         feature = validate_feature_id(feature_id)
         normalized_time = _timestamp(occurred_at)
         raw_bindings = tuple(bindings)
