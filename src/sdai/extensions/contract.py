@@ -38,6 +38,15 @@ LEGACY_PUBLIC_PYTHON_SYMBOLS = (
     "register_extension_source",
 )
 
+STABLE_PUBLIC_PYTHON_SYMBOLS = LEGACY_PUBLIC_PYTHON_SYMBOLS + (
+    "EXTENSION_CONTRACT_API_VERSION",
+    "EXTENSION_STABILITY",
+    "ExtensionContract",
+    "ExtensionLayerContract",
+    "extension_contract",
+    "extension_contract_json",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ExtensionLayerContract:
@@ -72,9 +81,15 @@ class ExtensionContract:
             "extensionKinds": list(self.extension_kinds),
             "registryLayers": [item.as_dict() for item in self.registry_layers],
             "manifestEnvelope": {
-                "requiredTopLevelFields": ["apiVersion", "kind", "metadata", "spec"],
+                "allowedTopLevelFields": ["apiVersion", "kind", "metadata", "spec"],
+                "requiredTopLevelFields": ["apiVersion", "kind", "metadata"],
+                "optionalTopLevelFields": ["spec"],
                 "metadataFields": ["id", "version", "description"],
+                "requiredMetadataFields": ["id", "version"],
+                "optionalMetadataFields": ["description"],
                 "specShape": "mapping",
+                "specDefault": {},
+                "descriptionDefault": "",
                 "unknownTopLevelFields": "reject",
                 "unknownMetadataFields": "reject",
                 "extensionIdGrammar": "portable-lowercase-v1",
@@ -135,7 +150,7 @@ def extension_contract() -> ExtensionContract:
         manifest_api_versions=(API_VERSION,),
         extension_kinds=tuple(item.value for item in ExtensionKind),
         registry_layers=layers,
-        stable_python_symbols=LEGACY_PUBLIC_PYTHON_SYMBOLS,
+        stable_python_symbols=STABLE_PUBLIC_PYTHON_SYMBOLS,
         manifest_error_codes=MANIFEST_ERROR_CODES,
         registry_error_codes=REGISTRY_ERROR_CODES,
     )
@@ -154,6 +169,7 @@ __all__ = [
     "LEGACY_PUBLIC_PYTHON_SYMBOLS",
     "MANIFEST_ERROR_CODES",
     "REGISTRY_ERROR_CODES",
+    "STABLE_PUBLIC_PYTHON_SYMBOLS",
     "extension_contract",
     "extension_contract_json",
 ]
