@@ -9,6 +9,7 @@ from sdai import __version__
 from sdai.architecture_cli import main as architecture_main
 from sdai.architecture_trace_cli import main as trace_main
 from sdai.audit_cli import main as audit_main
+from sdai.audit_export_cli import main as audit_export_main
 from sdai.contract_cli import main as contract_main
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
@@ -77,6 +78,12 @@ def main(argv: list[str] | None = None) -> int:
     # by the original lifecycle parser below.
     if len(effective) >= 2 and effective[0] == "architecture" and effective[1] == "drift":
         return architecture_main(effective[2:])
+
+    # Audit export is a nested write-to-retention surface with its own stable parser,
+    # error contract, and integrity exits. Dispatch it before read-only audit reporting
+    # so `sdai audit export FEATURE ...` is never interpreted as feature `export`.
+    if len(effective) >= 2 and effective[0] == "audit" and effective[1] == "export":
+        return audit_export_main(effective[2:])
 
     # Audit reporting is a read-only versioned surface over the existing ledger and
     # canonical trace projection. Dispatch it before the legacy lifecycle parser so

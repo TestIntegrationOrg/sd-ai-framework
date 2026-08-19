@@ -70,6 +70,28 @@ def _export_id(feature_id: str, head_sha256: str, export_sha256: str) -> str:
     return "audit-export-" + sha256(_canonical_bytes(identity)).hexdigest()
 
 
+def _validate_canonical_jsonl(value: bytes, *, event_count: int) -> None:
+    if not value:
+        if event_count != 0:
+            raise _fail("SDAI-AUDIT-EXPORT-004", "eventCount does not match canonical JSONL record count")
+        return
+    if not value.endswith(b"\n"):
+        raise _fail("SDAI-AUDIT-EXPORT-004", "canonical audit JSONL must end with LF")
+    records = value[:-1].split(b"\n")
+    if len(records) != event_count:
+        raise _fail("SDAI-AUDIT-EXPORT-004", "eventCount does not match canonical JSONL record count")
+    for record in records:
+        if not record:
+            raise _fail("SDAI-AUDIT-EXPORT-004", "canonical audit JSONL contains an empty record")
+        try:
+            decoded = record.decode("utf-8")
+            parsed = json.loads(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _fail("SDAI-AUDIT-EXPORT-004", "canonical audit JSONL contains an invalid record") from exc
+        if _canonical_bytes(parsed) != record:
+            raise _fail("SDAI-AUDIT-EXPORT-004", "canonical audit JSONL contains a non-canonical record")
+
+
 @dataclass(frozen=True, slots=True)
 class AuditExportChunk:
     index: int
@@ -279,10 +301,12 @@ def validate_audit_export_package(package: AuditExportPackage) -> None:
         if _hash_bytes(content) != descriptor.sha256:
             raise _fail("SDAI-AUDIT-EXPORT-004", f"chunk {descriptor.index} SHA-256 mismatch")
         assembled.extend(content)
-    if len(assembled) != manifest.byte_length:
+    assembled_bytes = bytes(assembled)
+    if len(assembled_bytes) != manifest.byte_length:
         raise _fail("SDAI-AUDIT-EXPORT-004", "assembled export byte length mismatch")
-    if _hash_bytes(bytes(assembled)) != manifest.export_sha256:
+    if _hash_bytes(assembled_bytes) != manifest.export_sha256:
         raise _fail("SDAI-AUDIT-EXPORT-004", "assembled export SHA-256 mismatch")
+    _validate_canonical_jsonl(assembled_bytes, event_count=manifest.event_count)
 
 
 def build_audit_export_package(
@@ -314,6 +338,7 @@ def build_audit_export_package(
     export_sha = _hash_bytes(export)
     if export_sha != before.export_sha256:
         raise _fail("SDAI-AUDIT-EXPORT-005", "canonical export bytes do not match verified ledger export SHA-256")
+    _validate_canonical_jsonl(export, event_count=before.event_count)
 
     chunks: list[AuditExportChunk] = []
     contents: list[bytes] = []

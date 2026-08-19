@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import threading
 from typing import Mapping, Protocol
 
 from sdai.audit_contracts import AuditProvenanceError
@@ -54,11 +55,7 @@ def _hash_bytes(value: bytes) -> str:
 
 
 def _receipt_id(sink_id: str, export_id: str, manifest_sha256: str) -> str:
-    payload = {
-        "sinkId": sink_id,
-        "exportId": export_id,
-        "manifestSha256": manifest_sha256,
-    }
+    payload = {"sinkId": sink_id, "exportId": export_id, "manifestSha256": manifest_sha256}
     return "audit-receipt-" + sha256(_canonical_bytes(payload)).hexdigest()
 
 
@@ -66,6 +63,18 @@ def _validate_sink_id(value: object) -> str:
     if not isinstance(value, str) or _SINK_ID.fullmatch(value) is None:
         raise _fail("SDAI-AUDIT-SINK-002", "sink id must use lowercase letters, numbers, dot, underscore, or hyphen")
     return value
+
+
+def _reject_symlink_components(path: Path) -> None:
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    current = candidate
+    while True:
+        if current.is_symlink():
+            raise _fail("SDAI-AUDIT-SINK-004", "local sink destination contains a symlink component")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
 
 
 def _fsync_directory(path: Path) -> None:
@@ -163,13 +172,7 @@ class AuditExportReceipt:
             raise _fail("SDAI-AUDIT-SINK-003", "receiptSha256 does not match canonical receipt body")
 
     @classmethod
-    def create(
-        cls,
-        *,
-        sink_id: str,
-        package: AuditExportPackage,
-        status: str,
-    ) -> "AuditExportReceipt":
+    def create(cls, *, sink_id: str, package: AuditExportPackage, status: str) -> "AuditExportReceipt":
         sink = _validate_sink_id(sink_id)
         receipt_id = _receipt_id(sink, package.manifest.export_id, package.manifest.manifest_sha256)
         unsigned = {
@@ -228,19 +231,17 @@ class AuditExportSinkRegistry:
 
 
 class LocalFilesystemAuditSink:
-    """Offline reference sink proving the extension/handoff contract.
-
-    The destination is independent from the SDAI feature workspace. Publication is
-    staging-first and directory-atomic. Existing exports are revalidated before an
-    idempotent `already-present` receipt is returned.
-    """
+    """Offline reference sink proving the extension/handoff contract."""
 
     def __init__(self, destination: Path, *, sink_id: str = "local-filesystem") -> None:
         self._sink_id = _validate_sink_id(sink_id)
-        self.destination = destination.expanduser().resolve()
-        if self.destination.exists() and (self.destination.is_symlink() or not self.destination.is_dir()):
+        expanded = destination.expanduser()
+        _reject_symlink_components(expanded)
+        if expanded.exists() and not expanded.is_dir():
             raise _fail("SDAI-AUDIT-SINK-004", "local sink destination must be a directory")
-        self.destination.mkdir(parents=True, exist_ok=True)
+        expanded.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_components(expanded)
+        self.destination = expanded.resolve()
 
     @property
     def sink_id(self) -> str:
@@ -249,8 +250,13 @@ class LocalFilesystemAuditSink:
     def _final_path(self, package: AuditExportPackage) -> Path:
         return self.destination / package.manifest.export_id
 
-    def _staging_path(self, package: AuditExportPackage) -> Path:
+    def _legacy_staging_path(self, package: AuditExportPackage) -> Path:
         return self.destination / f".partial-{package.manifest.export_id}"
+
+    def _staging_path(self, package: AuditExportPackage) -> Path:
+        return self.destination / (
+            f".partial-{package.manifest.export_id}-{os.getpid()}-{threading.get_ident()}"
+        )
 
     def _load_existing(self, final: Path) -> AuditExportPackage:
         if final.is_symlink() or not final.is_dir():
@@ -259,9 +265,12 @@ class LocalFilesystemAuditSink:
         if manifest_path.is_symlink() or not manifest_path.is_file():
             raise _fail("SDAI-AUDIT-SINK-004", "existing export manifest is missing or unsafe")
         try:
-            manifest = AuditExportManifest.from_json(manifest_path.read_bytes())
+            raw_manifest = manifest_path.read_bytes()
+            manifest = AuditExportManifest.from_json(raw_manifest)
         except (OSError, AuditExportError) as exc:
             raise _fail("SDAI-AUDIT-SINK-004", "existing export manifest is invalid") from exc
+        if raw_manifest != manifest.to_json().encode("utf-8"):
+            raise _fail("SDAI-AUDIT-SINK-004", "existing export manifest is not canonical JSON")
         chunks: list[bytes] = []
         expected_names = {"manifest.json", *(chunk.name for chunk in manifest.chunks)}
         actual_names: set[str] = set()
@@ -291,17 +300,19 @@ class LocalFilesystemAuditSink:
         validate_audit_export_package(package)
         final = self._final_path(package)
         staging = self._staging_path(package)
+        legacy_staging = self._legacy_staging_path(package)
         if final.exists() or final.is_symlink():
             existing = self._load_existing(final)
             self._assert_same(existing, package)
-            return AuditExportReceipt.create(
-                sink_id=self.sink_id,
-                package=package,
-                status="already-present",
-            )
+            return AuditExportReceipt.create(sink_id=self.sink_id, package=package, status="already-present")
 
+        # Recover only the legacy fixed staging directory used before concurrent
+        # publication gained per-process/thread staging. Current writers never use
+        # this path, so removing a safe leftover cannot race another current handoff.
+        _remove_staging(legacy_staging)
         _remove_staging(staging)
         staging.mkdir(mode=0o700)
+        published = False
         try:
             _write_exclusive(staging / "manifest.json", package.manifest.to_json().encode("utf-8"))
             for chunk, content in package.iter_chunks():
@@ -310,36 +321,27 @@ class LocalFilesystemAuditSink:
             if final.exists() or final.is_symlink():
                 existing = self._load_existing(final)
                 self._assert_same(existing, package)
-                _remove_staging(staging)
-                return AuditExportReceipt.create(
-                    sink_id=self.sink_id,
-                    package=package,
-                    status="already-present",
-                )
+                return AuditExportReceipt.create(sink_id=self.sink_id, package=package, status="already-present")
             try:
                 staging.rename(final)
+                published = True
             except OSError as exc:
+                if final.exists() or final.is_symlink():
+                    existing = self._load_existing(final)
+                    self._assert_same(existing, package)
+                    return AuditExportReceipt.create(sink_id=self.sink_id, package=package, status="already-present")
                 raise _fail("SDAI-AUDIT-SINK-005", "unable to publish immutable export directory") from exc
             _fsync_directory(self.destination)
-        except Exception:
-            if staging.exists() and staging.is_dir():
+        finally:
+            if not published and (staging.exists() or staging.is_symlink()):
                 _remove_staging(staging)
-            raise
 
         existing = self._load_existing(final)
         self._assert_same(existing, package)
-        return AuditExportReceipt.create(
-            sink_id=self.sink_id,
-            package=package,
-            status="accepted",
-        )
+        return AuditExportReceipt.create(sink_id=self.sink_id, package=package, status="accepted")
 
 
-def _verify_receipt(
-    receipt: AuditExportReceipt,
-    sink: AuditExportSink,
-    package: AuditExportPackage,
-) -> None:
+def _verify_receipt(receipt: AuditExportReceipt, sink: AuditExportSink, package: AuditExportPackage) -> None:
     if receipt.sink_id != sink.sink_id:
         raise _fail("SDAI-AUDIT-SINK-003", "sink receipt identifies a different sink")
     if receipt.export_id != package.manifest.export_id:
@@ -360,7 +362,6 @@ def handoff_audit_export(
     chunk_size: int | None = None,
 ) -> AuditExportReceipt:
     """Build/verify one immutable export and hand it to a sink exactly once."""
-
     _validate_sink_id(sink.sink_id)
     kwargs = {} if chunk_size is None else {"chunk_size": chunk_size}
     export_package = package or build_audit_export_package(project_root, feature_id, **kwargs)
