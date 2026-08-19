@@ -2,6 +2,40 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import threading
+from typing import Callable
+
+
+class ProviderCancelledError(RuntimeError):
+    """Raised when a governed provider attempt is cooperatively cancelled."""
+
+
+class CancellationToken:
+    """Thread-safe cooperative cancellation signal shared with provider adapters."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise ProviderCancelledError("provider execution cancelled")
+
+
+@dataclass(frozen=True)
+class ProviderProgress:
+    """Privacy-safe progress notification; never carries raw provider output."""
+
+    kind: str
+
+
+ProviderProgressObserver = Callable[[ProviderProgress], None]
 
 
 @dataclass(frozen=True)
@@ -33,6 +67,28 @@ class Provider(ABC):
     def complete(self, *, system: str, prompt: str) -> str:
         raise NotImplementedError
 
+    def complete_observed(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        cancellation: CancellationToken | None = None,
+        observer: ProviderProgressObserver | None = None,
+    ) -> str:
+        """Compatibility-safe observed execution path.
+
+        Existing providers need not implement it. The default performs only
+        pre/post cancellation checks around the historical ``complete`` call and
+        emits no fabricated progress events.
+        """
+        del observer
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        output = self.complete(system=system, prompt=prompt)
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        return output
+
     def availability(self) -> tuple[bool, str]:
         return True, "available"
 
@@ -41,4 +97,11 @@ class Provider(ABC):
         return ProviderCapabilities()
 
 
-__all__ = ["Provider", "ProviderCapabilities"]
+__all__ = [
+    "CancellationToken",
+    "Provider",
+    "ProviderCancelledError",
+    "ProviderCapabilities",
+    "ProviderProgress",
+    "ProviderProgressObserver",
+]
