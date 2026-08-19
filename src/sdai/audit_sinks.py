@@ -250,6 +250,9 @@ class LocalFilesystemAuditSink:
     def _final_path(self, package: AuditExportPackage) -> Path:
         return self.destination / package.manifest.export_id
 
+    def _legacy_staging_path(self, package: AuditExportPackage) -> Path:
+        return self.destination / f".partial-{package.manifest.export_id}"
+
     def _staging_path(self, package: AuditExportPackage) -> Path:
         return self.destination / (
             f".partial-{package.manifest.export_id}-{os.getpid()}-{threading.get_ident()}"
@@ -297,11 +300,16 @@ class LocalFilesystemAuditSink:
         validate_audit_export_package(package)
         final = self._final_path(package)
         staging = self._staging_path(package)
+        legacy_staging = self._legacy_staging_path(package)
         if final.exists() or final.is_symlink():
             existing = self._load_existing(final)
             self._assert_same(existing, package)
             return AuditExportReceipt.create(sink_id=self.sink_id, package=package, status="already-present")
 
+        # Recover only the legacy fixed staging directory used before concurrent
+        # publication gained per-process/thread staging. Current writers never use
+        # this path, so removing a safe leftover cannot race another current handoff.
+        _remove_staging(legacy_staging)
         _remove_staging(staging)
         staging.mkdir(mode=0o700)
         published = False
