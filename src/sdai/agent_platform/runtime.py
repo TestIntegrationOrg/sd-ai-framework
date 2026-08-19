@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sdai.agent_platform.audit import AgentAuditRecorder
-from sdai.agent_platform.context import collect_feature_context, load_governance_context
+from sdai.agent_platform.context import load_governance_context
+from sdai.agent_platform.context_plan import (
+    ContextPlan,
+    build_context_plan as plan_context,
+    selected_skill_names,
+)
 from sdai.agent_platform.definitions import AgentDefinition, resolve_agent_definition
 from sdai.agent_platform.guardrails import enforce_prompt_safety
 from sdai.agent_platform.models import (
@@ -18,7 +23,6 @@ from sdai.agent_platform.prompts import load_prompt, render_template
 from sdai.agent_platform.skills import compose_skills, list_skills
 from sdai.config import load_yaml
 from sdai.execution_guard import WorkspaceMutationGuard
-from sdai.models import FeatureContext
 from sdai.path_safety import ensure_within_project
 from sdai.policy import EffectiveConfiguration, PolicyError, load_effective_configuration
 from sdai.providers.factory import ProviderFactory
@@ -96,6 +100,32 @@ class AgentRuntime:
         """Return the configured hard limit used for explicit isolated context."""
         return _max_context_chars(self.project_root.resolve())
 
+    def build_context_plan(
+        self,
+        feature_id: str,
+        capability: Capability,
+        *,
+        profile_name: str | None = None,
+        agent_name: str | None = None,
+        mode: ExecutionMode = ExecutionMode.ADVISORY,
+    ) -> ContextPlan:
+        """Build the deterministic, provider-free context plan for one invocation."""
+        project_root = self.project_root.resolve()
+        policy = self._policy()
+        definition = _resolve_semantic_definition(project_root, capability, agent_name)
+        requested_profile = profile_name or (definition.profile if definition else None)
+        profile = resolve_profile(project_root, capability, requested_profile)
+        policy.assert_profile_allowed(profile, capability, mode)
+        return plan_context(
+            project_root,
+            feature_id,
+            capability,
+            max_chars_per_file=_max_context_chars(project_root),
+            profile_skills=profile.skills,
+            agent_skills=definition.skills if definition else (),
+            policy_skills=policy.required_skills(capability),
+        )
+
     def _build_invocation(
         self,
         feature_id: str,
@@ -116,12 +146,26 @@ class AgentRuntime:
         prompt_name = PROMPT_BY_CAPABILITY[capability] if profile.prompt == "auto" else profile.prompt
         prompt_template = load_prompt(project_root, prompt_name)
         max_context_chars = _max_context_chars(project_root)
+        policy_skills = policy.required_skills(capability)
+
         if explicit_context is None:
-            feature_context = collect_feature_context(
-                FeatureContext(project_root, feature_id),
+            context_plan = plan_context(
+                project_root,
+                feature_id,
+                capability,
                 max_chars_per_file=max_context_chars,
+                profile_skills=profile.skills,
+                agent_skills=definition.skills if definition else (),
+                policy_skills=policy_skills,
             )
+            feature_context = context_plan.render_feature_context(project_root)
+            governance = context_plan.render_governance_context(project_root)
+            skills = context_plan.render_skills(project_root)
+            effective_skill_names = context_plan.selected_skill_names
         else:
+            # Durable isolated-task contracts own their exact explicit context. Keep
+            # this path free of feature-workspace scanning while retaining normal
+            # governance and applicable skill policy.
             if not isinstance(explicit_context, str) or not explicit_context.strip():
                 raise ValueError("explicit agent context must be non-empty text")
             if len(explicit_context) > max_context_chars:
@@ -129,20 +173,18 @@ class AgentRuntime:
                     f"explicit agent context exceeds configured max_context_chars_per_file={max_context_chars}"
                 )
             feature_context = explicit_context.strip()
-
-        effective_skill_names = tuple(
-            dict.fromkeys(
-                [
-                    *profile.skills,
-                    *(definition.skills if definition else ()),
-                    *policy.required_skills(capability),
-                ]
+            effective_skill_names = selected_skill_names(
+                project_root,
+                capability,
+                profile_skills=profile.skills,
+                agent_skills=definition.skills if definition else (),
+                policy_skills=policy_skills,
             )
-        )
-        skills = compose_skills(project_root, effective_skill_names, capability)
-        governance = load_governance_context(
-            project_root, max_chars_per_file=max_context_chars
-        )
+            skills = compose_skills(project_root, effective_skill_names, capability)
+            governance = load_governance_context(
+                project_root, max_chars_per_file=max_context_chars
+            )
+
         execution_policy = (
             "Do not modify repository files. Return analysis, proposals, or a patch plan only."
             if mode == ExecutionMode.ADVISORY
@@ -252,14 +294,12 @@ class AgentRuntime:
             if invocation.agent_name
             else None
         )
-        effective_skill_names = tuple(
-            dict.fromkeys(
-                [
-                    *invocation.profile.skills,
-                    *(definition.skills if definition else ()),
-                    *policy.required_skills(invocation.capability),
-                ]
-            )
+        effective_skill_names = selected_skill_names(
+            project_root,
+            invocation.capability,
+            profile_skills=invocation.profile.skills,
+            agent_skills=definition.skills if definition else (),
+            policy_skills=policy.required_skills(invocation.capability),
         )
         prompt_name = (
             PROMPT_BY_CAPABILITY[invocation.capability]
