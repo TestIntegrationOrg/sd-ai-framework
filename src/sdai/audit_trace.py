@@ -224,6 +224,11 @@ def _binding_node(
             "binding_kind": binding.kind,
             "source": binding.source,
             "sha256": binding.sha256,
+            "artifact_provenance": {
+                "source": binding.source,
+                "line": 1,
+                "declaration_sha256": binding.sha256,
+            },
             "local_assertion_only": local_assertion_only,
         },
         provenance=(provenance,),
@@ -418,14 +423,13 @@ def build_audit_trace_index(
                 continue
             local_assertion = "/approvals/" in f"/{binding.source}"
             provenance = TraceProvenance(
-                source=binding.source,
-                line=1,
+                source=source,
+                line=event.sequence,
                 detail=(
                     "local approval assertion referenced by audit; enterprise identity not verified"
                     if local_assertion
-                    else "exact audit-bound evidence artifact"
+                    else "exact audit-bound evidence artifact reference"
                 ),
-                declaration_sha256=current_sha,
             )
             node = _binding_node(
                 binding,
