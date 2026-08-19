@@ -70,7 +70,7 @@ def _project(tmp_path: Path) -> Path:
 0.19 integrated audit provenance release gate
 
 ## Description
-Build current-spec workflow provenance without leaking {SECRET_CONTEXT}.
+Build current-spec workflow provenance without leaking sensitive runtime context.
 """,
     )
     _write(
