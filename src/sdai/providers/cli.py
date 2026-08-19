@@ -432,13 +432,16 @@ class CliProvider(Provider):
             stdin_thread is not None and stdin_thread.is_alive()
         ):
             raise ProviderExecutionError(f"{self.provider_name} subprocess pipe did not close cleanly")
-        _raise_thread_error(thread_errors, self.provider_name)
         if first_output_signal.is_set() and not first_output_reported:
             progress(ProviderProgressEvent("first-output", "stdout-observed"))
+        # Cancellation/timeout are the primary terminal causes. Process termination may
+        # cause a secondary writer/reader OSError on Windows; do not let that artifact
+        # overwrite the requested cancellation or configured timeout outcome.
         if cancelled:
             raise ProviderCancelledError()
         if timeout_error is not None:
             raise timeout_error
+        _raise_thread_error(thread_errors, self.provider_name)
 
         stdout_bytes, stdout_observed, stdout_truncated = stdout_capture.snapshot()
         stderr_bytes, stderr_observed, stderr_truncated = stderr_capture.snapshot()
