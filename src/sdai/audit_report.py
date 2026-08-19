@@ -375,6 +375,20 @@ def build_audit_report(
         feature,
         selected,
     )
+    try:
+        final_snapshot = ledger.verify()
+    except AuditProvenanceError:
+        raise
+    if (
+        final_snapshot.event_count != snapshot.event_count
+        or final_snapshot.head_sha256 != snapshot.head_sha256
+        or final_snapshot.export_sha256 != snapshot.export_sha256
+    ):
+        raise _fail(
+            "SDAI-AUDIT-REPORT-004",
+            "audit ledger changed while provenance relationships were being evaluated",
+        )
+
     body = {
         "apiVersion": AUDIT_REPORT_API_VERSION,
         "featureId": feature,
