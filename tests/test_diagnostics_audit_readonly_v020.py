@@ -41,7 +41,7 @@ def test_recoverable_incomplete_audit_tail_is_reported_partial_without_truncatio
     AuditLedger(tmp_path, FEATURE).append(
         category="system",
         actor=AuditActor("system", "readonly-test"),
-        action=AuditAction("diagnostics.audit.test"),
+        action=AuditAction("diagnostics.audit.test", "readonly-test"),
         occurred_at="2026-08-19T15:00:00.000000Z",
     )
     ledger = feature / ".sdai" / "audit" / "events.jsonl"
@@ -66,7 +66,7 @@ def test_complete_noncanonical_final_audit_record_is_not_hidden_as_crash_tail(
     AuditLedger(tmp_path, FEATURE).append(
         category="system",
         actor=AuditActor("system", "readonly-test"),
-        action=AuditAction("diagnostics.audit.test"),
+        action=AuditAction("diagnostics.audit.test", "readonly-test"),
         occurred_at="2026-08-19T15:00:00.000000Z",
     )
     ledger = feature / ".sdai" / "audit" / "events.jsonl"
