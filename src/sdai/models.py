@@ -37,10 +37,26 @@ class FeatureContext:
 
     @property
     def feature_dir(self) -> Path:
-        path = self.project_root / "specs" / self.feature_id
-        return ensure_within_project(
-            self.project_root, path, label=f"feature workspace '{self.feature_id}'"
+        modern = ensure_within_project(
+            self.project_root,
+            self.project_root / "specs" / "changes" / self.feature_id,
+            label=f"feature workspace '{self.feature_id}'",
         )
+        legacy = ensure_within_project(
+            self.project_root,
+            self.project_root / "specs" / self.feature_id,
+            label=f"feature workspace '{self.feature_id}'",
+        )
+        modern_exists = modern.exists()
+        legacy_exists = legacy.exists()
+        if modern_exists and not legacy_exists:
+            return modern
+        # Preserve historical lifecycle behavior when both workspace layouts are
+        # present: generic FeatureContext continues to use specs/<FEATURE>. Audit
+        # provenance has its own stricter authority resolver and still rejects an
+        # ambiguous dual-workspace audit source. When neither exists, lifecycle
+        # commands also retain their historical legacy creation target.
+        return legacy
 
     def artifact(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
