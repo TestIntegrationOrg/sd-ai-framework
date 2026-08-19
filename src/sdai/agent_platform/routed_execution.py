@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from sdai.agent_platform.context import collect_feature_context
 from sdai.agent_platform.model_routing import ModelRoutingError, RoutingDecision, RoutingRequest, route_model
 from sdai.agent_platform.models import AgentExecutionResult, AgentInvocation, ExecutionMode
+from sdai.agent_platform.routing_diagnostics import persist_routing_decision
 from sdai.agent_platform.runtime import AgentRuntime
 from sdai.models import FeatureContext
 
@@ -64,6 +65,14 @@ def execute_routed_invocation(
         raise TypeError("routed must be a RoutedInvocation")
     if routed.decision.selected_profile != routed.invocation.profile.name:
         raise ModelRoutingError("SDAI-ROUTING-004: routed invocation profile differs from routing decision")
+    # Persist the privacy-safe deterministic decision before provider execution.
+    # A persistence/integrity conflict therefore fails closed without calling the
+    # provider, while repeated identical decisions remain idempotent by SHA-256.
+    persist_routing_decision(
+        runtime.project_root,
+        routed.invocation.feature_id,
+        routed.decision,
+    )
     return runtime.execute_invocation(routed.invocation)
 
 

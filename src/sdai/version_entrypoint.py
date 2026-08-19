@@ -13,6 +13,7 @@ from sdai.audit_export_cli import main as audit_export_main
 from sdai.context_cli import main as context_main
 from sdai.contract_cli import main as contract_main
 from sdai.converge_cli import main as converge_main
+from sdai.diagnostics_cli import main as diagnostics_main
 from sdai.entrypoint import main as lifecycle_main
 from sdai.feature_graph_cli import main as feature_graph_main
 from sdai.multi_repo_run_cli import main as multi_repo_run_main
@@ -85,6 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     # accidentally consumed by this surface.
     if len(effective) >= 2 and effective[0] == "context" and effective[1] == "explain":
         return context_main(effective[2:])
+
+    # Unified diagnostics is a top-level read-only operator surface over current
+    # context and persisted routing/provider/retry/audit evidence. It never invokes
+    # a provider or mutates execution state.
+    if effective and effective[0] == "diagnostics":
+        return diagnostics_main(effective[1:])
 
     # Audit export is a nested write-to-retention surface with its own stable parser,
     # error contract, and integrity exits. Dispatch it before read-only audit reporting
