@@ -104,7 +104,7 @@ _STABLE_CONTRACTS = (
     StableJsonContract(
         "contract.diff",
         "sdai.contract-diff/v1",
-        "sdai contract diff BEFORE AFTER --json",
+        "sdai contract diff SOURCE --against PATH --json",
         "sdai.contracts",
         "analysis",
         "kind",
@@ -171,21 +171,21 @@ _STABLE_CONTRACTS = (
     StableJsonContract(
         "multi-repo.feature-graph",
         "sdai.multi-repo-feature-graph/v1",
-        "sdai feature-graph FEATURE --json",
+        "sdai feature graph FEATURE --json",
         "sdai.multi_repo_feature_graph",
         "read",
     ),
     StableJsonContract(
         "multi-repo.run-plan",
         "sdai.multi-repo-run-plan/v1",
-        "sdai multi-repo run FEATURE --json",
+        "sdai run FEATURE --all --plan --json",
         "sdai.multi_repo_run",
         "read",
     ),
     StableJsonContract(
         "multi-repo.verification",
         "sdai.multi-repo-verification/v1",
-        "sdai multi-repo verify FEATURE --json",
+        "sdai verify --all-repos --feature FEATURE --json",
         "sdai.multi_repo_verify",
         "analysis",
     ),
