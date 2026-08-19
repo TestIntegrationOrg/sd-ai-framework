@@ -95,6 +95,19 @@ def _terminal_path(feature: Path, attempt_id: str) -> Path:
     return files[-1]
 
 
+def _canonical_json_bytes(payload: object) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
 def _bind_run_task(root: Path, feature: Path, attempt_id: str) -> None:
     terminal = _terminal_path(feature, attempt_id)
     source = terminal.relative_to(root).as_posix()
@@ -259,10 +272,9 @@ def test_tampered_provider_diagnostic_fails_closed(
     terminal = _terminal_path(feature, attempt_dir.name)
     payload = json.loads(terminal.read_text(encoding="utf-8"))
     payload["status"] = "failed"
-    terminal.write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    # Use exact bytes rather than text mode so Windows newline translation does not
+    # turn this hash-tamper fixture into a separate CRLF canonical-byte test.
+    terminal.write_bytes(_canonical_json_bytes(payload))
 
     with pytest.raises(DiagnosticsError, match="SHA-256 verification"):
         build_diagnostics_report(tmp_path, FEATURE)
@@ -291,10 +303,9 @@ def test_tampered_routing_document_fails_closed_before_it_can_explain_selection(
     )
     payload = json.loads(routing_file.read_text(encoding="utf-8"))
     payload["decision"]["selection_reason"] = "tampered"
-    routing_file.write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    # Preserve canonical JSON bytes while leaving the old document SHA in place so
+    # the test exercises the intended integrity check on every operating system.
+    routing_file.write_bytes(_canonical_json_bytes(payload))
 
     with pytest.raises(RoutingDiagnosticError, match="document SHA-256"):
         build_diagnostics_report(tmp_path, FEATURE)
@@ -319,7 +330,7 @@ def test_routing_diagnostic_persistence_is_idempotent_and_conflict_fails_before_
     assert load_routing_diagnostic(tmp_path, FEATURE, routing_document_sha) is not None
     assert provider.calls == 0
 
-    first.write_text("{}\n", encoding="utf-8")
+    first.write_bytes(b"{}\n")
     with pytest.raises(RoutingDiagnosticError, match="conflicts"):
         execute_routed_invocation(runtime, RoutedInvocation(decision, invocation))
     assert provider.calls == 0
