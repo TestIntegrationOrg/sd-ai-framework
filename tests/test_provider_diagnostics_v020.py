@@ -238,7 +238,8 @@ def test_provider_factory_failure_records_startup_failure_without_provider_ready
         "category": "provider-not-found",
         "type": "FileNotFoundError",
     }
-    assert events[-1]["timing"]["startupNs"] is None
+    assert events[-1]["timing"]["startupNs"] == 300
+    assert events[-1]["timing"]["invocationNs"] is None
     assert events[-1]["timing"]["totalNs"] == 300
     assert events[-1]["timing"]["firstOutput"]["reason"] == "provider-not-created"
     assert SECRET_ERROR not in json.dumps(events, sort_keys=True)
