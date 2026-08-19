@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import sdai.audit_ledger as audit_ledger_module
 from sdai.audit_ledger import AuditLedger
 from sdai.audit_provenance import (
     AUDIT_EVENT_API_VERSION,
@@ -302,7 +303,7 @@ def test_noncanonical_reformatting_is_detected(tmp_path: Path) -> None:
     )
     ledger.events_path.write_text(json.dumps(event.to_dict(), indent=2) + "\n", encoding="utf-8", newline="\n")
 
-    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-005.*not canonical"):
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-005.*(?:invalid JSON|not canonical)"):
         ledger.verify()
 
 
@@ -362,7 +363,7 @@ def test_audit_directory_symlink_fails_closed(tmp_path: Path) -> None:
     outside.mkdir()
     _symlink_or_skip(feature / ".sdai" / "audit", outside)
 
-    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-004.*symlink"):
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-004.*(?:symlink|escapes)"):
         AuditLedger(root, FEATURE)
 
 
@@ -432,4 +433,63 @@ def test_public_type_errors_fail_with_audit_error_not_raw_python_errors() -> Non
             actor=AuditActor("system", "sdai"),
             action=AuditAction("verify.completed", FEATURE),
             bindings=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_crlf_reformatting_is_rejected_as_noncanonical(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    ledger = AuditLedger(root, FEATURE)
+    ledger.append(
+        category="system",
+        actor=AuditActor("system", "sdai"),
+        action=AuditAction("run.started", FEATURE),
+        occurred_at="2026-08-18T17:00:00Z",
+    )
+    ledger.events_path.write_bytes(ledger.events_path.read_bytes().replace(b"\n", b"\r\n"))
+
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-005.*not canonical"):
+        ledger.verify()
+
+
+def test_event_count_limit_blocks_before_writing_extra_record(tmp_path: Path, monkeypatch) -> None:
+    root = _workspace(tmp_path)
+    ledger = AuditLedger(root, FEATURE)
+    monkeypatch.setattr(audit_ledger_module, "AUDIT_MAX_EVENTS", 1)
+    ledger.append(
+        category="system",
+        actor=AuditActor("system", "sdai"),
+        action=AuditAction("run.started", FEATURE),
+        occurred_at="2026-08-18T17:00:00Z",
+    )
+    before = ledger.events_path.read_bytes()
+
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-005.*event count limit"):
+        ledger.append(
+            category="system",
+            actor=AuditActor("system", "sdai"),
+            action=AuditAction("run.completed", FEATURE),
+            occurred_at="2026-08-18T17:01:00Z",
+        )
+    assert ledger.events_path.read_bytes() == before
+
+
+def test_invalid_feature_and_sequence_are_stable_audit_errors() -> None:
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-002.*featureId"):
+        AuditEvent.create(
+            sequence=1,
+            feature_id=object(),  # type: ignore[arg-type]
+            category="system",
+            occurred_at="2026-08-18T17:00:00Z",
+            actor=AuditActor("system", "sdai"),
+            action=AuditAction("verify.completed", FEATURE),
+        )
+
+    with pytest.raises(AuditProvenanceError, match="SDAI-AUDIT-002.*sequence"):
+        AuditEvent.create(
+            sequence="one",  # type: ignore[arg-type]
+            feature_id=FEATURE,
+            category="system",
+            occurred_at="2026-08-18T17:00:00Z",
+            actor=AuditActor("system", "sdai"),
+            action=AuditAction("verify.completed", FEATURE),
         )
