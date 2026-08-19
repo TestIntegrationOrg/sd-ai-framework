@@ -85,8 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("feature")
     parser.add_argument(
         "--capability",
-        required=True,
         choices=[item.value for item in Capability],
+        default=Capability.CODING.value,
+        help="agent capability to explain (default: coding)",
     )
     parser.add_argument("--profile")
     parser.add_argument("--agent")
