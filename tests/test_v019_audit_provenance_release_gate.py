@@ -13,6 +13,7 @@ from sdai.audit_export import build_audit_export_package
 from sdai.audit_ledger import AuditLedger
 from sdai.audit_provenance import AuditAction, AuditActor, AuditBinding
 from sdai.audit_sinks import LocalFilesystemAuditSink, handoff_audit_export
+from sdai.models import FeatureContext
 from sdai.providers.factory import ProviderFactory
 from sdai.scaffold import init_project
 from sdai.trace_builder import build_feature_trace_graph
@@ -62,6 +63,17 @@ def _project(tmp_path: Path) -> Path:
 
     feature = root / "specs" / "changes" / FEATURE
     _write(
+        feature / "00-intake.md",
+        f"""# Feature Intake — {FEATURE}
+
+## Title
+0.19 integrated audit provenance release gate
+
+## Description
+Build current-spec workflow provenance without leaking {SECRET_CONTEXT}.
+""",
+    )
+    _write(
         feature / "requirements.md",
         "# Requirements\n\n- FR-019: Produce an inspectable, immutable audit provenance chain.\n",
     )
@@ -93,6 +105,7 @@ steps:
     action: specify
 """,
     )
+    assert FeatureContext(root, FEATURE).feature_dir == feature.resolve()
     return root
 
 
