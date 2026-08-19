@@ -8,6 +8,7 @@ import sys
 from sdai import __version__
 from sdai.architecture_cli import main as architecture_main
 from sdai.architecture_trace_cli import main as trace_main
+from sdai.audit_cli import main as audit_main
 from sdai.contract_cli import main as contract_main
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
@@ -76,6 +77,12 @@ def main(argv: list[str] | None = None) -> int:
     # by the original lifecycle parser below.
     if len(effective) >= 2 and effective[0] == "architecture" and effective[1] == "drift":
         return architecture_main(effective[2:])
+
+    # Audit reporting is a read-only versioned surface over the existing ledger and
+    # canonical trace projection. Dispatch it before the legacy lifecycle parser so
+    # no existing command grammar or orchestration behavior changes.
+    if effective and effective[0] == "audit":
+        return audit_main(effective[1:])
 
     # Multi-repository execution keeps its existing deterministic plan/authority
     # surface; only the local Orchestrator binding is replaced while it runs so the
