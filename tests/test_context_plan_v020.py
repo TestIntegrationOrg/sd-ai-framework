@@ -7,6 +7,7 @@ import pytest
 
 from sdai.agent_platform import (
     CONTEXT_PLAN_API_VERSION,
+    CONTEXT_PLAN_MAX_FILES,
     AgentRuntime,
     Capability,
     ContextPlanError,
@@ -57,10 +58,7 @@ def _current_workspace(root: Path) -> Path:
         root / "src" / "context_worker.py",
         "# TASK-020\n\ndef build_context() -> None:\n    pass\n",
     )
-    _write(
-        root / "src" / "unrelated.py",
-        f"# unrelated source marker: {SECRET}\n",
-    )
+    _write(root / "src" / "unrelated.py", f"# unrelated source marker: {SECRET}\n")
     return feature
 
 
@@ -161,6 +159,24 @@ def test_context_plan_detects_selected_artifact_mutation_before_render(tmp_path:
         plan.render_feature_context(tmp_path)
 
 
+def test_context_plan_detects_skill_manifest_applicability_mutation(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    _current_workspace(tmp_path)
+    plan = AgentRuntime(tmp_path).build_context_plan(FEATURE, Capability.ARCHITECTURE)
+    assert "architecture-review" in plan.selected_skill_names
+
+    manifest = tmp_path / ".sdai" / "skills" / "architecture-review" / "skill.yaml"
+    manifest.write_text(
+        "name: architecture-review\n"
+        "description: Generate and evaluate architecture options using explicit quality attributes and ADRs.\n"
+        "capabilities: [review]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ContextPlanError, match="planned skill changed after planning"):
+        plan.render_skills(tmp_path)
+
+
 def test_legacy_feature_workspace_uses_deterministic_fallback_without_current_index(tmp_path: Path) -> None:
     init_project(tmp_path)
     legacy = _legacy_workspace(tmp_path)
@@ -231,3 +247,23 @@ def test_context_plan_truncation_is_bounded_and_explained(tmp_path: Path) -> Non
     rendered = plan.render_feature_context(tmp_path)
     assert "[truncated by SD-AI]" in rendered
     assert "x" * 1001 not in rendered
+
+
+def test_governance_authority_is_not_displaced_by_feature_file_budget(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    feature = _current_workspace(tmp_path)
+    for index in range(CONTEXT_PLAN_MAX_FILES + 20):
+        _write(feature / "evidence" / f"result-{index:03d}.md", f"result {index}\n")
+
+    plan = build_context_plan(
+        tmp_path,
+        FEATURE,
+        Capability.CODING,
+        max_chars_per_file=30_000,
+    )
+    sources = {item.source for item in plan.files}
+
+    assert len(plan.files) == CONTEXT_PLAN_MAX_FILES
+    assert ".sdai/constitution.yaml" in sources
+    assert ".sdai/policies.yaml" in sources
+    assert any(item.reason == "file-budget-exceeded" for item in plan.exclusions)
