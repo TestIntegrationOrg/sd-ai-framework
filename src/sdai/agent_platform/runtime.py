@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sdai.agent_platform.audit import AgentAuditRecorder
 from sdai.agent_platform.context import collect_feature_context, load_governance_context
 from sdai.agent_platform.definitions import AgentDefinition, resolve_agent_definition
 from sdai.agent_platform.guardrails import enforce_prompt_safety
@@ -241,19 +242,9 @@ class AgentRuntime:
             invocation.mode,
         )
         enforce_prompt_safety(invocation.system, invocation.prompt)
-        provider = ProviderFactory.create(
-            invocation.profile,
-            mode=invocation.mode,
-            cwd=invocation.cwd,
-            policy=policy,
-        )
 
-        if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
-            with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
-                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-        else:
-            output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-
+        # Resolve canonical semantic/skill provenance before provider execution so
+        # the exact governed source set is hash-bound to the pre-execution event.
         definition = (
             _resolve_semantic_definition(
                 project_root, invocation.capability, invocation.agent_name
@@ -270,6 +261,62 @@ class AgentRuntime:
                 ]
             )
         )
+        prompt_name = (
+            PROMPT_BY_CAPABILITY[invocation.capability]
+            if invocation.profile.prompt == "auto"
+            else invocation.profile.prompt
+        )
+        recorder = AgentAuditRecorder.optional_for(project_root, invocation.feature_id)
+        provenance = (
+            recorder.prepare(
+                invocation,
+                prompt_name=prompt_name,
+                definition=definition,
+                effective_skill_names=effective_skill_names,
+            )
+            if recorder is not None
+            else None
+        )
+        # Fail closed before any provider action when the audit chain is active.
+        started_event = (
+            recorder.started(invocation, provenance)
+            if recorder is not None and provenance is not None
+            else None
+        )
+
+        try:
+            provider = ProviderFactory.create(
+                invocation.profile,
+                mode=invocation.mode,
+                cwd=invocation.cwd,
+                policy=policy,
+            )
+            if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
+                with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
+                    output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+            else:
+                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+        except BaseException as exc:
+            if recorder is not None and provenance is not None and started_event is not None:
+                recorder.failed(
+                    invocation,
+                    provenance,
+                    error=exc,
+                    started_event=started_event,
+                )
+            raise
+
+        # Provider execution is never repeated for audit. If terminal audit append
+        # fails, the started record remains durable and execution fails closed rather
+        # than returning an unrecorded successful provider result.
+        if recorder is not None and provenance is not None and started_event is not None:
+            recorder.succeeded(
+                invocation,
+                provenance,
+                output=output,
+                started_event=started_event,
+            )
+
         return AgentExecutionResult(
             feature_id=invocation.feature_id,
             capability=invocation.capability,
