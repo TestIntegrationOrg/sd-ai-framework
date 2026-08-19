@@ -16,6 +16,7 @@ from sdai.converge_cli import main as converge_main
 from sdai.diagnostics_cli import main as diagnostics_main
 from sdai.entrypoint import main as lifecycle_main
 from sdai.feature_graph_cli import main as feature_graph_main
+from sdai.migration_cli import main as migration_main, upgrade_main as safe_upgrade_main
 from sdai.multi_repo_run_cli import main as multi_repo_run_main
 from sdai.multi_repo_verify_cli import main as multi_repo_verify_main
 from sdai.trace_policy_cli import main as trace_policy_main
@@ -68,6 +69,17 @@ def main(argv: list[str] | None = None) -> int:
     if effective in (["--version"], ["-V"]):
         print(f"sdai {__version__}")
         return 0
+
+    # Public upgrade now uses the reversible migration engine while preserving the
+    # historical command grammar and human output. This dispatch intentionally occurs
+    # before the legacy lifecycle parser so no unsafe direct scaffold mutation bypasses
+    # the migration manifest/rollback boundary.
+    if effective and effective[0] == "upgrade":
+        return safe_upgrade_main(effective[1:])
+
+    # Explicit migration operations own a separate versioned automation surface.
+    if effective and effective[0] == "migrate":
+        return migration_main(effective[1:])
 
     # Keep the legacy `sdai feature FEATURE --title ... --description ...`
     # lifecycle parser unchanged. The nested graph surface is dispatched before
@@ -129,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     # only its Orchestrator class during this call, so `run` and `step run` gain
     # workflow/policy provenance without a parallel CLI implementation.
     result = run_lifecycle_with_workflow_audit(lifecycle_main, effective)
-    if result == 0 and effective and effective[0] in {"init", "upgrade"}:
+    if result == 0 and effective and effective[0] == "init":
         root = _project_root(effective)
         metadata = write_framework_metadata(root)
         print(f"SD-AI framework version {__version__}")
