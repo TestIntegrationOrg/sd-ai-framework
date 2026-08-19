@@ -93,13 +93,17 @@ class _AuditLock:
                 import msvcrt
 
                 os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                # Parallel workflow branches can append audit events concurrently.
+                # Serialize those writers instead of treating normal contention as
+                # an integrity failure. LK_LOCK retries while another process owns
+                # the byte-range lock and still fails closed on genuine lock errors.
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             else:
                 import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX)
         except (BlockingIOError, OSError) as exc:
-            raise _fail("SDAI-AUDIT-006", "audit ledger is locked by another process") from exc
+            raise _fail("SDAI-AUDIT-006", "unable to acquire audit ledger lock") from exc
 
     def _release(self, fd: int) -> None:
         try:
