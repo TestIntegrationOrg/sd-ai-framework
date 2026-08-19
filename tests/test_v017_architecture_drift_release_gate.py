@@ -355,8 +355,8 @@ def test_v017_integrated_architecture_drift_release_journey(
     )
     observer_ids = {item.observer_id for item in first.report.observations}
     assert {
-        "dependency-imports",
-        "service-communication",
+        "repository-dependencies",
+        "repository-communications",
         "repository-data",
         "repository-deployments",
         "trust-boundary-security",
