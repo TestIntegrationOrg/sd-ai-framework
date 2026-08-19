@@ -65,6 +65,18 @@ class _ObservableProvider:
         return SECRET_OUTPUT
 
 
+class _LegacyProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def diagnostic_capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities()
+
+    def complete(self, *, system: str, prompt: str) -> str:
+        self.calls += 1
+        return "legacy-output"
+
+
 def _workspace(root: Path) -> Path:
     init_project(root)
     feature = root / "specs" / "changes" / FEATURE
@@ -123,9 +135,40 @@ def test_observable_provider_records_first_output_heartbeat_and_dynamic_terminal
     }
     assert events[2]["progressReason"] == "provider-stream-started"
     assert events[3]["progressReason"] == "provider-running"
+    assert "progressReason" not in events[0]
+    assert "progressReason" not in events[1]
+    assert "progressReason" not in events[-1]
     assert events[-1]["timing"]["firstOutput"]["available"] is True
     serialized = json.dumps(events, sort_keys=True)
     assert SECRET_OUTPUT not in serialized
+
+
+def test_complete_only_provider_keeps_original_three_event_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feature = _workspace(tmp_path)
+    provider = _LegacyProvider()
+    monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
+    runtime = AgentRuntime(
+        tmp_path,
+        diagnostic_clock=_FakeClock([10, 20, 30]),
+        diagnostic_id_factory=lambda: "legacy-attempt",
+    )
+
+    result = runtime.execute_invocation(_invocation(runtime))
+
+    assert result.output == "legacy-output"
+    assert provider.calls == 1
+    attempt = feature / ".sdai" / "diagnostics" / "provider" / "legacy-attempt"
+    assert [path.name for path in sorted(attempt.glob("*.json"))] == [
+        "000-started.json",
+        "001-provider-ready.json",
+        "002-completed.json",
+    ]
+    events = _events(feature, "legacy-attempt")
+    assert [event["phase"] for event in events] == ["started", "provider-ready", "completed"]
+    assert all("progressReason" not in event for event in events)
 
 
 def test_pre_cancelled_token_prevents_provider_call_and_records_cancelled_terminal(
@@ -150,6 +193,7 @@ def test_pre_cancelled_token_prevents_provider_call_and_records_cancelled_termin
     events = _events(feature, "pre-cancelled")
     assert [event["phase"] for event in events] == ["started", "provider-ready", "cancelled"]
     assert events[-1]["status"] == "cancelled"
+    assert events[-1]["progressReason"] == "cancelled-by-request"
     assert events[-1]["failure"] == {
         "category": "cancelled",
         "type": "ProviderCancelledError",
