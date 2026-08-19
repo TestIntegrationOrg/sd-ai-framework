@@ -189,8 +189,8 @@ def build_context_explanation(
     }
     metrics = {name: TextSizeMetric.from_text(text) for name, text in texts.items()}
     return ContextExplanation(
-        feature_id=feature_id,
-        capability=capability,
+        feature_id=plan.feature_id,
+        capability=plan.capability,
         mode=mode,
         profile=invocation.profile.name,
         provider=invocation.profile.provider,
