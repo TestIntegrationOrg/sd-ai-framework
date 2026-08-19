@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from sdai.diagnostics import DiagnosticsError, build_diagnostics_report
+from sdai.diagnostics import build_diagnostics_report
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,11 +56,14 @@ def _human(body: dict[str, object]) -> str:
     if isinstance(routing, dict):
         if routing.get("available"):
             lines.append(
-                f"routing: selected={routing.get('selectedProfile')} reason={routing.get('selectionReason')} sha256={routing.get('decisionSha256')}"
+                f"routing: selected={routing.get('selectedProfile')} reason={routing.get('selectionReason')}"
+                f" decision-sha256={routing.get('decisionSha256')}"
+                f" document-sha256={routing.get('routingDecisionDocumentSha256')}"
             )
         else:
             lines.append(
-                f"routing: unavailable reason={routing.get('reason')} sha256={routing.get('decisionSha256')}"
+                f"routing: unavailable reason={routing.get('reason')}"
+                f" document-sha256={routing.get('routingDecisionDocumentSha256')}"
             )
     attempts = body.get("providerAttempts")
     if isinstance(attempts, list):
