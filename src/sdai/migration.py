@@ -182,20 +182,30 @@ def _sha_json(value: object) -> str:
 
 def _validate_project(root: Path) -> Path:
     resolved = root.resolve()
+    managed = resolved / ".sdai"
+    if managed.is_symlink():
+        raise MigrationSafetyError("managed SDAI root '.sdai' cannot be a symlink")
     config = ensure_within_project(
         resolved,
-        resolved / ".sdai" / "config.yaml",
+        managed / "config.yaml",
         label="SD-AI project config",
     )
+    if config.is_symlink():
+        raise MigrationSafetyError("SD-AI project config cannot be a symlink during migration")
     if not config.is_file():
         raise FileNotFoundError("Not an SD-AI project. Run `sdai init` first.")
     return resolved
 
 
-def _validate_managed_relative(value: str) -> PurePosixPath:
+def _portable_relative(value: str) -> PurePosixPath:
     rel = PurePosixPath(value)
     if rel.is_absolute() or not rel.parts or ".." in rel.parts or "." in rel.parts:
         raise MigrationSafetyError(f"unsafe migration path: {value!r}")
+    return rel
+
+
+def _validate_managed_relative(value: str) -> PurePosixPath:
+    rel = _portable_relative(value)
     if rel.parts[0] not in _MANAGED_ROOTS:
         raise MigrationSafetyError(
             f"migration path '{value}' is outside managed SDAI roots"
@@ -205,11 +215,19 @@ def _validate_managed_relative(value: str) -> PurePosixPath:
     return rel
 
 
-def _safe_target(root: Path, value: str) -> Path:
-    rel = _validate_managed_relative(value)
+def _validate_evidence_relative(value: str) -> PurePosixPath:
+    rel = _portable_relative(value)
+    if rel != _MIGRATION_ROOT and _MIGRATION_ROOT not in rel.parents:
+        raise MigrationSafetyError(
+            f"migration evidence path '{value}' is outside .sdai/migrations"
+        )
+    return rel
+
+
+def _safe_from_relative(root: Path, value: str, rel: PurePosixPath, *, label: str) -> Path:
     candidate = root.joinpath(*rel.parts)
     try:
-        ensure_within_project(root, candidate, label=f"migration target '{value}'")
+        ensure_within_project(root, candidate, label=label)
     except PathSafetyError as exc:
         raise MigrationSafetyError(str(exc)) from exc
 
@@ -218,13 +236,31 @@ def _safe_target(root: Path, value: str) -> Path:
         current = current / part
         if current.is_symlink():
             raise MigrationSafetyError(
-                f"migration target '{value}' traverses symlink '{current.relative_to(root).as_posix()}'"
+                f"{label} traverses symlink '{current.relative_to(root).as_posix()}'"
             )
     if candidate.is_symlink():
-        raise MigrationSafetyError(
-            f"migration target '{value}' is a symlink and cannot be modified safely"
-        )
+        raise MigrationSafetyError(f"{label} is a symlink and cannot be modified safely")
     return candidate
+
+
+def _safe_target(root: Path, value: str) -> Path:
+    rel = _validate_managed_relative(value)
+    return _safe_from_relative(
+        root,
+        value,
+        rel,
+        label=f"migration target '{value}'",
+    )
+
+
+def _safe_evidence_target(root: Path, value: str) -> Path:
+    rel = _validate_evidence_relative(value)
+    return _safe_from_relative(
+        root,
+        value,
+        rel,
+        label=f"migration evidence '{value}'",
+    )
 
 
 def _managed_snapshot(root: Path) -> tuple[dict[str, bytes], tuple[str, ...]]:
@@ -277,10 +313,9 @@ def _copy_managed_snapshot(source: Path, destination: Path) -> tuple[str, ...]:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     for rel in symlinks:
-        path = PurePosixPath(rel)
-        target = destination.joinpath(*path.parts)
         if rel in files:
             continue
+        target = destination.joinpath(*PurePosixPath(rel).parts)
         target.mkdir(parents=True, exist_ok=True)
     return symlinks
 
@@ -419,7 +454,9 @@ def apply_migration(project_root: Path) -> MigrationResult:
 
     _preflight_apply(root, plan)
     migration_id = uuid.uuid4().hex
-    record_root = _safe_target(root, f".sdai/migrations/{migration_id}/manifest.json").parent
+    manifest_rel = f".sdai/migrations/{migration_id}/manifest.json"
+    manifest_path = _safe_evidence_target(root, manifest_rel)
+    record_root = manifest_path.parent
     record_root.mkdir(parents=True, exist_ok=False)
 
     backup_paths: dict[str, str] = {}
@@ -434,7 +471,7 @@ def apply_migration(project_root: Path) -> MigrationResult:
                 / "backups"
                 / PurePosixPath(change.path)
             ).as_posix()
-            backup_target = root.joinpath(*PurePosixPath(backup_rel).parts)
+            backup_target = _safe_evidence_target(root, backup_rel)
             _atomic_write(backup_target, change._before_bytes)
             if _sha_bytes(backup_target.read_bytes()) != change.before_sha256:
                 raise MigrationSafetyError(
@@ -453,7 +490,6 @@ def apply_migration(project_root: Path) -> MigrationResult:
 
         manifest = _manifest_body(migration_id, plan, backup_paths)
         manifest["manifestSha256"] = _sha_json(manifest)
-        manifest_path = record_root / "manifest.json"
         _write_canonical_json(manifest_path, manifest)
     except Exception:
         for change in reversed(applied):
@@ -479,7 +515,8 @@ def _load_integrity_json(path: Path, hash_field: str) -> dict[str, object]:
     if not path.is_file() or path.is_symlink():
         raise MigrationSafetyError(f"migration evidence is missing or unsafe: {path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MigrationSafetyError(f"migration evidence is invalid JSON: {path}") from exc
     if not isinstance(payload, dict):
@@ -491,6 +528,9 @@ def _load_integrity_json(path: Path, hash_field: str) -> dict[str, object]:
     body.pop(hash_field, None)
     if claimed != _sha_json(body):
         raise MigrationSafetyError(f"migration evidence integrity mismatch: {path}")
+    expected = (_canonical_json(payload) + "\n").encode("utf-8")
+    if raw != expected:
+        raise MigrationSafetyError(f"migration evidence is not canonical JSON: {path}")
     return payload
 
 
@@ -524,9 +564,11 @@ def _manifest_changes(payload: dict[str, object]) -> tuple[dict[str, object], ..
 
 def _preflight_rollback(
     root: Path,
+    migration_id: str,
     changes: tuple[dict[str, object], ...],
 ) -> dict[str, bytes]:
     backups: dict[str, bytes] = {}
+    expected_backup_root = PurePosixPath(".sdai/migrations") / migration_id / "backups"
     for item in changes:
         path = str(item["path"])
         target = _safe_target(root, path)
@@ -544,7 +586,12 @@ def _preflight_rollback(
         backup_rel = item.get("backupPath")
         if not isinstance(backup_rel, str):
             raise MigrationSafetyError(f"cannot rollback '{path}': backup path is missing")
-        backup_path = _safe_target(root, backup_rel)
+        backup_posix = _validate_evidence_relative(backup_rel)
+        if expected_backup_root not in backup_posix.parents:
+            raise MigrationSafetyError(
+                f"cannot rollback '{path}': backup path is outside this migration"
+            )
+        backup_path = _safe_evidence_target(root, backup_rel)
         if not backup_path.is_file():
             raise MigrationSafetyError(f"cannot rollback '{path}': backup is missing")
         backup_bytes = backup_path.read_bytes()
@@ -558,6 +605,8 @@ def _prune_empty_managed_parents(root: Path, path: Path) -> None:
     current = path.parent
     protected = {root, root / ".sdai", root / ".agents"}
     while current not in protected:
+        if _MIGRATION_ROOT in PurePosixPath(current.relative_to(root).as_posix()).parents:
+            break
         try:
             current.rmdir()
         except OSError:
@@ -571,8 +620,9 @@ def rollback_migration(project_root: Path, migration_id: str) -> MigrationRollba
     root = _validate_project(project_root)
     if not migration_id or not migration_id.isalnum():
         raise MigrationSafetyError("migration id must be a non-empty alphanumeric value")
-    record_root = _safe_target(root, f".sdai/migrations/{migration_id}/manifest.json").parent
-    manifest_path = record_root / "manifest.json"
+    manifest_rel = f".sdai/migrations/{migration_id}/manifest.json"
+    manifest_path = _safe_evidence_target(root, manifest_rel)
+    record_root = manifest_path.parent
     manifest = _load_integrity_json(manifest_path, "manifestSha256")
     if manifest.get("apiVersion") != MIGRATION_MANIFEST_API_VERSION:
         raise MigrationSafetyError("unsupported migration manifest apiVersion")
@@ -583,7 +633,10 @@ def rollback_migration(project_root: Path, migration_id: str) -> MigrationRollba
         raise MigrationSafetyError("migration manifest planSha256 is invalid")
     changes = _manifest_changes(manifest)
 
-    receipt_path = record_root / "rollback.json"
+    receipt_path = _safe_evidence_target(
+        root,
+        f".sdai/migrations/{migration_id}/rollback.json",
+    )
     if receipt_path.exists():
         receipt = _load_integrity_json(receipt_path, "rollbackSha256")
         if receipt.get("migrationId") != migration_id or receipt.get("planSha256") != plan_sha:
@@ -595,23 +648,34 @@ def rollback_migration(project_root: Path, migration_id: str) -> MigrationRollba
             changes=changes,
         )
 
-    backups = _preflight_rollback(root, changes)
-    for item in reversed(changes):
-        path = str(item["path"])
-        target = _safe_target(root, path)
-        if item["action"] == "create":
-            target.unlink()
-            _prune_empty_managed_parents(root, target)
-        else:
-            _atomic_write(target, backups[path])
+    backups = _preflight_rollback(root, migration_id, changes)
+    restored: list[tuple[dict[str, object], bytes | None]] = []
+    try:
+        for item in reversed(changes):
+            path = str(item["path"])
+            target = _safe_target(root, path)
+            migrated_bytes = target.read_bytes()
+            if item["action"] == "create":
+                target.unlink()
+                _prune_empty_managed_parents(root, target)
+                restored.append((item, migrated_bytes))
+            else:
+                _atomic_write(target, backups[path])
+                restored.append((item, migrated_bytes))
 
-    result = MigrationRollbackResult(
-        status="rolled-back",
-        migration_id=migration_id,
-        plan_sha256=plan_sha,
-        changes=changes,
-    )
-    _write_canonical_json(receipt_path, result.as_dict())
+        result = MigrationRollbackResult(
+            status="rolled-back",
+            migration_id=migration_id,
+            plan_sha256=plan_sha,
+            changes=changes,
+        )
+        _write_canonical_json(receipt_path, result.as_dict())
+    except Exception:
+        for item, migrated_bytes in reversed(restored):
+            target = _safe_target(root, str(item["path"]))
+            if migrated_bytes is not None:
+                _atomic_write(target, migrated_bytes)
+        raise
     return result
 
 
