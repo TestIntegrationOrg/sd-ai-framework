@@ -29,6 +29,7 @@ from sdai.audit_provenance import (
 
 
 _LOCK_ANCHOR = b"SDAI-AUDIT-LOCK-v1\n"
+_BINARY_FLAG = getattr(os, "O_BINARY", 0)
 
 
 def _write_all(fd: int, content: bytes) -> None:
@@ -67,7 +68,7 @@ class _AuditLock:
     def __enter__(self) -> "_AuditLock":
         if self.path.is_symlink():
             raise _fail("SDAI-AUDIT-004", "audit ledger lock must not be a symlink")
-        flags = os.O_CREAT | os.O_RDWR
+        flags = os.O_CREAT | os.O_RDWR | _BINARY_FLAG
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
@@ -225,7 +226,7 @@ class AuditLedger:
         if self.events_path.is_symlink():
             raise _fail("SDAI-AUDIT-004", "audit events file must not be a symlink")
         try:
-            fd = os.open(self.events_path, os.O_WRONLY)
+            fd = os.open(self.events_path, os.O_WRONLY | _BINARY_FLAG)
         except OSError as exc:
             raise _fail("SDAI-AUDIT-006", "unable to open audit ledger for crash-tail recovery") from exc
         try:
@@ -296,7 +297,7 @@ class AuditLedger:
                 raise _fail("SDAI-AUDIT-005", "audit ledger would exceed the size limit")
             if self.events_path.is_symlink():
                 raise _fail("SDAI-AUDIT-004", "audit events file must not be a symlink")
-            flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+            flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND | _BINARY_FLAG
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             try:
