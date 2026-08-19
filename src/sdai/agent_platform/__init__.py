@@ -26,6 +26,13 @@ from sdai.agent_platform.provider_diagnostics import (
     ProviderDiagnosticRecorder,
     SystemProviderDiagnosticClock,
 )
+from sdai.agent_platform.provider_health import (
+    PROVIDER_HEALTH_API_VERSION,
+    ProviderHealthError,
+    ProviderHealthSignal,
+    ProviderHealthSnapshot,
+    build_provider_health_snapshot,
+)
 from sdai.agent_platform.routed_execution import (
     RoutedInvocation,
     build_routed_invocation,
@@ -68,6 +75,7 @@ __all__ = [
     "ModelRoutingError",
     "ObservableProvider",
     "PROVIDER_DIAGNOSTIC_API_VERSION",
+    "PROVIDER_HEALTH_API_VERSION",
     "PROVIDER_RETRY_API_VERSION",
     "PersistedProviderDiagnostic",
     "PlannedContextFile",
@@ -78,6 +86,9 @@ __all__ = [
     "ProviderDiagnosticEvent",
     "ProviderDiagnosticRecorder",
     "ProviderFailureCategory",
+    "ProviderHealthError",
+    "ProviderHealthSignal",
+    "ProviderHealthSnapshot",
     "ProviderProgressCallback",
     "ProviderProgressEvent",
     "ProviderRetryError",
@@ -91,6 +102,7 @@ __all__ = [
     "SkillContextDecision",
     "SystemProviderDiagnosticClock",
     "build_context_plan",
+    "build_provider_health_snapshot",
     "build_routed_invocation",
     "classify_provider_failure",
     "decide_retry",
