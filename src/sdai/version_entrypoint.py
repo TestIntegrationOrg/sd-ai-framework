@@ -10,6 +10,7 @@ from sdai.architecture_cli import main as architecture_main
 from sdai.architecture_trace_cli import main as trace_main
 from sdai.audit_cli import main as audit_main
 from sdai.audit_export_cli import main as audit_export_main
+from sdai.context_cli import main as context_main
 from sdai.contract_cli import main as contract_main
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
@@ -78,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
     # by the original lifecycle parser below.
     if len(effective) >= 2 and effective[0] == "architecture" and effective[1] == "drift":
         return architecture_main(effective[2:])
+
+    # Context explanation is provider-free/read-only and owns its nested grammar.
+    # Dispatch only `context explain` so future/legacy `context` commands are not
+    # accidentally consumed by this surface.
+    if len(effective) >= 2 and effective[0] == "context" and effective[1] == "explain":
+        return context_main(effective[2:])
 
     # Audit export is a nested write-to-retention surface with its own stable parser,
     # error contract, and integrity exits. Dispatch it before read-only audit reporting
