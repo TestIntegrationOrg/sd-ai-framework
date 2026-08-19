@@ -37,10 +37,28 @@ class FeatureContext:
 
     @property
     def feature_dir(self) -> Path:
-        path = self.project_root / "specs" / self.feature_id
-        return ensure_within_project(
-            self.project_root, path, label=f"feature workspace '{self.feature_id}'"
+        modern = ensure_within_project(
+            self.project_root,
+            self.project_root / "specs" / "changes" / self.feature_id,
+            label=f"feature workspace '{self.feature_id}'",
         )
+        legacy = ensure_within_project(
+            self.project_root,
+            self.project_root / "specs" / self.feature_id,
+            label=f"feature workspace '{self.feature_id}'",
+        )
+        modern_exists = modern.exists()
+        legacy_exists = legacy.exists()
+        if modern_exists and legacy_exists:
+            raise ValueError(
+                f"feature '{self.feature_id}' has both current and legacy workspaces; authority is ambiguous"
+            )
+        if modern_exists:
+            return modern
+        # Preserve historical lifecycle behavior: when a feature has not been
+        # materialized yet, deterministic lifecycle commands still target the
+        # legacy specs/<FEATURE> workspace they have always created/used.
+        return legacy
 
     def artifact(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
