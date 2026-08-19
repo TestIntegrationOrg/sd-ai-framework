@@ -45,6 +45,8 @@ class AuditTraceIndex:
     export_sha256: str | None
 
 
+_MAX_TRACE_EVENTS = 20_000
+_MAX_TRACE_REFERENCES = 100_000
 _EVIDENCE_BINDING_KINDS = frozenset({"evidence", "trace", "quality", "security", "eval"})
 _AUTHORITY_PREFIXES = (
     "workflow-engine2/",
@@ -288,6 +290,17 @@ def build_audit_trace_index(
         return AuditTraceIndex((), (), (), 0, snapshot.head_sha256, snapshot.export_sha256)
     if snapshot.event_count != len(events) or snapshot.head_sha256 != events[-1].sha256:
         raise _fail("SDAI-TRACE-AUDIT-001", "audit snapshot does not match verified event sequence")
+    if len(events) > _MAX_TRACE_EVENTS:
+        raise _fail(
+            "SDAI-TRACE-AUDIT-004",
+            f"audit trace projection exceeds {_MAX_TRACE_EVENTS} events; compact/export before graph projection",
+        )
+    total_bindings = sum(len(event.bindings) for event in events)
+    if total_bindings > _MAX_TRACE_REFERENCES:
+        raise _fail(
+            "SDAI-TRACE-AUDIT-004",
+            f"audit trace projection exceeds {_MAX_TRACE_REFERENCES} binding references",
+        )
 
     nodes: list[TraceNode] = []
     edges: list[TraceEdge] = []
@@ -303,6 +316,7 @@ def build_audit_trace_index(
     nodes.append(ledger_node)
 
     event_nodes = {event.sha256: _event_node(event, source) for event in events}
+    event_by_node_id = {event_nodes[event.sha256].node_id: event for event in events}
     nodes.extend(event_nodes[event.sha256] for event in events)
     head_node = event_nodes[events[-1].sha256]
     edges.append(
@@ -423,9 +437,7 @@ def build_audit_trace_index(
 
     nodes.extend(sorted(binding_nodes.values(), key=lambda item: item.node_id))
     for (source_node, target_node), bindings in sorted(edge_bindings.items()):
-        edge_source = next(
-            event for event in events if event_nodes[event.sha256].node_id == source_node
-        )
+        edge_source = event_by_node_id[source_node]
         edges.append(
             TraceEdge(
                 relation=TraceRelation.REFERENCES,
