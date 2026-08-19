@@ -49,15 +49,13 @@ class FeatureContext:
         )
         modern_exists = modern.exists()
         legacy_exists = legacy.exists()
-        if modern_exists and legacy_exists:
-            raise ValueError(
-                f"feature '{self.feature_id}' has both current and legacy workspaces; authority is ambiguous"
-            )
-        if modern_exists:
+        if modern_exists and not legacy_exists:
             return modern
-        # Preserve historical lifecycle behavior: when a feature has not been
-        # materialized yet, deterministic lifecycle commands still target the
-        # legacy specs/<FEATURE> workspace they have always created/used.
+        # Preserve historical lifecycle behavior when both workspace layouts are
+        # present: generic FeatureContext continues to use specs/<FEATURE>. Audit
+        # provenance has its own stricter authority resolver and still rejects an
+        # ambiguous dual-workspace audit source. When neither exists, lifecycle
+        # commands also retain their historical legacy creation target.
         return legacy
 
     def artifact(self, relative_path: str) -> Path:
