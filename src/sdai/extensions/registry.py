@@ -21,7 +21,13 @@ class RegistryLayer(StrEnum):
 
     @property
     def priority(self) -> int:
+        """Stable resolution priority; larger values have normal override precedence."""
         return _LAYER_PRIORITY[self]
+
+    @property
+    def lockable(self) -> bool:
+        """Whether the layer may author an authoritative locked definition."""
+        return self in _LOCKABLE_LAYERS
 
 
 _LAYER_PRIORITY = {
@@ -87,7 +93,7 @@ class ExtensionRegistry:
                 f"SDAI-REG-004: unknown registry layer {layer!r}; supported layers: {supported}"
             ) from exc
 
-        if locked and layer not in _LOCKABLE_LAYERS:
+        if locked and not layer.lockable:
             allowed = ", ".join(
                 item.value
                 for item in sorted(_LOCKABLE_LAYERS, key=lambda item: item.priority)
