@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
-from sdai.agent_platform.audit import AgentAuditRecorder
+from sdai.agent_platform.audit import AgentAuditRecorder, AgentInvocationProvenance
 from sdai.agent_platform.context import load_governance_context
 from sdai.agent_platform.context_plan import (
     ContextPlan,
@@ -21,11 +22,18 @@ from sdai.agent_platform.models import (
 )
 from sdai.agent_platform.profiles import load_profiles, resolve_profile
 from sdai.agent_platform.prompts import load_prompt, render_template
+from sdai.agent_platform.provider_diagnostics import (
+    PersistedProviderDiagnostic,
+    ProviderDiagnosticClock,
+    ProviderDiagnosticRecorder,
+)
 from sdai.agent_platform.skills import compose_skills, list_skills
+from sdai.audit_provenance import AuditBinding
 from sdai.config import load_yaml
 from sdai.execution_guard import WorkspaceMutationGuard
 from sdai.path_safety import ensure_within_project
 from sdai.policy import EffectiveConfiguration, PolicyError, load_effective_configuration
+from sdai.providers.base import ProviderCapabilities
 from sdai.providers.factory import ProviderFactory
 
 
@@ -90,9 +98,32 @@ def _max_context_chars(project_root: Path) -> int:
     return value
 
 
+def _diagnostic_binding(
+    persisted: PersistedProviderDiagnostic | None,
+) -> AuditBinding | None:
+    if persisted is None:
+        return None
+    return AuditBinding("evidence", persisted.source, persisted.file_sha256)
+
+
+def _terminal_provenance(
+    provenance: AgentInvocationProvenance,
+    persisted: PersistedProviderDiagnostic | None,
+) -> AgentInvocationProvenance:
+    binding = _diagnostic_binding(persisted)
+    if binding is None:
+        return provenance
+    return AgentInvocationProvenance(
+        bindings=(*provenance.bindings, binding),
+        metadata=provenance.metadata,
+    )
+
+
 @dataclass
 class AgentRuntime:
     project_root: Path
+    diagnostic_clock: ProviderDiagnosticClock | None = None
+    diagnostic_id_factory: Callable[[], str] | None = None
 
     def _policy(self) -> EffectiveConfiguration:
         return load_effective_configuration(self.project_root.resolve())
@@ -188,10 +219,6 @@ class AgentRuntime:
                     raise ContextPlanError(
                         "SDAI-CONTEXT-PLAN-007: supplied context plan does not match invocation feature/capability"
                     )
-                # A caller may retain a plan between explanation and invocation. Rebuild
-                # the canonical current plan and require byte-stable identity before
-                # composing any prompt so policy, artifact, skill, or budget drift is
-                # detected rather than silently using stale planned context.
                 current = plan_context(
                     project_root,
                     feature_id,
@@ -210,9 +237,6 @@ class AgentRuntime:
             skills = context_plan.render_skills(project_root)
             effective_skill_names = context_plan.selected_skill_names
         else:
-            # Durable isolated-task contracts own their exact explicit context. Keep
-            # this path free of feature-workspace scanning while retaining normal
-            # governance and applicable skill policy.
             if not isinstance(explicit_context, str) or not explicit_context.strip():
                 raise ValueError("explicit agent context must be non-empty text")
             if len(explicit_context) > max_context_chars:
@@ -357,8 +381,6 @@ class AgentRuntime:
         )
         enforce_prompt_safety(invocation.system, invocation.prompt)
 
-        # Resolve canonical semantic/skill provenance before provider execution so
-        # the exact governed source set is hash-bound to the pre-execution event.
         definition = (
             _resolve_semantic_definition(
                 project_root, invocation.capability, invocation.agent_name
@@ -389,12 +411,22 @@ class AgentRuntime:
             if recorder is not None
             else None
         )
-        # Fail closed before any provider action when the audit chain is active.
         started_event = (
             recorder.started(invocation, provenance)
             if recorder is not None and provenance is not None
             else None
         )
+
+        diagnostics = ProviderDiagnosticRecorder.optional_for(
+            project_root,
+            invocation,
+            clock=self.diagnostic_clock,
+            id_factory=self.diagnostic_id_factory,
+        )
+        if diagnostics is not None:
+            diagnostics.start(
+                audit_start_sha256=started_event.sha256 if started_event is not None else None
+            )
 
         try:
             provider = ProviderFactory.create(
@@ -403,28 +435,80 @@ class AgentRuntime:
                 cwd=invocation.cwd,
                 policy=policy,
             )
-            if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
-                with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
-                    output = provider.complete(system=invocation.system, prompt=invocation.prompt)
-            else:
-                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
         except BaseException as exc:
+            persisted = diagnostics.failed(exc, stage="startup") if diagnostics is not None else None
             if recorder is not None and provenance is not None and started_event is not None:
                 recorder.failed(
                     invocation,
-                    provenance,
+                    _terminal_provenance(provenance, persisted),
                     error=exc,
                     started_event=started_event,
                 )
             raise
 
-        # Provider execution is never repeated for audit. If terminal audit append
-        # fails, the started record remains durable and execution fails closed rather
-        # than returning an unrecorded successful provider result.
+        if diagnostics is not None:
+            capabilities_method = getattr(provider, "diagnostic_capabilities", None)
+            capabilities = (
+                capabilities_method()
+                if callable(capabilities_method)
+                else ProviderCapabilities()
+            )
+            try:
+                diagnostics.provider_ready(capabilities)
+            except BaseException as exc:
+                if recorder is not None and provenance is not None and started_event is not None:
+                    recorder.failed(
+                        invocation,
+                        provenance,
+                        error=exc,
+                        started_event=started_event,
+                    )
+                raise
+
+        try:
+            if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
+                with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
+                    output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+            else:
+                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+        except BaseException as provider_exc:
+            diagnostic_exc: BaseException | None = None
+            persisted: PersistedProviderDiagnostic | None = None
+            if diagnostics is not None:
+                try:
+                    persisted = diagnostics.failed(provider_exc, stage="invocation")
+                except BaseException as exc:
+                    diagnostic_exc = exc
+            failure = diagnostic_exc or provider_exc
+            if recorder is not None and provenance is not None and started_event is not None:
+                recorder.failed(
+                    invocation,
+                    _terminal_provenance(provenance, persisted),
+                    error=failure,
+                    started_event=started_event,
+                )
+            if diagnostic_exc is not None:
+                raise diagnostic_exc from provider_exc
+            raise
+
+        persisted = None
+        if diagnostics is not None:
+            try:
+                persisted = diagnostics.completed()
+            except BaseException as exc:
+                if recorder is not None and provenance is not None and started_event is not None:
+                    recorder.failed(
+                        invocation,
+                        provenance,
+                        error=exc,
+                        started_event=started_event,
+                    )
+                raise
+
         if recorder is not None and provenance is not None and started_event is not None:
             recorder.succeeded(
                 invocation,
-                provenance,
+                _terminal_provenance(provenance, persisted),
                 output=output,
                 started_event=started_event,
             )

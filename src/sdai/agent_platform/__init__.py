@@ -17,6 +17,15 @@ from sdai.agent_platform.model_routing import (
     route_model,
 )
 from sdai.agent_platform.models import Capability, ExecutionMode
+from sdai.agent_platform.provider_diagnostics import (
+    PROVIDER_DIAGNOSTIC_API_VERSION,
+    PersistedProviderDiagnostic,
+    ProviderDiagnosticClock,
+    ProviderDiagnosticError,
+    ProviderDiagnosticEvent,
+    ProviderDiagnosticRecorder,
+    SystemProviderDiagnosticClock,
+)
 from sdai.agent_platform.routed_execution import (
     RoutedInvocation,
     build_routed_invocation,
@@ -35,11 +44,18 @@ __all__ = [
     "ExecutionMode",
     "MODEL_ROUTING_API_VERSION",
     "ModelRoutingError",
+    "PROVIDER_DIAGNOSTIC_API_VERSION",
+    "PersistedProviderDiagnostic",
     "PlannedContextFile",
+    "ProviderDiagnosticClock",
+    "ProviderDiagnosticError",
+    "ProviderDiagnosticEvent",
+    "ProviderDiagnosticRecorder",
     "RoutedInvocation",
     "RoutingDecision",
     "RoutingRequest",
     "SkillContextDecision",
+    "SystemProviderDiagnosticClock",
     "build_context_plan",
     "build_routed_invocation",
     "execute_routed_invocation",
