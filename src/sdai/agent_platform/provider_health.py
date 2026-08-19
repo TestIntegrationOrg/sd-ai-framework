@@ -163,6 +163,11 @@ def _terminal_payload(root: Path, path: Path) -> dict[str, object]:
         raise _fail("SDAI-PROVIDER-HEALTH-003", "provider diagnostic health input is invalid") from exc
     if not isinstance(payload, dict) or payload.get("apiVersion") != PROVIDER_DIAGNOSTIC_API_VERSION:
         raise _fail("SDAI-PROVIDER-HEALTH-003", "unsupported provider diagnostic health input")
+    claimed_sha = payload.get("sha256")
+    body = dict(payload)
+    body.pop("sha256", None)
+    if not isinstance(claimed_sha, str) or claimed_sha != _sha(body):
+        raise _fail("SDAI-PROVIDER-HEALTH-003", "provider diagnostic health input failed SHA-256 verification")
     if payload.get("phase") not in {"completed", "failed", "cancelled"}:
         raise _fail("SDAI-PROVIDER-HEALTH-003", "health input is not a terminal diagnostic")
     for key in ("attemptId", "profile", "provider", "occurredAt", "status", "timing"):
@@ -235,7 +240,11 @@ def build_provider_health_snapshot(
     max_attempts_per_profile: int = 20,
 ) -> ProviderHealthSnapshot:
     """Summarize persisted diagnostics into an explicit, non-authoritative routing snapshot."""
-    if not isinstance(max_attempts_per_profile, int) or isinstance(max_attempts_per_profile, bool) or not 1 <= max_attempts_per_profile <= 100:
+    if (
+        not isinstance(max_attempts_per_profile, int)
+        or isinstance(max_attempts_per_profile, bool)
+        or not 1 <= max_attempts_per_profile <= 100
+    ):
         raise ProviderHealthError("max_attempts_per_profile must be between 1 and 100")
     root = project_root.resolve()
     feature = validate_feature_id(feature_id)
@@ -250,7 +259,10 @@ def build_provider_health_snapshot(
     if not diagnostic_root.exists():
         return ProviderHealthSnapshot(feature, {})
     if not diagnostic_root.is_dir():
-        raise _fail("SDAI-PROVIDER-HEALTH-002", "provider diagnostic health path is not a directory")
+        raise _fail(
+            "SDAI-PROVIDER-HEALTH-002",
+            "provider diagnostic health path is not a directory",
+        )
     terminals: list[Path] = []
     for attempt in sorted(diagnostic_root.iterdir(), key=lambda item: item.name):
         safe_attempt = _safe(root, attempt, label="provider diagnostic health attempt")
@@ -260,7 +272,10 @@ def build_provider_health_snapshot(
             if path.name.endswith(("-completed.json", "-failed.json", "-cancelled.json")):
                 terminals.append(path)
                 if len(terminals) > _MAX_TERMINAL_EVENTS:
-                    raise _fail("SDAI-PROVIDER-HEALTH-004", "too many terminal provider diagnostics")
+                    raise _fail(
+                        "SDAI-PROVIDER-HEALTH-004",
+                        "too many terminal provider diagnostics",
+                    )
     by_profile: dict[str, list[dict[str, object]]] = {}
     for path in terminals:
         payload = _terminal_payload(root, path)
@@ -268,7 +283,10 @@ def build_provider_health_snapshot(
         by_profile.setdefault(profile, []).append(payload)
     signals: dict[str, ProviderHealthSignal] = {}
     for profile, records in sorted(by_profile.items()):
-        ordered = sorted(records, key=lambda item: (str(item["occurredAt"]), str(item["attemptId"])))
+        ordered = sorted(
+            records,
+            key=lambda item: (str(item["occurredAt"]), str(item["attemptId"])),
+        )
         signals[profile] = _profile_signal(ordered[-max_attempts_per_profile:])
     return ProviderHealthSnapshot(feature, signals)
 
