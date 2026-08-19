@@ -10,6 +10,7 @@ from sdai.agent_platform.routing_diagnostics import (
     RoutingDiagnosticError,
     load_routing_diagnostic,
     persist_routing_decision,
+    routing_decision_document_sha256,
 )
 from sdai.scaffold import init_project
 
@@ -34,6 +35,7 @@ def test_routing_diagnostic_rejects_noncanonical_byte_rewrite(tmp_path: Path) ->
     )
     path = persist_routing_decision(tmp_path, FEATURE, decision)
     assert path is not None
+    routing_document_sha = routing_decision_document_sha256(decision)
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     # Keep every logical field/hash unchanged but rewrite whitespace. A parsed-object
@@ -42,4 +44,4 @@ def test_routing_diagnostic_rejects_noncanonical_byte_rewrite(tmp_path: Path) ->
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     with pytest.raises(RoutingDiagnosticError, match="bytes are not canonical"):
-        load_routing_diagnostic(tmp_path, FEATURE, decision.sha256)
+        load_routing_diagnostic(tmp_path, FEATURE, routing_document_sha)
