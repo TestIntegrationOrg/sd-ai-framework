@@ -85,10 +85,11 @@ def _text_preview(value: str, *, max_chars: int = 4_096) -> str:
     return text[:max_chars] + "...[truncated by SDAI]"
 
 
-_BASE_ENVIRONMENT = (
+# These variables are required for normal process startup/runtime behavior and are
+# not used for provider credential discovery or network routing. They remain present
+# even when enterprise environment policy is fail-closed.
+_PROCESS_ENVIRONMENT = (
     "PATH",
-    "HOME",
-    "USERPROFILE",
     "TMP",
     "TEMP",
     "TMPDIR",
@@ -99,6 +100,14 @@ _BASE_ENVIRONMENT = (
     "SYSTEMROOT",
     "WINDIR",
     "PATHEXT",
+)
+
+# These variables can influence provider credential discovery, user configuration,
+# proxy routing, or trust roots. Treat them as policy-controlled rather than as an
+# unconditional process baseline.
+_POLICY_GATED_ENVIRONMENT = (
+    "HOME",
+    "USERPROFILE",
     "APPDATA",
     "LOCALAPPDATA",
     "XDG_CONFIG_HOME",
@@ -128,12 +137,23 @@ def build_provider_environment(
     profile_allowlist: tuple[str, ...] = (),
     policy_allowlist: frozenset[str] | None = None,
 ) -> dict[str, str]:
-    """Build a minimal subprocess environment instead of inheriting all employee secrets."""
-    base = set(_BASE_ENVIRONMENT)
-    requested = set(_PROVIDER_AUTH_ENVIRONMENT.get(provider, ())) | set(profile_allowlist)
+    """Build a minimal, policy-bounded provider subprocess environment.
+
+    Individual mode preserves normal provider credential/config discovery when no
+    effective environment restriction is configured. Once policy supplies an allowlist
+    (including an empty enterprise fail-closed allowlist), credential discovery,
+    network/trust configuration, provider authentication variables, and profile-requested
+    variables are restricted to that allowlist. Only the process-runtime baseline is
+    unconditional.
+    """
+    requested = (
+        set(_POLICY_GATED_ENVIRONMENT)
+        | set(_PROVIDER_AUTH_ENVIRONMENT.get(provider, ()))
+        | set(profile_allowlist)
+    )
     if policy_allowlist is not None:
         requested.intersection_update(policy_allowlist)
-    names = base | requested
+    names = set(_PROCESS_ENVIRONMENT) | requested
     return {name: value for name in names if (value := os.environ.get(name)) is not None}
 
 
