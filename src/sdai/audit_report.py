@@ -143,6 +143,17 @@ def _audit_source(root: Path, events_path: Path) -> str:
     return events_path.relative_to(root).as_posix()
 
 
+def _validate_audit_path_shape(workspace: Path, events_path: Path) -> None:
+    for directory, label in (
+        (workspace / ".sdai", "feature audit state directory"),
+        (workspace / ".sdai" / "audit", "feature audit directory"),
+    ):
+        if directory.exists() and not directory.is_dir():
+            raise _fail("SDAI-AUDIT-REPORT-002", f"{label} must be a directory")
+    if events_path.exists() and not events_path.is_file():
+        raise _fail("SDAI-AUDIT-REPORT-002", "audit events path must be a regular file")
+
+
 def _selected_node_ids(events: Iterable[AuditEvent]) -> frozenset[str]:
     return frozenset(
         trace_node_id(TraceNodeType.EVIDENCE, f"audit-event:{event.event_id}")
@@ -309,6 +320,7 @@ def build_audit_report(
     except AuditProvenanceError as exc:
         raise _fail("SDAI-AUDIT-REPORT-002", str(exc)) from exc
 
+    _validate_audit_path_shape(workspace, events_path)
     source = _audit_source(root, events_path)
     if not events_path.exists():
         body: dict[str, object] = {
