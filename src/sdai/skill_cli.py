@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from sdai.skill_resolution import resolve_skills
+
+
+SKILL_RESOLUTION_API_VERSION = "sdai.skill-resolution/v1"
 
 
 def add_skill_resolution_parser(actions: argparse._SubParsersAction) -> None:
@@ -36,7 +40,8 @@ def run_skill_resolution_command(root: Path, args: argparse.Namespace) -> int:
         requested=tuple(args.skills),
     )
     if args.json:
-        print(report.to_json())
+        payload = {"apiVersion": SKILL_RESOLUTION_API_VERSION, **report.as_dict()}
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
         return 0
 
     print(

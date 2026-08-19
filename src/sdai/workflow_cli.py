@@ -19,6 +19,7 @@ from sdai.workflows import StepKind, WorkflowConfigError, load_workflow
 WORKFLOW_ERROR_API_VERSION = "sdai.workflow-error/v2"
 WORKFLOW_VALIDATION_API_VERSION = "sdai.workflow-validation/v2"
 WORKFLOW_STEP_PLAN_API_VERSION = "sdai.workflow-step-plan/v2"
+WORKFLOW_LEGACY_DEFINITION_API_VERSION = "sdai.workflow-definition/v1"
 EXIT_EXACT = 0
 EXIT_ACTION_REQUIRED = 2
 EXIT_NOT_FOUND = 3
@@ -151,6 +152,7 @@ def _definition_payload(definition, plugin_plans: dict[str, object]) -> dict[str
         for name, value in sorted(definition.input_values.items())
     }
     return {
+        "apiVersion": WORKFLOW_LEGACY_DEFINITION_API_VERSION,
         "version": 1,
         "name": definition.name,
         "workflow_version": definition.workflow_version,

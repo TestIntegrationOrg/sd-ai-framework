@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from sdai.spec_promotion import (
@@ -10,6 +11,13 @@ from sdai.spec_promotion import (
     record_promotion_approval,
 )
 from sdai.spec_validation import validate_spec_change
+
+
+SPEC_VALIDATION_API_VERSION = "sdai.spec-validation/v1"
+SPEC_DIFF_API_VERSION = "sdai.spec-diff/v1"
+SPEC_PROMOTION_APPROVAL_API_VERSION = "sdai.spec-promotion-approval/v1"
+SPEC_PROMOTION_PREVIEW_API_VERSION = "sdai.spec-promotion-preview/v1"
+SPEC_PROMOTION_RESULT_API_VERSION = "sdai.spec-promotion-result/v1"
 
 
 def add_spec_parser(commands: argparse._SubParsersAction) -> None:
@@ -60,6 +68,11 @@ def add_spec_parser(commands: argparse._SubParsersAction) -> None:
     promote.add_argument("--path")
 
 
+def _versioned_json(value: dict[str, object], api_version: str) -> str:
+    payload = {"apiVersion": api_version, **value}
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+
+
 def _print_validation(feature: str, report) -> None:
     print(
         f"Spec validation feature={feature} valid={str(report.valid).lower()} "
@@ -103,7 +116,7 @@ def run_spec_command(root: Path, args: argparse.Namespace) -> int:
     if args.spec_action == "validate":
         report = validate_spec_change(root, args.feature)
         if args.json:
-            print(report.to_json())
+            print(_versioned_json(report.as_dict(), SPEC_VALIDATION_API_VERSION))
         else:
             _print_validation(args.feature, report)
         return 0 if report.valid else 1
@@ -111,7 +124,12 @@ def run_spec_command(root: Path, args: argparse.Namespace) -> int:
     if args.spec_action == "diff":
         report = build_spec_diff(root, args.feature)
         if args.json:
-            print(report.to_json(include_content=args.include_content))
+            print(
+                _versioned_json(
+                    report.as_dict(include_content=args.include_content),
+                    SPEC_DIFF_API_VERSION,
+                )
+            )
         else:
             _print_diff(report)
         return 0
@@ -125,7 +143,12 @@ def run_spec_command(root: Path, args: argparse.Namespace) -> int:
             note=args.note,
         )
         if args.json:
-            print(decision.to_json())
+            print(
+                _versioned_json(
+                    decision.as_dict(),
+                    SPEC_PROMOTION_APPROVAL_API_VERSION,
+                )
+            )
         else:
             print(
                 f"Spec promotion approval feature={args.feature} "
@@ -139,7 +162,12 @@ def run_spec_command(root: Path, args: argparse.Namespace) -> int:
         if args.dry_run:
             preview = preview_promotion(root, args.feature)
             if args.json:
-                print(preview.to_json(include_content=args.include_content))
+                print(
+                    _versioned_json(
+                        preview.as_dict(include_content=args.include_content),
+                        SPEC_PROMOTION_PREVIEW_API_VERSION,
+                    )
+                )
             else:
                 print(
                     f"Spec promotion dry-run feature={args.feature} "
@@ -153,7 +181,7 @@ def run_spec_command(root: Path, args: argparse.Namespace) -> int:
 
         result = promote_spec_change(root, args.feature)
         if args.json:
-            print(result.to_json())
+            print(_versioned_json(result.as_dict(), SPEC_PROMOTION_RESULT_API_VERSION))
         else:
             print(
                 f"Promoted specification change feature={result.feature_id} "

@@ -15,6 +15,9 @@ from sdai.path_safety import ensure_within_project
 from sdai.text import read_utf8_text
 
 
+EVAL_REPORT_API_VERSION = "sdai.eval-report/v1"
+
+
 class EvalError(RuntimeError):
     pass
 
@@ -108,6 +111,7 @@ class EvalReport:
         """Return CI-safe evidence without embedding raw model responses."""
 
         return {
+            "apiVersion": EVAL_REPORT_API_VERSION,
             "version": 1,
             "target_type": self.target_type,
             "target_name": self.target_name,

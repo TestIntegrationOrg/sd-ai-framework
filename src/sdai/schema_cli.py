@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from sdai.artifact_schemas import load_artifact_schema_graph
+
+
+ARTIFACT_SCHEMA_GRAPH_API_VERSION = "sdai.artifact-schema-graph/v1"
+ARTIFACT_SCHEMA_DEFINITION_API_VERSION = "sdai.artifact-schema-definition/v1"
 
 
 def add_schema_parser(commands: argparse._SubParsersAction) -> None:
@@ -31,11 +36,16 @@ def add_schema_parser(commands: argparse._SubParsersAction) -> None:
     graph.add_argument("--path")
 
 
+def _versioned_json(value: dict[str, object], api_version: str) -> str:
+    payload = {"apiVersion": api_version, **value}
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+
+
 def run_schema_command(root: Path, args: argparse.Namespace) -> int:
     graph = load_artifact_schema_graph(root)
     if args.schema_action == "list":
         if args.json:
-            print(graph.to_json())
+            print(_versioned_json(graph.as_dict(), ARTIFACT_SCHEMA_GRAPH_API_VERSION))
         else:
             for artifact in graph.artifacts:
                 print(
@@ -49,9 +59,7 @@ def run_schema_command(root: Path, args: argparse.Namespace) -> int:
         if artifact is None:
             raise ValueError(f"Unknown artifact schema id: {args.artifact}")
         if args.json:
-            import json
-
-            print(json.dumps(artifact.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+            print(_versioned_json(artifact.as_dict(), ARTIFACT_SCHEMA_DEFINITION_API_VERSION))
         else:
             print(
                 f"Artifact {artifact.id}\n"
@@ -72,7 +80,7 @@ def run_schema_command(root: Path, args: argparse.Namespace) -> int:
 
     if args.schema_action == "validate":
         if args.json:
-            print(graph.to_json())
+            print(_versioned_json(graph.as_dict(), ARTIFACT_SCHEMA_GRAPH_API_VERSION))
         else:
             print(
                 f"Validated artifact schema artifacts={len(graph.artifacts)} "
@@ -83,7 +91,7 @@ def run_schema_command(root: Path, args: argparse.Namespace) -> int:
 
     if args.schema_action == "graph":
         if args.json:
-            print(graph.to_json())
+            print(_versioned_json(graph.as_dict(), ARTIFACT_SCHEMA_GRAPH_API_VERSION))
         else:
             print("Artifact dependency order:")
             for index, artifact_id in enumerate(graph.topological_order, start=1):
