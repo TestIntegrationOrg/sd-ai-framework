@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Iterable, Mapping
 
-from sdai.agent_platform.models import Capability
+from sdai.agent_platform.models import Capability, Skill
 from sdai.agent_platform.skills import load_skill
 from sdai.cross_artifact import CrossArtifactError, build_feature_artifact_index
 from sdai.models import FeatureContext, validate_feature_id
@@ -51,6 +51,17 @@ def _unique(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def _skill_identity(skill: Skill) -> str:
+    """Bind instructions and applicability metadata, not just SKILL.md bytes."""
+    payload = {
+        "name": skill.name,
+        "description": skill.description,
+        "capabilities": [item.value for item in skill.capabilities],
+        "instructions": skill.instructions,
+    }
+    return _sha256_bytes(_canonical_json(payload).encode("utf-8"))
+
+
 @dataclass(frozen=True)
 class PlannedContextFile:
     category: str
@@ -82,11 +93,7 @@ class ContextExclusion:
     reason: str
 
     def as_dict(self) -> dict[str, str]:
-        return {
-            "category": self.category,
-            "source": self.source,
-            "reason": self.reason,
-        }
+        return {"category": self.category, "source": self.source, "reason": self.reason}
 
 
 @dataclass(frozen=True)
@@ -158,14 +165,23 @@ class ContextPlan:
         root = project_root.resolve()
         path = ensure_within_project(root, root / item.source, label="planned context source")
         if path.is_symlink() or not path.is_file():
-            raise _fail("SDAI-CONTEXT-PLAN-004", f"planned context source is missing or unsafe: {item.source}")
+            raise _fail(
+                "SDAI-CONTEXT-PLAN-004",
+                f"planned context source is missing or unsafe: {item.source}",
+            )
         raw = path.read_bytes()
         if _sha256_bytes(raw) != item.sha256:
-            raise _fail("SDAI-CONTEXT-PLAN-005", f"planned context source changed after planning: {item.source}")
+            raise _fail(
+                "SDAI-CONTEXT-PLAN-005",
+                f"planned context source changed after planning: {item.source}",
+            )
         try:
             text = read_utf8_text(path)
         except (OSError, TextEncodingError) as exc:
-            raise _fail("SDAI-CONTEXT-PLAN-003", f"planned context source is not readable UTF-8: {item.source}") from exc
+            raise _fail(
+                "SDAI-CONTEXT-PLAN-003",
+                f"planned context source is not readable UTF-8: {item.source}",
+            ) from exc
         if item.truncated:
             return text[: self.max_chars_per_file] + _CONTEXT_TRUNCATION_MARKER
         return text
@@ -184,12 +200,11 @@ class ContextPlan:
         return "\n\n".join(sections)
 
     def render_governance_context(self, project_root: Path) -> str:
-        sections: list[str] = []
-        for item in self.files:
-            if item.category != "governance":
-                continue
-            sections.append(f"## {item.source}\n{self._read_verified(project_root, item)}")
-        return "\n\n".join(sections)
+        return "\n\n".join(
+            f"## {item.source}\n{self._read_verified(project_root, item)}"
+            for item in self.files
+            if item.category == "governance"
+        )
 
     def render_skills(self, project_root: Path) -> str:
         root = project_root.resolve()
@@ -198,9 +213,17 @@ class ContextPlan:
             if not decision.selected:
                 continue
             path = ensure_within_project(root, root / decision.source, label="planned skill source")
-            if path.is_symlink() or not path.is_file() or _sha256_bytes(path.read_bytes()) != decision.sha256:
-                raise _fail("SDAI-CONTEXT-PLAN-005", f"planned skill changed after planning: {decision.name}")
+            if path.is_symlink() or not path.is_file():
+                raise _fail(
+                    "SDAI-CONTEXT-PLAN-004",
+                    f"planned skill source is missing or unsafe: {decision.name}",
+                )
             skill = load_skill(root, decision.name)
+            if _skill_identity(skill) != decision.sha256:
+                raise _fail(
+                    "SDAI-CONTEXT-PLAN-005",
+                    f"planned skill changed after planning: {decision.name}",
+                )
             sections.append(f"## Skill: {skill.name}\n{skill.instructions}")
         return "\n\n".join(sections)
 
@@ -211,23 +234,104 @@ _FIXED_RULES: tuple[tuple[str, frozenset[Capability] | None], ...] = (
     ("specification.md", None),
     (
         "architecture/architecture.md",
-        frozenset({
-            Capability.ARCHITECTURE,
-            Capability.PLANNING,
-            Capability.CODING,
-            Capability.REVIEW,
-            Capability.TESTING,
-            Capability.SECURITY,
-            Capability.DOCUMENTATION,
-        }),
+        frozenset(
+            {
+                Capability.ARCHITECTURE,
+                Capability.PLANNING,
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.TESTING,
+                Capability.SECURITY,
+                Capability.DOCUMENTATION,
+            }
+        ),
     ),
     (
         "architecture/decision-matrix.md",
-        frozenset({Capability.ARCHITECTURE, Capability.PLANNING, Capability.REVIEW, Capability.DOCUMENTATION}),
+        frozenset(
+            {
+                Capability.ARCHITECTURE,
+                Capability.PLANNING,
+                Capability.REVIEW,
+                Capability.DOCUMENTATION,
+            }
+        ),
     ),
     (
         "adr/ADR-001-initial-architecture.md",
-        frozenset({
+        frozenset(
+            {
+                Capability.ARCHITECTURE,
+                Capability.PLANNING,
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.TESTING,
+                Capability.SECURITY,
+                Capability.DOCUMENTATION,
+            }
+        ),
+    ),
+    (
+        "plan.md",
+        frozenset(
+            {
+                Capability.PLANNING,
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.TESTING,
+                Capability.DOCUMENTATION,
+            }
+        ),
+    ),
+    (
+        "tasks.yaml",
+        frozenset(
+            {
+                Capability.PLANNING,
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.TESTING,
+                Capability.DOCUMENTATION,
+            }
+        ),
+    ),
+    (
+        "security-review.md",
+        frozenset(
+            {
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.SECURITY,
+                Capability.DOCUMENTATION,
+            }
+        ),
+    ),
+    (
+        "implementation-brief.md",
+        frozenset(
+            {
+                Capability.CODING,
+                Capability.REVIEW,
+                Capability.TESTING,
+                Capability.DOCUMENTATION,
+            }
+        ),
+    ),
+)
+
+_ROOT_RULES: Mapping[str, frozenset[Capability]] = {
+    "rfc": frozenset(
+        {
+            Capability.ARCHITECTURE,
+            Capability.PLANNING,
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "architecture": frozenset(
+        {
             Capability.ARCHITECTURE,
             Capability.PLANNING,
             Capability.CODING,
@@ -235,39 +339,171 @@ _FIXED_RULES: tuple[tuple[str, frozenset[Capability] | None], ...] = (
             Capability.TESTING,
             Capability.SECURITY,
             Capability.DOCUMENTATION,
-        }),
+        }
     ),
-    ("plan.md", frozenset({Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.DOCUMENTATION})),
-    ("tasks.yaml", frozenset({Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.DOCUMENTATION})),
-    ("security-review.md", frozenset({Capability.CODING, Capability.REVIEW, Capability.SECURITY, Capability.DOCUMENTATION})),
-    ("implementation-brief.md", frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.DOCUMENTATION})),
-)
-
-_ROOT_RULES: Mapping[str, frozenset[Capability]] = {
-    "rfc": frozenset({Capability.ARCHITECTURE, Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "architecture": frozenset({Capability.ARCHITECTURE, Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "adr": frozenset({Capability.ARCHITECTURE, Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "contracts": frozenset({Capability.ARCHITECTURE, Capability.PLANNING, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "security": frozenset({Capability.ARCHITECTURE, Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "evidence": frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "quality": frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "quality-gates": frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
-    "ai": frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION}),
+    "adr": frozenset(
+        {
+            Capability.ARCHITECTURE,
+            Capability.PLANNING,
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "contracts": frozenset(
+        {
+            Capability.ARCHITECTURE,
+            Capability.PLANNING,
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "security": frozenset(
+        {
+            Capability.ARCHITECTURE,
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "evidence": frozenset(
+        {
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "quality": frozenset(
+        {
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "quality-gates": frozenset(
+        {
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
+    "ai": frozenset(
+        {
+            Capability.CODING,
+            Capability.REVIEW,
+            Capability.TESTING,
+            Capability.SECURITY,
+            Capability.DOCUMENTATION,
+        }
+    ),
 }
-_CONTEXT_SUFFIXES = frozenset({".md", ".markdown", ".mmd", ".puml", ".plantuml", ".yaml", ".yml", ".json", ".proto", ".txt"})
+_CONTEXT_SUFFIXES = frozenset(
+    {".md", ".markdown", ".mmd", ".puml", ".plantuml", ".yaml", ".yml", ".json", ".proto", ".txt"}
+)
 _TRACE_KINDS: Mapping[Capability, frozenset[str]] = {
     Capability.REQUIREMENTS: frozenset({"requirement", "scenario"}),
-    Capability.ARCHITECTURE: frozenset({"requirement", "scenario", "adr", "contract", "threat", "mitigation"}),
+    Capability.ARCHITECTURE: frozenset(
+        {"requirement", "scenario", "adr", "contract", "threat", "mitigation"}
+    ),
     Capability.PLANNING: frozenset({"requirement", "scenario", "adr", "contract", "task"}),
-    Capability.CODING: frozenset({"requirement", "scenario", "adr", "contract", "task", "threat", "mitigation"}),
-    Capability.REVIEW: frozenset({"requirement", "scenario", "adr", "contract", "task", "test", "threat", "mitigation", "approval"}),
+    Capability.CODING: frozenset(
+        {"requirement", "scenario", "adr", "contract", "task", "threat", "mitigation"}
+    ),
+    Capability.REVIEW: frozenset(
+        {
+            "requirement",
+            "scenario",
+            "adr",
+            "contract",
+            "task",
+            "test",
+            "threat",
+            "mitigation",
+            "approval",
+        }
+    ),
     Capability.TESTING: frozenset({"requirement", "scenario", "contract", "task", "test"}),
     Capability.SECURITY: frozenset({"requirement", "adr", "contract", "threat", "mitigation"}),
-    Capability.DOCUMENTATION: frozenset({"requirement", "scenario", "adr", "contract", "task", "test", "threat", "mitigation", "approval"}),
+    Capability.DOCUMENTATION: frozenset(
+        {
+            "requirement",
+            "scenario",
+            "adr",
+            "contract",
+            "task",
+            "test",
+            "threat",
+            "mitigation",
+            "approval",
+        }
+    ),
 }
-_SOURCE_SUFFIXES = frozenset({".py", ".java", ".kt", ".kts", ".cs", ".fs", ".go", ".rs", ".js", ".jsx", ".ts", ".tsx", ".c", ".cc", ".cpp", ".h", ".hpp", ".sh", ".bash", ".ps1", ".rb", ".php", ".scala", ".swift"})
-_SOURCE_CAPABILITIES = frozenset({Capability.CODING, Capability.REVIEW, Capability.TESTING, Capability.SECURITY, Capability.DOCUMENTATION})
-_SOURCE_EXCLUDED_PARTS = frozenset({".git", ".sdai", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "target", ".idea", ".vscode", "specs"})
+_SOURCE_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".java",
+        ".kt",
+        ".kts",
+        ".cs",
+        ".fs",
+        ".go",
+        ".rs",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".sh",
+        ".bash",
+        ".ps1",
+        ".rb",
+        ".php",
+        ".scala",
+        ".swift",
+    }
+)
+_SOURCE_CAPABILITIES = frozenset(
+    {
+        Capability.CODING,
+        Capability.REVIEW,
+        Capability.TESTING,
+        Capability.SECURITY,
+        Capability.DOCUMENTATION,
+    }
+)
+_SOURCE_EXCLUDED_PARTS = frozenset(
+    {
+        ".git",
+        ".sdai",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".idea",
+        ".vscode",
+        "specs",
+    }
+)
 _GOVERNANCE_FILES = (
     ".sdai/constitution.yaml",
     ".sdai/policies.yaml",
@@ -305,7 +541,9 @@ def _skill_decisions(
     decisions: list[SkillContextDecision] = []
     for name in order:
         skill = load_skill(root, name)
-        instructions_path = ensure_within_project(root, skill.root / "SKILL.md", label="skill instructions")
+        instructions_path = ensure_within_project(
+            root, skill.root / "SKILL.md", label="skill instructions"
+        )
         if instructions_path.is_symlink() or not instructions_path.is_file():
             raise _fail("SDAI-CONTEXT-PLAN-006", f"skill source is missing or unsafe: {name}")
         selected = not skill.capabilities or capability in skill.capabilities
@@ -315,7 +553,7 @@ def _skill_decisions(
                 selected=selected,
                 reasons=tuple(reasons_by_name[name]),
                 source=_portable(root, instructions_path, label="skill instructions"),
-                sha256=_sha256_bytes(instructions_path.read_bytes()),
+                sha256=_skill_identity(skill),
                 exclusion_reason=None if selected else "capability-not-applicable",
             )
         )
@@ -353,12 +591,18 @@ def _record_file(
 ) -> PlannedContextFile:
     safe = ensure_within_project(root, path, label="context plan source")
     if safe.is_symlink() or not safe.is_file():
-        raise _fail("SDAI-CONTEXT-PLAN-002", f"context source is missing or unsafe: {_portable(root, safe, label='context source')}")
+        raise _fail(
+            "SDAI-CONTEXT-PLAN-002",
+            f"context source is missing or unsafe: {_portable(root, safe, label='context source')}",
+        )
     raw = safe.read_bytes()
     try:
         text = read_utf8_text(safe)
     except (OSError, TextEncodingError) as exc:
-        raise _fail("SDAI-CONTEXT-PLAN-003", f"context source is not readable UTF-8: {_portable(root, safe, label='context source')}") from exc
+        raise _fail(
+            "SDAI-CONTEXT-PLAN-003",
+            f"context source is not readable UTF-8: {_portable(root, safe, label='context source')}",
+        ) from exc
     truncated = len(text) > max_chars_per_file
     return PlannedContextFile(
         category=category,
@@ -387,10 +631,15 @@ def build_context_plan(
     if not isinstance(capability, Capability):
         capability = Capability(str(capability))
     if max_chars_per_file < 1 or max_chars_per_file > 1_000_000:
-        raise _fail("SDAI-CONTEXT-PLAN-001", "max_chars_per_file must be between 1 and 1000000")
+        raise _fail(
+            "SDAI-CONTEXT-PLAN-001",
+            "max_chars_per_file must be between 1 and 1000000",
+        )
 
     context = FeatureContext(root, feature)
-    workspace_path = ensure_within_project(root, context.feature_dir, label="feature context workspace")
+    workspace_path = ensure_within_project(
+        root, context.feature_dir, label="feature context workspace"
+    )
     workspace = _portable(root, workspace_path, label="feature context workspace")
     selected: dict[str, tuple[Path, str, list[str]]] = {}
     exclusions: dict[tuple[str, str], ContextExclusion] = {}
@@ -402,7 +651,9 @@ def build_context_plan(
             return
         source = _portable(root, safe, label="context candidate")
         if safe.is_symlink() or not safe.is_file():
-            exclusions[(category, source)] = ContextExclusion(category, source, "unsafe-or-non-file")
+            exclusions[(category, source)] = ContextExclusion(
+                category, source, "unsafe-or-non-file"
+            )
             return
         existing = selected.get(source)
         if existing is None:
@@ -427,10 +678,20 @@ def build_context_plan(
             exclude(path, "feature", "capability-not-relevant")
 
     for relative_root, capabilities in _ROOT_RULES.items():
-        directory = ensure_within_project(root, workspace_path / relative_root, label="context root")
+        directory = ensure_within_project(
+            root, workspace_path / relative_root, label="context root"
+        )
         if not directory.exists() or not directory.is_dir() or directory.is_symlink():
             continue
-        paths = tuple(sorted((path for path in directory.rglob("*") if path.is_file()), key=lambda item: (_portable(root, item, label="context root file").casefold(), _portable(root, item, label="context root file"))))
+        paths = tuple(
+            sorted(
+                (path for path in directory.rglob("*") if path.is_file()),
+                key=lambda item: (
+                    _portable(root, item, label="context root file").casefold(),
+                    _portable(root, item, label="context root file"),
+                ),
+            )
+        )
         for path in paths:
             if path.suffix.casefold() not in _CONTEXT_SUFFIXES:
                 continue
@@ -440,16 +701,24 @@ def build_context_plan(
                 exclude(path, "feature", "capability-not-relevant")
 
     relevant_ids: set[str] = set()
-    modern = ensure_within_project(root, root / "specs" / "changes" / feature, label="current feature workspace")
+    modern = ensure_within_project(
+        root,
+        root / "specs" / "changes" / feature,
+        label="current feature workspace",
+    )
     if workspace_path == modern and modern.is_dir():
         try:
             index = build_feature_artifact_index(root, feature)
         except (CrossArtifactError, RuntimeError, ValueError):
+            # Do not let an optional explanatory index become a second execution
+            # authority. Deterministic lifecycle/root rules remain usable.
             diagnostics.append("trace-index-unavailable")
         else:
             relevant_kinds = _TRACE_KINDS[capability]
             for entity in index.entities:
-                source_path = ensure_within_project(root, root / entity.source, label="trace context source")
+                source_path = ensure_within_project(
+                    root, root / entity.source, label="trace context source"
+                )
                 if entity.kind in relevant_kinds:
                     relevant_ids.add(entity.id)
                     include(source_path, "feature", f"trace-kind:{entity.kind}")
@@ -459,11 +728,21 @@ def build_context_plan(
         diagnostics.append("legacy-workspace-trace-fallback")
 
     if relevant_ids and capability in _SOURCE_CAPABILITIES:
-        escaped = "|".join(re.escape(item) for item in sorted(relevant_ids, key=lambda value: (-len(value), value)))
-        reference = re.compile(rf"(?<![A-Za-z0-9])(?:{escaped})(?![A-Za-z0-9])", re.IGNORECASE)
+        escaped = "|".join(
+            re.escape(item)
+            for item in sorted(relevant_ids, key=lambda value: (-len(value), value))
+        )
+        reference = re.compile(
+            rf"(?<![A-Za-z0-9])(?:{escaped})(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
         source_matches: list[tuple[Path, str]] = []
         for path in root.rglob("*"):
-            if not path.is_file() or path.is_symlink() or path.suffix.casefold() not in _SOURCE_SUFFIXES:
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or path.suffix.casefold() not in _SOURCE_SUFFIXES
+            ):
                 continue
             relative = path.relative_to(root)
             if any(part in _SOURCE_EXCLUDED_PARTS for part in relative.parts):
@@ -475,16 +754,25 @@ def build_context_plan(
             match = reference.search(text)
             if match is not None:
                 source_matches.append((path, match.group(0).upper()))
-        for path, referenced_id in sorted(source_matches, key=lambda item: (_portable(root, item[0], label="trace source reference").casefold(), _portable(root, item[0], label="trace source reference"))):
+        for path, referenced_id in sorted(
+            source_matches,
+            key=lambda item: (
+                _portable(root, item[0], label="trace source reference").casefold(),
+                _portable(root, item[0], label="trace source reference"),
+            ),
+        ):
             include(path, "feature", f"trace-source-reference:{referenced_id}")
 
+    # Governance is execution authority, not optional relevance context. Add it to
+    # the same bounded plan and order it before feature files so file pressure can
+    # never silently remove constitution/policy material.
     for relative in _GOVERNANCE_FILES:
         include(root / relative, "governance", "governance-authority")
 
     ordered_entries = sorted(
         selected.values(),
         key=lambda item: (
-            0 if item[1] == "feature" else 1,
+            0 if item[1] == "governance" else 1,
             _portable(root, item[0], label="context selected source").casefold(),
             _portable(root, item[0], label="context selected source"),
         ),
@@ -493,7 +781,9 @@ def build_context_plan(
     for index, (path, category, reasons) in enumerate(ordered_entries):
         if index >= CONTEXT_PLAN_MAX_FILES:
             source = _portable(root, path, label="context budget source")
-            exclusions[(category, source)] = ContextExclusion(category, source, "file-budget-exceeded")
+            exclusions[(category, source)] = ContextExclusion(
+                category, source, "file-budget-exceeded"
+            )
             continue
         files.append(
             _record_file(
@@ -518,7 +808,17 @@ def build_context_plan(
         workspace=workspace,
         max_chars_per_file=max_chars_per_file,
         files=tuple(files),
-        exclusions=tuple(sorted(exclusions.values(), key=lambda item: (item.category, item.source.casefold(), item.source, item.reason))),
+        exclusions=tuple(
+            sorted(
+                exclusions.values(),
+                key=lambda item: (
+                    item.category,
+                    item.source.casefold(),
+                    item.source,
+                    item.reason,
+                ),
+            )
+        ),
         skills=skills,
         diagnostics=_unique(diagnostics),
     )
