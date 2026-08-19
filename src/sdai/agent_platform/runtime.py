@@ -34,6 +34,10 @@ from sdai.execution_guard import WorkspaceMutationGuard
 from sdai.path_safety import ensure_within_project
 from sdai.policy import EffectiveConfiguration, PolicyError, load_effective_configuration
 from sdai.providers.base import ProviderCapabilities
+from sdai.providers.control import (
+    ProviderCancellationToken,
+    ProviderProgressEvent,
+)
 from sdai.providers.factory import ProviderFactory
 
 
@@ -363,10 +367,18 @@ class AgentRuntime:
             explicit_context=explicit_context,
         )
 
-    def execute_invocation(self, invocation: AgentInvocation) -> AgentExecutionResult:
-        """Execute one already-built governed invocation without rebuilding context."""
+    def execute_invocation(
+        self,
+        invocation: AgentInvocation,
+        *,
+        cancellation: ProviderCancellationToken | None = None,
+    ) -> AgentExecutionResult:
+        """Execute one governed invocation with optional cooperative cancellation."""
         if not isinstance(invocation, AgentInvocation):
             raise TypeError("invocation must be an AgentInvocation")
+        if cancellation is not None and not isinstance(cancellation, ProviderCancellationToken):
+            raise TypeError("cancellation must be a ProviderCancellationToken")
+        control = cancellation or ProviderCancellationToken()
         project_root = self.project_root.resolve()
         cwd = invocation.cwd.resolve()
         if cwd != project_root:
@@ -446,13 +458,13 @@ class AgentRuntime:
                 )
             raise
 
+        capabilities_method = getattr(provider, "diagnostic_capabilities", None)
+        capabilities = (
+            capabilities_method()
+            if callable(capabilities_method)
+            else ProviderCapabilities()
+        )
         if diagnostics is not None:
-            capabilities_method = getattr(provider, "diagnostic_capabilities", None)
-            capabilities = (
-                capabilities_method()
-                if callable(capabilities_method)
-                else ProviderCapabilities()
-            )
             try:
                 diagnostics.provider_ready(capabilities)
             except BaseException as exc:
@@ -465,12 +477,34 @@ class AgentRuntime:
                     )
                 raise
 
+        def report_progress(event: ProviderProgressEvent) -> None:
+            if not isinstance(event, ProviderProgressEvent):
+                raise TypeError("provider progress must be a ProviderProgressEvent")
+            if diagnostics is None:
+                return
+            if event.kind == "first-output":
+                diagnostics.first_output(reason=event.reason)
+            elif event.kind == "heartbeat":
+                diagnostics.heartbeat(reason=event.reason)
+
+        def invoke_provider() -> str:
+            control.raise_if_cancelled()
+            observable = getattr(provider, "complete_observable", None)
+            if callable(observable):
+                return observable(
+                    system=invocation.system,
+                    prompt=invocation.prompt,
+                    cancellation=control,
+                    progress=report_progress,
+                )
+            return provider.complete(system=invocation.system, prompt=invocation.prompt)
+
         try:
             if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
                 with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
-                    output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+                    output = invoke_provider()
             else:
-                output = provider.complete(system=invocation.system, prompt=invocation.prompt)
+                output = invoke_provider()
         except BaseException as provider_exc:
             diagnostic_exc: BaseException | None = None
             persisted: PersistedProviderDiagnostic | None = None
@@ -532,6 +566,7 @@ class AgentRuntime:
         profile_name: str | None = None,
         agent_name: str | None = None,
         mode: ExecutionMode = ExecutionMode.ADVISORY,
+        cancellation: ProviderCancellationToken | None = None,
     ) -> AgentExecutionResult:
         invocation = self.build_invocation(
             feature_id,
@@ -540,7 +575,7 @@ class AgentRuntime:
             agent_name=agent_name,
             mode=mode,
         )
-        return self.execute_invocation(invocation)
+        return self.execute_invocation(invocation, cancellation=cancellation)
 
     def doctor(self) -> list[tuple[str, str, bool, str]]:
         results: list[tuple[str, str, bool, str]] = []

@@ -32,6 +32,13 @@ from sdai.agent_platform.routed_execution import (
     execute_routed_invocation,
 )
 from sdai.agent_platform.runtime import AgentRuntime
+from sdai.providers.control import (
+    ObservableProvider,
+    ProviderCancellationToken,
+    ProviderCancelledError,
+    ProviderProgressCallback,
+    ProviderProgressEvent,
+)
 
 __all__ = [
     "AgentRuntime",
@@ -44,13 +51,18 @@ __all__ = [
     "ExecutionMode",
     "MODEL_ROUTING_API_VERSION",
     "ModelRoutingError",
+    "ObservableProvider",
     "PROVIDER_DIAGNOSTIC_API_VERSION",
     "PersistedProviderDiagnostic",
     "PlannedContextFile",
+    "ProviderCancellationToken",
+    "ProviderCancelledError",
     "ProviderDiagnosticClock",
     "ProviderDiagnosticError",
     "ProviderDiagnosticEvent",
     "ProviderDiagnosticRecorder",
+    "ProviderProgressCallback",
+    "ProviderProgressEvent",
     "RoutedInvocation",
     "RoutingDecision",
     "RoutingRequest",
