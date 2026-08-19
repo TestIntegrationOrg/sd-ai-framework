@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from sdai.agent_platform.audit import AgentAuditRecorder
+from sdai.agent_platform.audit import AgentAuditRecorder, AgentInvocationProvenance
 from sdai.agent_platform.context import load_governance_context
 from sdai.agent_platform.context_plan import (
     ContextPlan,
@@ -104,6 +104,19 @@ def _diagnostic_binding(
     if persisted is None:
         return None
     return AuditBinding("evidence", persisted.source, persisted.file_sha256)
+
+
+def _terminal_provenance(
+    provenance: AgentInvocationProvenance,
+    persisted: PersistedProviderDiagnostic | None,
+) -> AgentInvocationProvenance:
+    binding = _diagnostic_binding(persisted)
+    if binding is None:
+        return provenance
+    return AgentInvocationProvenance(
+        bindings=(*provenance.bindings, binding),
+        metadata=provenance.metadata,
+    )
 
 
 @dataclass
@@ -427,20 +440,19 @@ class AgentRuntime:
             if recorder is not None and provenance is not None and started_event is not None:
                 recorder.failed(
                     invocation,
-                    provenance,
+                    _terminal_provenance(provenance, persisted),
                     error=exc,
                     started_event=started_event,
-                    diagnostic_binding=_diagnostic_binding(persisted),
                 )
             raise
 
-        capabilities_method = getattr(provider, "diagnostic_capabilities", None)
-        capabilities = (
-            capabilities_method()
-            if callable(capabilities_method)
-            else ProviderCapabilities()
-        )
         if diagnostics is not None:
+            capabilities_method = getattr(provider, "diagnostic_capabilities", None)
+            capabilities = (
+                capabilities_method()
+                if callable(capabilities_method)
+                else ProviderCapabilities()
+            )
             try:
                 diagnostics.provider_ready(capabilities)
             except BaseException as exc:
@@ -471,10 +483,9 @@ class AgentRuntime:
             if recorder is not None and provenance is not None and started_event is not None:
                 recorder.failed(
                     invocation,
-                    provenance,
+                    _terminal_provenance(provenance, persisted),
                     error=failure,
                     started_event=started_event,
-                    diagnostic_binding=_diagnostic_binding(persisted),
                 )
             if diagnostic_exc is not None:
                 raise diagnostic_exc from provider_exc
@@ -497,10 +508,9 @@ class AgentRuntime:
         if recorder is not None and provenance is not None and started_event is not None:
             recorder.succeeded(
                 invocation,
-                provenance,
+                _terminal_provenance(provenance, persisted),
                 output=output,
                 started_event=started_event,
-                diagnostic_binding=_diagnostic_binding(persisted),
             )
 
         return AgentExecutionResult(
@@ -556,7 +566,7 @@ class AgentRuntime:
                 break
             if not allowed:
                 results.append(
-                    (profile.name, profile.provider, False, f"policy: {last_policy_error}")
+                    (profile.name, profile.provider, False, f"policy: {last_policy_error})")
                 )
                 continue
             try:
