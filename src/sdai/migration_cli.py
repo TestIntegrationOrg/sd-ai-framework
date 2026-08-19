@@ -13,6 +13,9 @@ from sdai.migration import (
 )
 
 
+_FRAMEWORK_METADATA_PATH = ".sdai/framework-version.yaml"
+
+
 def _root(value: str | None) -> Path:
     return Path(value or ".").resolve()
 
@@ -131,18 +134,21 @@ def upgrade_main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if result.status == "current":
+    scaffold_changes = tuple(
+        change for change in result.changes if change.path != _FRAMEWORK_METADATA_PATH
+    )
+    if not scaffold_changes:
         print("SD-AI project already has the current scaffold")
     else:
         print(f"Upgraded SD-AI project at {root}")
-        for change in result.changes:
+        for change in scaffold_changes:
             print(f"  + {change.path}")
 
     # Preserve the installed entrypoint's historical release-metadata footer.
-    # The migration engine already writes/restores this managed file so the
-    # footer is output-only and does not create an untracked side effect.
+    # The migration engine tracks this file internally so rollback can restore it,
+    # but legacy upgrade output still reports it exactly once in the footer.
     print(f"SD-AI framework version {__version__}")
-    print("  + .sdai/framework-version.yaml")
+    print(f"  + {_FRAMEWORK_METADATA_PATH}")
     return 0
 
 
