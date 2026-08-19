@@ -14,6 +14,7 @@ from sdai.providers.cli import (
     ProviderExecutionError,
     ProviderOutputLimitError,
     ProviderStartupError,
+    build_provider_environment,
 )
 from sdai.providers.control import ProviderCancellationToken, ProviderCancelledError
 
@@ -47,13 +48,11 @@ def test_unicode_workspace_prompt_and_output_are_strict_utf8(tmp_path: Path) -> 
 
 
 def test_binary_stdin_is_utf8_even_when_child_locale_is_ascii(tmp_path: Path) -> None:
-    environment = dict()
-    # The child deliberately uses only binary stdio. An ASCII locale therefore cannot
-    # corrupt the parent/child boundary.
+    environment = build_provider_environment("test-cli")
+    # Preserve only SDAI's minimal process environment, then force an ASCII locale on
+    # POSIX. Binary stdin/stdout must remain UTF-8 regardless of locale/code page.
     if sys.platform != "win32":
-        environment.update({"PATH": str(Path(sys.executable).parent), "LANG": "C", "LC_ALL": "C"})
-    else:
-        environment.update({"PATH": str(Path(sys.executable).parent)})
+        environment.update({"LANG": "C", "LC_ALL": "C"})
     provider = CliProvider(
         [
             sys.executable,
@@ -84,6 +83,7 @@ def test_invalid_stdout_utf8_has_distinct_bounded_encoding_error(tmp_path: Path)
     assert caught.value.stream == "stdout"
     assert caught.value.offset == 5
     assert len(str(caught.value)) < 512
+    assert caught.value.preview == "\\xff"
     assert "secret-tail" not in caught.value.preview
 
 
