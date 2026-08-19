@@ -138,6 +138,16 @@ def _step_projection(step: WorkflowStep) -> dict[str, object]:
     }
 
 
+def _input_definition_projection(item: object) -> dict[str, object]:
+    payload = item.as_dict()
+    if getattr(item, "sensitive", False):
+        payload.pop("default", None)
+        payload.pop("enum", None)
+        payload["sensitive"] = True
+        payload["secretValuesPersisted"] = False
+    return payload
+
+
 def _workflow_projection(definition: WorkflowDefinition) -> dict[str, object]:
     definitions = {item.name: item for item in definition.input_definitions}
     resolved: dict[str, object] = {}
@@ -153,7 +163,7 @@ def _workflow_projection(definition: WorkflowDefinition) -> dict[str, object]:
         "name": definition.name,
         "version": definition.workflow_version,
         "validationMode": definition.validation_mode.value,
-        "inputs": [item.as_dict() for item in definition.input_definitions],
+        "inputs": [_input_definition_projection(item) for item in definition.input_definitions],
         "resolvedInputs": resolved,
         "sensitiveInputNames": sorted(sensitive_names),
         "steps": [_step_projection(step) for step in definition.steps],
@@ -314,6 +324,14 @@ def _execution_output_bindings(root: Path, context: FeatureContext, execution: o
         binding = _file_output_binding(root, context.feature_dir, artifact)
         if binding is not None:
             result.append(binding)
+    artifacts = getattr(payload, "artifacts", None)
+    if isinstance(artifacts, (list, tuple)):
+        for path in artifacts:
+            if not isinstance(path, Path):
+                continue
+            binding = _file_output_binding(root, context.feature_dir, path)
+            if binding is not None:
+                result.append(binding)
     if isinstance(payload, list):
         for child in payload:
             result.extend(_execution_output_bindings(root, context, child))
@@ -433,7 +451,13 @@ class WorkflowAuditRecorder:
         metadata: dict[str, object] = {**dict(provenance.metadata), "status": status}
         if failure is not None:
             metadata["failureType"] = type(failure).__name__[:128] or "Exception"
-        action = "workflow.execution.completed" if status == "completed" else "workflow.execution.failed"
+        action_by_status = {
+            "completed": "workflow.execution.completed",
+            "paused": "workflow.execution.paused",
+            "cancelled": "workflow.execution.cancelled",
+            "failed": "workflow.execution.failed",
+        }
+        action = action_by_status.get(status, "workflow.execution.failed")
         return self.ledger.append(
             category="workflow",
             actor=self._actor(definition),
@@ -523,7 +547,16 @@ class WorkflowAuditRecorder:
             ]
         if failure is not None:
             metadata["failureType"] = type(failure).__name__[:128] or "Exception"
-        action = "workflow.step.completed" if status in {"completed", "skipped", "condition-skipped", "dry-run", "paused"} else "workflow.step.failed"
+        action_by_status = {
+            "completed": "workflow.step.completed",
+            "skipped": "workflow.step.skipped",
+            "condition-skipped": "workflow.step.skipped",
+            "dry-run": "workflow.step.dry-run",
+            "paused": "workflow.step.paused",
+            "cancelled": "workflow.step.cancelled",
+            "failed": "workflow.step.failed",
+        }
+        action = action_by_status.get(str(status), "workflow.step.failed")
         return self.ledger.append(
             category="workflow",
             actor=self._actor(definition),
