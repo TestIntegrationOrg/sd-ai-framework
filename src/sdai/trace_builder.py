@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Mapping
 
+from sdai.audit_trace import AuditTraceError, AuditTraceGap, build_audit_trace_index
 from sdai.contract_trace import (
     ContractTraceError,
     ContractTraceGap,
@@ -285,6 +286,18 @@ def _contract_gap(item: ContractTraceGap) -> TraceGap:
     )
 
 
+def _audit_gap(item: AuditTraceGap) -> TraceGap:
+    return TraceGap(
+        kind=item.kind,
+        source=item.source,
+        line=item.line,
+        target=item.target,
+        relation=item.relation,
+        source_node_id=item.source_node_id,
+        detail=item.detail,
+    )
+
+
 def _cross_artifact_edges(
     index: FeatureArtifactIndex,
     node_ids: Mapping[str, tuple[str, ...]],
@@ -496,7 +509,7 @@ def build_feature_trace_graph(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> TraceBuildResult:
-    """Build a deterministic, provider-free, read-only canonical trace graph."""
+    """Build a deterministic, provider-free canonical trace graph."""
     root = project_root.resolve()
     feature = validate_feature_id(feature_id)
     try:
@@ -554,6 +567,14 @@ def build_feature_trace_graph(
     nodes.extend(evidence_nodes)
     edges.extend(evidence_edges)
     gaps.extend(evidence_gaps)
+
+    try:
+        audit_trace = build_audit_trace_index(root, feature, tuple(nodes))
+    except AuditTraceError as exc:
+        raise _fail("SDAI-TRACE-BUILD-006", f"unable to project audit provenance: {exc}") from exc
+    nodes.extend(audit_trace.nodes)
+    edges.extend(audit_trace.edges)
+    gaps.extend(_audit_gap(item) for item in audit_trace.gaps)
 
     try:
         contract_links = build_contract_trace_links(root, feature, contract_index, tuple(nodes))
