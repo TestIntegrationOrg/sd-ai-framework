@@ -56,7 +56,7 @@ def _current_workspace(root: Path) -> Path:
     _write(feature / "notes" / "unrelated.md", f"unrelated {SECRET}\n")
     _write(
         root / "src" / "context_worker.py",
-        "# TASK-020\n\ndef build_context() -> None:\n    pass\n",
+        "# FR-020\n\ndef build_context() -> None:\n    pass\n",
     )
     _write(root / "src" / "unrelated.py", f"# unrelated source marker: {SECRET}\n")
     return feature
@@ -101,7 +101,7 @@ def test_current_context_plan_is_deterministic_trace_aware_and_secret_safe(tmp_p
     assert f"specs/changes/{FEATURE}/requirements.md" in sources
     assert f"specs/changes/{FEATURE}/tasks.yaml" in sources
     source_item = sources["src/context_worker.py"]
-    assert "trace-source-reference:TASK-020" in source_item.reasons
+    assert "trace-source-reference:FR-020" in source_item.reasons
     assert "src/unrelated.py" not in sources
     assert f"specs/changes/{FEATURE}/notes/unrelated.md" not in sources
 
