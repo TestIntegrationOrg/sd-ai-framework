@@ -20,6 +20,7 @@ from sdai.agent_platform.routing_diagnostics import (
     RoutingDiagnosticError,
     load_routing_diagnostic,
     persist_routing_decision,
+    routing_decision_document_sha256,
 )
 from sdai.audit_ledger import AuditLedger
 from sdai.audit_provenance import AuditAction, AuditActor, AuditBinding, AuditExecution
@@ -99,7 +100,7 @@ def _bind_run_task(root: Path, feature: Path, attempt_id: str) -> None:
     source = terminal.relative_to(root).as_posix()
     digest = "sha256:" + sha256(terminal.read_bytes()).hexdigest()
     AuditLedger(root, FEATURE).append(
-        category="execution",
+        category="system",
         actor=AuditActor("system", "diagnostics-test"),
         action=AuditAction("diagnostics.correlation", attempt_id),
         execution=AuditExecution(run_id=RUN_ID, task_id=TASK_ID),
@@ -117,6 +118,7 @@ def test_unified_report_correlates_context_routing_retry_provider_and_audit_with
     runtime = AgentRuntime(tmp_path)
     decision, invocation = _routed_invocation(runtime)
     persist_routing_decision(tmp_path, FEATURE, decision)
+    routing_document_sha = routing_decision_document_sha256(decision)
     provider = _SequencedProvider([TimeoutError(SECRET_ERROR), SECRET_OUTPUT])
     monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
 
@@ -153,13 +155,14 @@ def test_unified_report_correlates_context_routing_retry_provider_and_audit_with
     assert body["context"]["basis"] == "current-repository-state"
     assert body["context"]["metrics"]["combinedPrompt"]["utf8Bytes"] > 0
     assert body["routing"]["available"] is True
+    assert body["routing"]["routingDecisionDocumentSha256"] == routing_document_sha
     assert body["routing"]["decisionSha256"] == decision.sha256
     assert body["routing"]["selectedProfile"] == decision.selected_profile
     assert body["routing"]["selectionReason"] == decision.selection_reason
     assert [item["attemptId"] for item in body["providerAttempts"]] == ["diag-retry-a002"]
     attempt = body["providerAttempts"][0]
     assert attempt["status"] == "succeeded"
-    assert attempt["routingDecisionSha256"] == decision.sha256
+    assert attempt["routingDecisionDocumentSha256"] == routing_document_sha
     assert body["retryExecutions"][0]["retryId"] == "diag-retry"
     assert body["retryExecutions"][0]["status"] == "succeeded"
     assert body["retryExecutions"][0]["attempts"] == 2
@@ -209,10 +212,11 @@ def test_historical_routing_hash_is_reported_without_fabricated_reason(
     _workspace(tmp_path)
     runtime = AgentRuntime(tmp_path)
     decision, invocation = _routed_invocation(runtime)
+    routing_document_sha = routing_decision_document_sha256(decision)
     provider = _SequencedProvider(["ok"])
     monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
     # Execute the invocation directly to model a pre-0.20.8 routed attempt: provider
-    # diagnostics contain only the routing hash and no persisted decision document.
+    # diagnostics contain only the routing-document hash and no persisted document.
     runtime.execute_invocation(invocation)
 
     report = build_diagnostics_report(tmp_path, FEATURE)
@@ -221,7 +225,8 @@ def test_historical_routing_hash_is_reported_without_fabricated_reason(
     assert report.body["status"] == "partial"
     assert report.body["routing"] == {
         "available": False,
-        "decisionSha256": decision.sha256,
+        "routingDecisionDocumentSha256": routing_document_sha,
+        "decisionSha256": None,
         "reason": "historical-routing-document-not-persisted",
     }
     assert "routing-document-hash-only" in report.body["partialReasons"]
@@ -250,10 +255,14 @@ def test_tampered_provider_diagnostic_fails_closed(
     provider = _SequencedProvider(["ok"])
     monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
     execute_routed_invocation(runtime, RoutedInvocation(decision, invocation))
-    terminal = _terminal_path(feature, next((feature / ".sdai" / "diagnostics" / "provider").iterdir()).name)
+    attempt_dir = next((feature / ".sdai" / "diagnostics" / "provider").iterdir())
+    terminal = _terminal_path(feature, attempt_dir.name)
     payload = json.loads(terminal.read_text(encoding="utf-8"))
     payload["status"] = "failed"
-    terminal.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    terminal.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(DiagnosticsError, match="SHA-256 verification"):
         build_diagnostics_report(tmp_path, FEATURE)
@@ -263,13 +272,23 @@ def test_tampered_routing_document_fails_closed_before_it_can_explain_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    feature = _workspace(tmp_path)
+    _workspace(tmp_path)
     runtime = AgentRuntime(tmp_path)
     decision, invocation = _routed_invocation(runtime)
     provider = _SequencedProvider(["ok"])
     monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
     execute_routed_invocation(runtime, RoutedInvocation(decision, invocation))
-    routing_file = feature / ".sdai" / "diagnostics" / "routing" / f"{decision.sha256.removeprefix('sha256:')}.json"
+    routing_document_sha = routing_decision_document_sha256(decision)
+    routing_file = (
+        tmp_path
+        / "specs"
+        / "changes"
+        / FEATURE
+        / ".sdai"
+        / "diagnostics"
+        / "routing"
+        / f"{routing_document_sha.removeprefix('sha256:')}.json"
+    )
     payload = json.loads(routing_file.read_text(encoding="utf-8"))
     payload["decision"]["selection_reason"] = "tampered"
     routing_file.write_text(
@@ -285,19 +304,21 @@ def test_routing_diagnostic_persistence_is_idempotent_and_conflict_fails_before_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    feature = _workspace(tmp_path)
+    _workspace(tmp_path)
     runtime = AgentRuntime(tmp_path)
     decision, invocation = _routed_invocation(runtime)
+    routing_document_sha = routing_decision_document_sha256(decision)
     provider = _SequencedProvider(["ok"])
     monkeypatch.setattr(ProviderFactory, "create", staticmethod(lambda *args, **kwargs: provider))
 
     first = persist_routing_decision(tmp_path, FEATURE, decision)
     second = persist_routing_decision(tmp_path, FEATURE, decision)
     assert first == second
-    assert load_routing_diagnostic(tmp_path, FEATURE, decision.sha256) is not None
+    assert first is not None
+    assert first.name == f"{routing_document_sha.removeprefix('sha256:')}.json"
+    assert load_routing_diagnostic(tmp_path, FEATURE, routing_document_sha) is not None
     assert provider.calls == 0
 
-    assert first is not None
     first.write_text("{}\n", encoding="utf-8")
     with pytest.raises(RoutingDiagnosticError, match="conflicts"):
         execute_routed_invocation(runtime, RoutedInvocation(decision, invocation))
