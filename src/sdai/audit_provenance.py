@@ -15,6 +15,7 @@ from sdai.audit_contracts import (
     _ZERO_HASH,
     _canonical_bytes,
     _fail,
+    _feature_id,
     _freeze_json,
     _git_commit,
     _reference,
@@ -26,7 +27,6 @@ from sdai.audit_contracts import (
     _ACTOR_KINDS,
     _ACTION_KIND,
 )
-from sdai.models import validate_feature_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +191,7 @@ class AuditEvent:
     def __post_init__(self) -> None:
         if not isinstance(self.sequence, int) or isinstance(self.sequence, bool) or self.sequence < 1:
             raise _fail("SDAI-AUDIT-002", "audit sequence must be a positive integer")
-        feature = validate_feature_id(self.feature_id)
+        feature = _feature_id(self.feature_id)
         object.__setattr__(self, "feature_id", feature)
         expected_event_id = f"{feature}:{self.sequence:08d}"
         if self.event_id != expected_event_id:
@@ -261,11 +261,13 @@ class AuditEvent:
         metadata: Mapping[str, object] | None = None,
         previous_sha256: str = _ZERO_HASH,
     ) -> "AuditEvent":
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+            raise _fail("SDAI-AUDIT-002", "audit sequence must be a positive integer")
         if not isinstance(actor, AuditActor) or not isinstance(action, AuditAction):
             raise _fail("SDAI-AUDIT-002", "audit actor/action must be validated objects")
         if execution is not None and not isinstance(execution, AuditExecution):
             raise _fail("SDAI-AUDIT-002", "audit execution must be a validated object or null")
-        feature = validate_feature_id(feature_id)
+        feature = _feature_id(feature_id)
         normalized_time = _timestamp(occurred_at)
         try:
             raw_bindings = tuple(bindings)
