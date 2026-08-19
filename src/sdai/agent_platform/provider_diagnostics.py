@@ -156,7 +156,7 @@ class ProviderDiagnosticEvent:
     failure: Mapping[str, str] | None = None
 
     def _body(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "apiVersion": PROVIDER_DIAGNOSTIC_API_VERSION,
             "attemptId": self.attempt_id,
             "sequence": self.sequence,
@@ -184,9 +184,11 @@ class ProviderDiagnosticEvent:
                 "firstOutput": dict(self.first_output),
             },
             "status": self.status,
-            "progressReason": self.progress_reason,
             "failure": dict(self.failure) if self.failure is not None else None,
         }
+        if self.progress_reason is not None:
+            result["progressReason"] = self.progress_reason
+        return result
 
     @property
     def sha256(self) -> str:
@@ -401,9 +403,9 @@ class ProviderDiagnosticRecorder:
         now_ns = self.clock.monotonic_ns()
         if now_ns < self.ready_ns:
             raise _fail("SDAI-PROVIDER-DIAG-001", "diagnostic monotonic clock moved backwards")
+        previous = self.first_output_ns
         self.first_output_ns = now_ns
         sequence = self.next_sequence
-        self.next_sequence += 1
         event = self._event(
             sequence=sequence,
             phase="first-output",
@@ -412,7 +414,13 @@ class ProviderDiagnosticRecorder:
             first_output_reason="provider-reported",
             progress_reason=_safe_reason(reason),
         )
-        return self._persist(event, f"{sequence:03d}-first-output.json")
+        try:
+            persisted = self._persist(event, f"{sequence:03d}-first-output.json")
+        except BaseException:
+            self.first_output_ns = previous
+            raise
+        self.next_sequence += 1
+        return persisted
 
     def heartbeat(self, *, reason: str) -> PersistedProviderDiagnostic:
         if self.terminal or self.ready_ns is None:
@@ -421,7 +429,6 @@ class ProviderDiagnosticRecorder:
             raise _fail("SDAI-PROVIDER-DIAG-004", "provider reported unsupported heartbeat")
         now_ns = self.clock.monotonic_ns()
         sequence = self.next_sequence
-        self.next_sequence += 1
         event = self._event(
             sequence=sequence,
             phase="heartbeat",
@@ -434,7 +441,9 @@ class ProviderDiagnosticRecorder:
             ),
             progress_reason=_safe_reason(reason),
         )
-        return self._persist(event, f"{sequence:03d}-heartbeat.json")
+        persisted = self._persist(event, f"{sequence:03d}-heartbeat.json")
+        self.next_sequence += 1
+        return persisted
 
     def completed(self) -> PersistedProviderDiagnostic:
         if self.terminal:
