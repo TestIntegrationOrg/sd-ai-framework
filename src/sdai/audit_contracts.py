@@ -95,6 +95,15 @@ def _sha256_bytes(content: bytes) -> str:
     return "sha256:" + sha256(content).hexdigest()
 
 
+def _feature_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise _fail("SDAI-AUDIT-002", "featureId must be a string")
+    try:
+        return validate_feature_id(value)
+    except ValueError as exc:
+        raise _fail("SDAI-AUDIT-002", f"invalid featureId: {value!r}") from exc
+
+
 def _canonical_bytes(value: object) -> bytes:
     try:
         return json.dumps(
@@ -265,7 +274,7 @@ def _safe_component_chain(root: Path, candidate: Path, *, label: str) -> Path:
 
 def _feature_workspace(project_root: Path, feature_id: str) -> Path:
     root = project_root.resolve()
-    feature = validate_feature_id(feature_id)
+    feature = _feature_id(feature_id)
     modern = _safe_component_chain(root, root / "specs" / "changes" / feature, label="feature workspace")
     legacy = _safe_component_chain(root, root / "specs" / feature, label="legacy feature workspace")
     modern_exists = modern.exists()
