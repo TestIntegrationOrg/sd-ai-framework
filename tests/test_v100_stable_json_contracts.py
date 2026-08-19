@@ -30,6 +30,11 @@ from sdai.json_contracts import (
     stable_json_contract_catalog,
     stable_json_contract_catalog_json,
 )
+from sdai.migration import (
+    MIGRATION_PLAN_API_VERSION,
+    MIGRATION_RESULT_API_VERSION,
+    MIGRATION_ROLLBACK_API_VERSION,
+)
 from sdai.multi_repo_feature_graph import MULTI_REPO_FEATURE_GRAPH_API_VERSION
 from sdai.multi_repo_run import MULTI_REPO_RUN_PLAN_API_VERSION, MultiRepoExitClass
 from sdai.multi_repo_verify import MultiRepoVerificationReport
@@ -85,6 +90,9 @@ EXPECTED_CONTRACTS = (
     ("integration.lifecycle", "sdai.integration-lifecycle-result/v1"),
     ("integration.search", "sdai.integration-search/v1"),
     ("integration.status", "sdai.integration-status-command/v1"),
+    ("migration.apply", "sdai.migration-result/v1"),
+    ("migration.plan", "sdai.migration-plan/v1"),
+    ("migration.rollback", "sdai.migration-rollback/v1"),
     ("multi-repo.feature-graph", "sdai.multi-repo-feature-graph/v1"),
     ("multi-repo.run-plan", "sdai.multi-repo-run-plan/v1"),
     ("multi-repo.verification", "sdai.multi-repo-verification/v1"),
@@ -160,6 +168,7 @@ def test_exact_1x_automation_contract_floor_is_pinned() -> None:
     catalog = stable_json_contract_catalog()
     actual = tuple((item.contract_id, item.api_version) for item in catalog.contracts)
     assert actual == EXPECTED_CONTRACTS
+    assert len(actual) == 57
     assert tuple(item.contract_id for item in catalog.contracts) == tuple(
         sorted(item.contract_id for item in catalog.contracts)
     )
@@ -182,6 +191,9 @@ def test_catalog_matches_subsystem_version_authorities() -> None:
         "integration.lifecycle": INTEGRATION_LIFECYCLE_RESULT_API_VERSION,
         "integration.search": INTEGRATION_SEARCH_API_VERSION,
         "integration.status": INTEGRATION_STATUS_COMMAND_API_VERSION,
+        "migration.apply": MIGRATION_RESULT_API_VERSION,
+        "migration.plan": MIGRATION_PLAN_API_VERSION,
+        "migration.rollback": MIGRATION_ROLLBACK_API_VERSION,
         "multi-repo.feature-graph": MULTI_REPO_FEATURE_GRAPH_API_VERSION,
         "multi-repo.run-plan": MULTI_REPO_RUN_PLAN_API_VERSION,
         "schema.definition": ARTIFACT_SCHEMA_DEFINITION_API_VERSION,
