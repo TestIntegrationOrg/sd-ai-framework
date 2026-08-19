@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 import sys
 
+from sdai.architecture_verify import verify_feature_with_architecture as verify_feature
 from sdai.verification import VerificationFindingSource, VerificationOutcome
-from sdai.verify_engine import verify_feature
 
 
 _RISKS = ("trivial", "standard", "critical", "regulated")
