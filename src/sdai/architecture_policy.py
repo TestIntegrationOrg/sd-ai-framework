@@ -240,7 +240,8 @@ def _safe_repo_policy(root: Path) -> Path:
     current = root
     for part in Path(ARCHITECTURE_POLICY_PATH).parts:
         current = current / part
-        if current.exists() and current.is_symlink():
+        # is_symlink() remains true for broken links, unlike exists().
+        if current.is_symlink():
             raise ArchitecturePolicyError(
                 f"SDAI-ARCH-POLICY-004: repository architecture policy contains a symlink component: {ARCHITECTURE_POLICY_PATH}"
             )
@@ -251,10 +252,22 @@ def _safe_external_policy(path_text: str, *, label: str, project_root: Path) -> 
     path = Path(path_text).expanduser()
     if not path.is_absolute():
         raise ArchitecturePolicyError(f"SDAI-ARCH-POLICY-004: {label} must be an absolute path")
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
+    # Reject the user-supplied leaf before resolution so a symlink cannot become an
+    # apparently ordinary target file after Path.resolve(). Parent-directory links
+    # remain an OS/filesystem concern; the policy file itself must be a regular file.
+    if path.is_symlink():
         raise ArchitecturePolicyError(
-            f"SDAI-ARCH-POLICY-004: {label} must reference a regular non-symlink file: {resolved}"
+            f"SDAI-ARCH-POLICY-004: {label} must reference a regular non-symlink file"
+        )
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise ArchitecturePolicyError(
+            f"SDAI-ARCH-POLICY-004: {label} must reference an existing regular file"
+        ) from exc
+    if not resolved.is_file():
+        raise ArchitecturePolicyError(
+            f"SDAI-ARCH-POLICY-004: {label} must reference a regular non-symlink file"
         )
     if label == ORG_ARCHITECTURE_POLICY_ENV:
         try:
