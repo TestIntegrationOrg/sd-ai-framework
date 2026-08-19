@@ -6,13 +6,14 @@ from pathlib import Path
 import sys
 
 from sdai import __version__
+from sdai.architecture_cli import main as architecture_main
+from sdai.architecture_trace_cli import main as trace_main
 from sdai.contract_cli import main as contract_main
 from sdai.converge_cli import main as converge_main
 from sdai.entrypoint import main as lifecycle_main
 from sdai.feature_graph_cli import main as feature_graph_main
 from sdai.multi_repo_run_cli import main as multi_repo_run_main
 from sdai.multi_repo_verify_cli import main as multi_repo_verify_main
-from sdai.trace_cli import main as trace_main
 from sdai.trace_policy_cli import main as trace_policy_main
 from sdai.verify_cli import main as verify_main
 from sdai.versioning import write_framework_metadata
@@ -65,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
     # lifecycle parsing so existing required intake arguments remain intact.
     if len(effective) >= 2 and effective[0] == "feature" and effective[1] == "graph":
         return feature_graph_main(effective[2:])
+
+    # Only the nested drift surface is intercepted. Legacy
+    # `sdai architecture FEATURE ...` lifecycle/artifact validation remains owned
+    # by the original lifecycle parser below.
+    if len(effective) >= 2 and effective[0] == "architecture" and effective[1] == "drift":
+        return architecture_main(effective[2:])
 
     # The legacy single-repository `sdai run FEATURE` surface remains unchanged.
     # Multi-repository execution is selected explicitly and always constructs a
