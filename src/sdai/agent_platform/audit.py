@@ -23,6 +23,18 @@ from sdai.path_safety import PathSafetyError, ensure_within_project
 
 
 _MODEL_ROUTING_API_VERSION = "sdai.model-routing/v1"
+_ROUTING_KEYS = frozenset(
+    {
+        "apiVersion",
+        "request",
+        "policy_sources",
+        "default_profile",
+        "selected_profile",
+        "selection_reason",
+        "candidates",
+        "sha256",
+    }
+)
 _SHA256_PREFIX = "sha256:"
 _MAX_SOURCE_BYTES = 8 * 1024 * 1024
 
@@ -86,7 +98,7 @@ def _value_binding(kind: str, source: str, value: str) -> AuditBinding:
     return AuditBinding(kind, source, _hash_bytes(value.encode("utf-8")))
 
 
-def _routing_binding(serialized: str | None) -> AuditBinding | None:
+def _routing_binding(serialized: str | None, *, expected_profile: str) -> AuditBinding | None:
     if serialized is None:
         return None
     if not isinstance(serialized, str) or not serialized.strip():
@@ -95,8 +107,20 @@ def _routing_binding(serialized: str | None) -> AuditBinding | None:
         raw = json.loads(serialized)
     except json.JSONDecodeError as exc:
         raise _fail("SDAI-AGENT-AUDIT-003", "routing decision is malformed JSON") from exc
-    if not isinstance(raw, Mapping) or raw.get("apiVersion") != _MODEL_ROUTING_API_VERSION:
+    if not isinstance(raw, Mapping) or set(raw) != _ROUTING_KEYS:
+        raise _fail("SDAI-AGENT-AUDIT-003", "routing decision fields do not match sdai.model-routing/v1")
+    if raw.get("apiVersion") != _MODEL_ROUTING_API_VERSION:
         raise _fail("SDAI-AGENT-AUDIT-003", "routing decision does not use sdai.model-routing/v1")
+    if raw.get("selected_profile") != expected_profile:
+        raise _fail("SDAI-AGENT-AUDIT-003", "routing decision selected profile differs from invocation profile")
+    if not isinstance(raw.get("request"), Mapping):
+        raise _fail("SDAI-AGENT-AUDIT-003", "routing decision request must be a mapping")
+    if not isinstance(raw.get("policy_sources"), list) or not all(
+        isinstance(item, str) for item in raw["policy_sources"]
+    ):
+        raise _fail("SDAI-AGENT-AUDIT-003", "routing decision policy_sources must be a string list")
+    if not isinstance(raw.get("candidates"), list) or not isinstance(raw.get("selection_reason"), str):
+        raise _fail("SDAI-AGENT-AUDIT-003", "routing decision candidates/selection_reason are invalid")
     digest = raw.get("sha256")
     if not isinstance(digest, str) or not digest.startswith(_SHA256_PREFIX) or len(digest) != 71:
         raise _fail("SDAI-AGENT-AUDIT-003", "routing decision SHA-256 is invalid")
@@ -130,7 +154,11 @@ def _skill_files(root: Path, name: str, capability: Capability) -> tuple[AuditBi
 
 
 def _pack_metadata(root: Path, source_paths: Iterable[str]) -> tuple[dict[str, object], ...]:
-    selected = set(source_paths)
+    selected = {
+        source
+        for source in source_paths
+        if source.startswith(".sdai/installed-packs/")
+    }
     if not selected:
         return ()
     state = load_install_state(root)
@@ -220,7 +248,10 @@ class AgentAuditRecorder:
 
         bindings.append(_value_binding("context", "agent-invocation/system", invocation.system))
         bindings.append(_value_binding("input", "agent-invocation/prompt", invocation.prompt))
-        routing = _routing_binding(invocation.routing_decision)
+        routing = _routing_binding(
+            invocation.routing_decision,
+            expected_profile=invocation.profile.name,
+        )
         if routing is not None:
             bindings.append(routing)
 
