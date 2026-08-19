@@ -314,21 +314,18 @@ class AgentAuditRecorder:
         *,
         output: str,
         started_event: AuditEvent,
-        diagnostic_binding: AuditBinding | None = None,
     ) -> AuditEvent:
-        terminal_bindings = [
+        terminal_bindings = (
             *provenance.bindings,
             AuditBinding("evidence", "agent-execution/start-event", started_event.sha256),
             _value_binding("output", "agent-invocation/output", output),
-        ]
-        if diagnostic_binding is not None:
-            terminal_bindings.append(diagnostic_binding)
+        )
         return self.ledger.append(
             category="ai",
             actor=self._actor(invocation),
             action=AuditAction("agent.execution.succeeded", f"feature:{self.feature_id}"),
             execution=AuditExecution(workflow="agent-runtime"),
-            bindings=tuple(terminal_bindings),
+            bindings=terminal_bindings,
             metadata={**dict(provenance.metadata), "status": "succeeded"},
         )
 
@@ -339,20 +336,17 @@ class AgentAuditRecorder:
         *,
         error: BaseException,
         started_event: AuditEvent,
-        diagnostic_binding: AuditBinding | None = None,
     ) -> AuditEvent:
-        terminal_bindings = [
+        terminal_bindings = (
             *provenance.bindings,
             AuditBinding("evidence", "agent-execution/start-event", started_event.sha256),
-        ]
-        if diagnostic_binding is not None:
-            terminal_bindings.append(diagnostic_binding)
+        )
         return self.ledger.append(
             category="ai",
             actor=self._actor(invocation),
             action=AuditAction("agent.execution.failed", f"feature:{self.feature_id}"),
             execution=AuditExecution(workflow="agent-runtime"),
-            bindings=tuple(terminal_bindings),
+            bindings=terminal_bindings,
             metadata={
                 **dict(provenance.metadata),
                 "status": "failed",
