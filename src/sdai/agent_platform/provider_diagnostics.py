@@ -279,8 +279,12 @@ class ProviderDiagnosticRecorder:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt was not started")
         if now_ns < self.started_ns:
             raise _fail("SDAI-PROVIDER-DIAG-001", "diagnostic monotonic clock moved backwards")
-        startup_ns = None if self.ready_ns is None else self.ready_ns - self.started_ns
-        invocation_ns = None if self.ready_ns is None else now_ns - self.ready_ns
+        if self.ready_ns is None:
+            startup_ns = now_ns - self.started_ns if phase == "failed" else None
+            invocation_ns = None
+        else:
+            startup_ns = self.ready_ns - self.started_ns
+            invocation_ns = now_ns - self.ready_ns
         return ProviderDiagnosticEvent(
             attempt_id=self.attempt_id,
             sequence=sequence,
