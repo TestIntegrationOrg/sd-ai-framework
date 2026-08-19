@@ -50,11 +50,11 @@ The default 0.17 engine runs one provider-independent observer registry. All obs
 
 ### Dependency observation
 
-`dependency-imports` resolves common language/module imports to approved component ownership using deterministic repository roots/module prefixes. Supported repository analysis includes Python, Java/Kotlin, .NET/F#, JavaScript/TypeScript, Go, and PowerShell declaration forms. Dynamic/ambiguous internal ownership fails closed where it could conceal coupling.
+`repository-dependencies` resolves common language/module imports to approved component ownership using deterministic repository roots/module prefixes. Supported repository analysis includes Python, Java/Kotlin, .NET/F#, JavaScript/TypeScript, Go, and PowerShell declaration forms. Dynamic/ambiguous internal ownership fails closed where it could conceal coupling.
 
 ### Communication and contract observation
 
-`service-communication` observes literal inbound HTTP endpoints, outbound HTTP calls, event publish declarations, and approved contract bindings. Internal host/channel aliases are resolved to approved components; explicit external destinations remain external identities. OpenAPI/contract facts reuse the 0.16 canonical contract source/symbol hashes rather than reparsing contract truth independently.
+`repository-communications` observes literal inbound HTTP endpoints, outbound HTTP calls, event publish declarations, and approved contract bindings. Internal host/channel aliases are resolved to approved components; explicit external destinations remain external identities. OpenAPI/contract facts reuse the 0.16 canonical contract source/symbol hashes rather than reparsing contract truth independently.
 
 ### Data ownership and access observation
 
