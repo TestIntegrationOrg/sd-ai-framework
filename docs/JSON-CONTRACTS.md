@@ -2,7 +2,7 @@
 
 SDAI 1.0 treats its core machine-facing read, analysis, status, resume, and lifecycle JSON outputs as compatibility contracts. The authoritative machine-inspectable inventory is exposed by `sdai.json_contracts.stable_json_contract_catalog()` and canonical JSON by `stable_json_contract_catalog_json()`.
 
-The catalog API is `sdai.json-contracts/v1` and its stability marker is `stable-1.0`. The 1.0 floor currently contains 54 explicit automation contracts. It preserves established subsystem identities instead of renumbering them: Workflow Engine 2 remains on its existing `v2` contracts, while older surfaces promoted into the stable boundary receive additive `sdai.* /v1` identities without removing their legacy `version: 1` fields.
+The catalog API is `sdai.json-contracts/v1` and its stability marker is `stable-1.0`. The 1.0 floor currently contains 54 explicit automation contracts. It preserves established subsystem identities instead of renumbering them: Workflow Engine 2 remains on its existing `v2` contracts, while older surfaces promoted into the stable boundary receive additive `sdai.*/v1` identities without removing any legacy `version: 1` fields they already expose.
 
 ## 1.x compatibility rule
 
@@ -81,7 +81,7 @@ A future additive automation surface may be added to the catalog without changin
 
 `workflow explain` is intentionally dual-versioned. Pre-v9 workflow definitions retain their historical payload fields and now add `sdai.workflow-definition/v1`; Workflow Engine 2 definitions continue to emit the existing `sdai.workflow-resolution/v2` contract. This is a compatibility boundary, not a forced migration of old workflow definitions.
 
-The artifact schema/state, technology, skill-resolution, specification, and other older serializers that historically exposed a generic `version: 1` keep that field. The explicit `apiVersion` is additive and gives automation a namespaced contract identity without reinterpreting the legacy marker.
+Where an older top-level serializer already exposed a generic `version: 1`, that field remains unchanged beside the new explicit `apiVersion`. Single-object surfaces such as `artifact explain` and `schema show` did not historically carry that generic marker, so SDAI adds only the namespaced `apiVersion` instead of inventing a second legacy field.
 
 ## Tooling example
 
