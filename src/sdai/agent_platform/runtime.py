@@ -566,7 +566,7 @@ class AgentRuntime:
                 break
             if not allowed:
                 results.append(
-                    (profile.name, profile.provider, False, f"policy: {last_policy_error})")
+                    (profile.name, profile.provider, False, f"policy: {last_policy_error}")
                 )
                 continue
             try:
