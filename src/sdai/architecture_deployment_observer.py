@@ -205,6 +205,40 @@ def _provenance(path: str, line: int, detail: str) -> tuple[TraceProvenance, ...
     return (TraceProvenance(path, max(1, line), detail=detail),)
 
 
+def _merge_provenance(values: Iterable[TraceProvenance]) -> tuple[TraceProvenance, ...]:
+    """Merge equivalent source locations without weakening the core conflict invariant.
+
+    Deployment manifests frequently describe multiple resources on the same YAML line
+    (for example compact Compose mappings). Synthetic co-location/isolation facts may
+    therefore receive multiple descriptive details for one concrete source location.
+    The location is the evidence identity; select one deterministic representative
+    before constructing the canonical architecture fact.
+    """
+    by_location: dict[tuple[str, int], TraceProvenance] = {}
+    for value in values:
+        previous = by_location.get(value.location)
+        if previous is None or (
+            value.declaration_sha256 or "",
+            value.detail or "",
+        ) < (
+            previous.declaration_sha256 or "",
+            previous.detail or "",
+        ):
+            by_location[value.location] = value
+    return tuple(
+        sorted(
+            by_location.values(),
+            key=lambda value: (
+                value.source.casefold(),
+                value.source,
+                value.line,
+                value.declaration_sha256 or "",
+                value.detail or "",
+            ),
+        )
+    )
+
+
 def _component(
     repository: ArchitectureRepositoryIndex,
     source_path: str,
@@ -843,12 +877,11 @@ def _constraints(approved: ApprovedArchitecture, observed: tuple[ObservedArchite
             if role == "co-location"
             else tuple(p for placement in (*left, *right) for p in placement.provenance)
         )
-        unique = {(p.source, p.line, p.detail or ""): p for p in proof}
         result.append(_fact(
             approved_fact.source,
             approved_fact.target,
             approved_fact.attributes,
-            tuple(sorted(unique.values(), key=lambda p: (p.source, p.line, p.detail or ""))),
+            _merge_provenance(proof),
         ))
     return tuple(result)
 
