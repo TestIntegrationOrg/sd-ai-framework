@@ -118,6 +118,29 @@ def test_context_explain_json_is_deterministic_private_and_provider_free(
     assert all("reasons" in item and item["sha256"].startswith("sha256:") for item in selected)
 
 
+def test_context_explain_defaults_to_coding_capability(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    init_project(tmp_path)
+    _current(tmp_path)
+
+    assert sdai_main(
+        [
+            "context",
+            "explain",
+            FEATURE,
+            "--json",
+            "--path",
+            str(tmp_path),
+        ]
+    ) == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["capability"] == "coding"
+    assert body["contextPlan"]["capability"] == "coding"
+    assert SECRET not in json.dumps(body, sort_keys=True)
+
+
 def test_context_explain_human_output_is_bounded_metadata_only(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
