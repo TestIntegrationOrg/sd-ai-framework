@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from sdai.technology import CATEGORIES, TechnologyReport, detect_technologies
+
+
+TECHNOLOGY_REPORT_API_VERSION = "sdai.technology-report/v1"
 
 
 def add_tech_parser(commands: argparse._SubParsersAction) -> None:
@@ -52,7 +56,8 @@ def run_tech_command(root: Path, args: argparse.Namespace) -> int:
         raise ValueError(f"Unknown tech action: {args.tech_action}")
     report = detect_technologies(root)
     if args.json:
-        print(report.to_json())
+        payload = {"apiVersion": TECHNOLOGY_REPORT_API_VERSION, **report.as_dict()}
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
     else:
         _print_report(report)
     return 0
