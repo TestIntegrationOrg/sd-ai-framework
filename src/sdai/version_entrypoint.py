@@ -17,6 +17,10 @@ from sdai.multi_repo_verify_cli import main as multi_repo_verify_main
 from sdai.trace_policy_cli import main as trace_policy_main
 from sdai.verify_cli import main as verify_main
 from sdai.versioning import write_framework_metadata
+from sdai.workflow_audit_cli import (
+    run_lifecycle_with_workflow_audit,
+    run_multi_repo_with_workflow_audit,
+)
 
 
 def _project_root(argv: list[str]) -> Path:
@@ -73,11 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(effective) >= 2 and effective[0] == "architecture" and effective[1] == "drift":
         return architecture_main(effective[2:])
 
-    # The legacy single-repository `sdai run FEATURE` surface remains unchanged.
-    # Multi-repository execution is selected explicitly and always constructs a
-    # hash-bound plan before invoking the local repository execution path.
+    # Multi-repository execution keeps its existing deterministic plan/authority
+    # surface; only the local Orchestrator binding is replaced while it runs so the
+    # same feature-scoped workflow audit is produced in each repository.
     if effective and effective[0] == "run" and _is_multi_repo_run(effective[1:]):
-        return multi_repo_run_main(effective[1:])
+        return run_multi_repo_with_workflow_audit(multi_repo_run_main, effective[1:])
 
     if effective and effective[0] == "trace":
         return _run_trace(effective[1:])
@@ -93,7 +97,10 @@ def main(argv: list[str] | None = None) -> int:
     if effective and effective[0] == "contract":
         return contract_main(effective[1:])
 
-    result = lifecycle_main(effective)
+    # Preserve the legacy parser/output exactly. The temporary module hook changes
+    # only its Orchestrator class during this call, so `run` and `step run` gain
+    # workflow/policy provenance without a parallel CLI implementation.
+    result = run_lifecycle_with_workflow_audit(lifecycle_main, effective)
     if result == 0 and effective and effective[0] in {"init", "upgrade"}:
         root = _project_root(effective)
         metadata = write_framework_metadata(root)

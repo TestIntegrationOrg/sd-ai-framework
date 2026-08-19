@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Iterable, Mapping
 
 from sdai.audit_contracts import (
@@ -30,6 +31,18 @@ from sdai.audit_provenance import (
 
 _LOCK_ANCHOR = b"SDAI-AUDIT-LOCK-v1\n"
 _BINARY_FLAG = getattr(os, "O_BINARY", 0)
+_THREAD_LOCKS_GUARD = threading.Lock()
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _thread_lock_for(path: Path) -> threading.Lock:
+    key = str(path.resolve(strict=False))
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THREAD_LOCKS[key] = lock
+        return lock
 
 
 def _write_all(fd: int, content: bytes) -> None:
@@ -64,27 +77,44 @@ class _AuditLock:
         self.path = path
         self.fd: int | None = None
         self._windows = os.name == "nt"
+        self._thread_lock: threading.Lock | None = None
+
+    def _release_thread_lock(self) -> None:
+        if self._thread_lock is None:
+            return
+        self._thread_lock.release()
+        self._thread_lock = None
 
     def __enter__(self) -> "_AuditLock":
-        if self.path.is_symlink():
-            raise _fail("SDAI-AUDIT-004", "audit ledger lock must not be a symlink")
-        flags = os.O_CREAT | os.O_RDWR | _BINARY_FLAG
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
+        # Windows byte-range locking can report EDEADLK when sibling threads in the
+        # same process contend on separate descriptors for the same file. Serialize
+        # those writers locally first; the OS lock still provides cross-process
+        # exclusion and therefore remains part of the durability/integrity boundary.
+        self._thread_lock = _thread_lock_for(self.path)
+        self._thread_lock.acquire()
         try:
-            fd = os.open(self.path, flags, 0o600)
-        except OSError as exc:
-            raise _fail("SDAI-AUDIT-006", "unable to open audit ledger lock") from exc
-        try:
-            if os.fstat(fd).st_size == 0:
-                os.lseek(fd, 0, os.SEEK_SET)
-                _write_all(fd, _LOCK_ANCHOR)
-                os.fsync(fd)
-            self._acquire(fd)
-            self.fd = fd
-            return self
+            if self.path.is_symlink():
+                raise _fail("SDAI-AUDIT-004", "audit ledger lock must not be a symlink")
+            flags = os.O_CREAT | os.O_RDWR | _BINARY_FLAG
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                fd = os.open(self.path, flags, 0o600)
+            except OSError as exc:
+                raise _fail("SDAI-AUDIT-006", "unable to open audit ledger lock") from exc
+            try:
+                if os.fstat(fd).st_size == 0:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    _write_all(fd, _LOCK_ANCHOR)
+                    os.fsync(fd)
+                self._acquire(fd)
+                self.fd = fd
+                return self
+            except Exception:
+                os.close(fd)
+                raise
         except Exception:
-            os.close(fd)
+            self._release_thread_lock()
             raise
 
     def _acquire(self, fd: int) -> None:
@@ -93,13 +123,15 @@ class _AuditLock:
                 import msvcrt
 
                 os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                # Sibling threads have already been serialized above. LK_LOCK now
+                # handles only cross-process contention on the canonical lock byte.
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             else:
                 import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX)
         except (BlockingIOError, OSError) as exc:
-            raise _fail("SDAI-AUDIT-006", "audit ledger is locked by another process") from exc
+            raise _fail("SDAI-AUDIT-006", "unable to acquire audit ledger lock") from exc
 
     def _release(self, fd: int) -> None:
         try:
@@ -116,11 +148,13 @@ class _AuditLock:
             pass
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.fd is None:
-            return
-        self._release(self.fd)
-        os.close(self.fd)
-        self.fd = None
+        try:
+            if self.fd is not None:
+                self._release(self.fd)
+                os.close(self.fd)
+                self.fd = None
+        finally:
+            self._release_thread_lock()
 
 
 class AuditLedger:
