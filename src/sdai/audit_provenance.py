@@ -203,13 +203,19 @@ class AuditEvent:
             raise _fail("SDAI-AUDIT-002", "audit actor/action must be validated objects")
         if not isinstance(self.execution, AuditExecution):
             raise _fail("SDAI-AUDIT-002", "audit execution must be a validated object")
-        if not all(isinstance(item, AuditBinding) for item in self.bindings):
+        try:
+            raw_bindings = tuple(self.bindings)
+        except TypeError as exc:
+            raise _fail("SDAI-AUDIT-002", "audit bindings must be an iterable of validated objects") from exc
+        if not all(isinstance(item, AuditBinding) for item in raw_bindings):
             raise _fail("SDAI-AUDIT-002", "audit bindings must be validated objects")
-        ordered = tuple(sorted(self.bindings, key=lambda item: (item.kind, item.source, item.sha256)))
+        ordered = tuple(sorted(raw_bindings, key=lambda item: (item.kind, item.source, item.sha256)))
         identities = [(item.kind, item.source) for item in ordered]
         if len(identities) != len(set(identities)):
             raise _fail("SDAI-AUDIT-002", "duplicate audit binding kind/source")
         object.__setattr__(self, "bindings", ordered)
+        if not isinstance(self.metadata, Mapping):
+            raise _fail("SDAI-AUDIT-002", "audit metadata must be a mapping")
         object.__setattr__(self, "metadata", _freeze_json(self.metadata, label="audit metadata"))
         if not isinstance(self.previous_sha256, str) or _SHA256.fullmatch(self.previous_sha256) is None:
             raise _fail("SDAI-AUDIT-002", "previousSha256 is invalid")
@@ -261,10 +267,15 @@ class AuditEvent:
             raise _fail("SDAI-AUDIT-002", "audit execution must be a validated object or null")
         feature = validate_feature_id(feature_id)
         normalized_time = _timestamp(occurred_at)
-        raw_bindings = tuple(bindings)
+        try:
+            raw_bindings = tuple(bindings)
+        except TypeError as exc:
+            raise _fail("SDAI-AUDIT-002", "audit bindings must be an iterable of validated objects") from exc
         if not all(isinstance(item, AuditBinding) for item in raw_bindings):
             raise _fail("SDAI-AUDIT-002", "audit bindings must be validated objects")
         ordered_bindings = tuple(sorted(raw_bindings, key=lambda item: (item.kind, item.source, item.sha256)))
+        if metadata is not None and not isinstance(metadata, Mapping):
+            raise _fail("SDAI-AUDIT-002", "audit metadata must be a mapping or null")
         frozen_metadata = _freeze_json(metadata or {}, label="audit metadata")
         body = {
             "apiVersion": AUDIT_EVENT_API_VERSION,
