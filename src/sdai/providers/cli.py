@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sdai.providers.base import Provider
+from sdai.providers.base import Provider, ProviderCapabilities
+from sdai.providers.control import (
+    ProviderCancellationToken,
+    ProviderCancelledError,
+    ProviderProgressCallback,
+    ProviderProgressEvent,
+)
 
 
 class ProviderExecutionError(RuntimeError):
@@ -83,6 +91,34 @@ def build_provider_environment(
     return {name: value for name in names if (value := os.environ.get(name)) is not None}
 
 
+def _terminate_process(process: subprocess.Popen[bytes], *, grace_seconds: float = 1.0) -> None:
+    """Terminate one provider process boundary without shell interpolation."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=grace_seconds)
+        return
+    except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+        pass
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 @dataclass
 class CliProvider(Provider):
     """Safe subprocess adapter for an external agent CLI.
@@ -98,6 +134,8 @@ class CliProvider(Provider):
     timeout_seconds: int = 600
     provider_name: str = "command"
     environment: dict[str, str] | None = None
+    heartbeat_interval_seconds: float = 5.0
+    poll_interval_seconds: float = 0.25
     _last_command: list[str] = field(default_factory=list, init=False, repr=False)
 
     def _combined_prompt(self, system: str, prompt: str) -> str:
@@ -108,9 +146,35 @@ class CliProvider(Provider):
         command = [value.replace("{prompt}", payload) for value in self.command]
         return command, None if has_placeholder else payload
 
+    def diagnostic_capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=False,
+            heartbeat=True,
+            cancellation=True,
+            first_output_timing=True,
+        )
+
     def complete(self, *, system: str, prompt: str) -> str:
+        return self.complete_observable(
+            system=system,
+            prompt=prompt,
+            cancellation=ProviderCancellationToken(),
+            progress=lambda event: None,
+        )
+
+    def complete_observable(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        cancellation: ProviderCancellationToken,
+        progress: ProviderProgressCallback,
+    ) -> str:
         if not self.command:
             raise ProviderExecutionError("Provider command is empty")
+        if self.poll_interval_seconds <= 0 or self.heartbeat_interval_seconds <= 0:
+            raise ProviderExecutionError("Provider poll/heartbeat intervals must be positive")
+        cancellation.raise_if_cancelled()
         payload = self._combined_prompt(system, prompt)
         command, stdin_payload = self._build_command(payload)
         self._last_command = command
@@ -122,28 +186,81 @@ class CliProvider(Provider):
             if stdin_payload is not None
             else None
         )
-        result = subprocess.run(
+        popen_kwargs: dict[str, object] = {}
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(
             command,
             cwd=self.cwd,
-            input=stdin_bytes,
+            stdin=subprocess.PIPE if stdin_bytes is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=self.timeout_seconds,
-            check=False,
             env=environment,
+            **popen_kwargs,
         )
+        started = time.monotonic()
+        next_heartbeat = started + self.heartbeat_interval_seconds
+        first_output_reported = False
+        first_communicate = True
+        stdout_bytes = b""
+        stderr_bytes = b""
+        try:
+            while True:
+                if cancellation.cancelled:
+                    _terminate_process(process)
+                    try:
+                        process.communicate(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise ProviderCancelledError()
+                elapsed = time.monotonic() - started
+                if elapsed >= self.timeout_seconds:
+                    _terminate_process(process)
+                    try:
+                        process.communicate(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise subprocess.TimeoutExpired(command, self.timeout_seconds)
+                remaining = max(0.001, self.timeout_seconds - elapsed)
+                wait_for = min(self.poll_interval_seconds, remaining)
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(
+                        input=stdin_bytes if first_communicate else None,
+                        timeout=wait_for,
+                    )
+                    if stdout_bytes and not first_output_reported:
+                        progress(ProviderProgressEvent("first-output", "stdout-observed"))
+                        first_output_reported = True
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    first_communicate = False
+                    partial = exc.output or b""
+                    if partial and not first_output_reported:
+                        progress(ProviderProgressEvent("first-output", "stdout-observed"))
+                        first_output_reported = True
+                    now = time.monotonic()
+                    if now >= next_heartbeat:
+                        progress(ProviderProgressEvent("heartbeat", "subprocess-running"))
+                        while next_heartbeat <= now:
+                            next_heartbeat += self.heartbeat_interval_seconds
+        except BaseException:
+            if process.poll() is None:
+                _terminate_process(process)
+            raise
+
         stdout = _decode_provider_output(
-            result.stdout or b"", provider=self.provider_name, stream="stdout"
+            stdout_bytes or b"", provider=self.provider_name, stream="stdout"
         )
         stderr = _decode_provider_output(
-            result.stderr or b"", provider=self.provider_name, stream="stderr"
+            stderr_bytes or b"", provider=self.provider_name, stream="stderr"
         )
-        if result.returncode != 0:
+        if process.returncode != 0:
             raise ProviderExecutionError(
-                f"{self.provider_name} failed with exit code {result.returncode}: "
+                f"{self.provider_name} failed with exit code {process.returncode}: "
                 f"{stderr.strip()}"
             )
-        # Remove only a leading UTF-8 BOM before the existing whitespace normalization.
         output = stdout.removeprefix("\ufeff").strip()
         if not output:
             raise ProviderExecutionError(f"{self.provider_name} returned no output")
