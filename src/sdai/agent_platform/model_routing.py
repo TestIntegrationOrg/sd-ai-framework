@@ -9,6 +9,7 @@ from typing import Mapping
 
 from sdai.agent_platform.models import AgentProfile, Capability, ExecutionMode
 from sdai.agent_platform.profiles import load_profiles, load_routes
+from sdai.agent_platform.provider_health import ProviderHealthSignal
 from sdai.policy import PolicyError, load_effective_configuration
 
 
@@ -22,7 +23,10 @@ class ModelRoutingError(RuntimeError):
 _RISKS = frozenset({"trivial", "standard", "critical", "regulated"})
 _COMPLEXITIES = frozenset({"low", "medium", "high", "extreme"})
 _COST_RANK = {"economy": 0, "standard": 1, "premium": 2}
+_HEALTH_RANK = {"healthy": 0, "unknown": 1, "degraded": 2, "unavailable": 3}
+_OPTIMIZATIONS = frozenset({"balanced", "cost", "latency"})
 _FINAL_REVIEW_STAGES = frozenset({"final-review", "final-change-review"})
+_MISSING_LATENCY = 2**63 - 1
 
 
 def _fail(code: str, message: str) -> ModelRoutingError:
@@ -50,6 +54,17 @@ def _text(value: str | None, *, label: str) -> str | None:
     return value.strip()
 
 
+def _fallback_profiles(values: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    for raw in values:
+        value = _text(raw, label="fallback_profiles")
+        assert value is not None
+        if value in result:
+            raise _fail("SDAI-ROUTING-001", "fallback_profiles must not contain duplicates")
+        result.append(value)
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class RoutingRequest:
     semantic_role: str
@@ -64,6 +79,9 @@ class RoutingRequest:
     requested_model: str | None = None
     provider_availability: Mapping[str, bool] | None = None
     stage: str | None = None
+    optimization: str = "balanced"
+    fallback_profiles: tuple[str, ...] = ()
+    provider_health: Mapping[str, ProviderHealthSignal] | None = None
 
     def __post_init__(self) -> None:
         semantic_role = _text(self.semantic_role, label="semantic_role")
@@ -77,15 +95,19 @@ class RoutingRequest:
         risk = str(self.risk).strip().lower()
         complexity = str(self.complexity).strip().lower()
         cost = str(self.max_cost_class).strip().lower()
+        optimization = str(self.optimization).strip().lower()
         if risk not in _RISKS:
             raise _fail("SDAI-ROUTING-001", f"unsupported risk: {self.risk!r}")
         if complexity not in _COMPLEXITIES:
             raise _fail("SDAI-ROUTING-001", f"unsupported complexity: {self.complexity!r}")
         if cost not in _COST_RANK:
             raise _fail("SDAI-ROUTING-001", f"unsupported max_cost_class: {self.max_cost_class!r}")
+        if optimization not in _OPTIMIZATIONS:
+            raise _fail("SDAI-ROUTING-001", f"unsupported optimization: {self.optimization!r}")
         object.__setattr__(self, "risk", risk)
         object.__setattr__(self, "complexity", complexity)
         object.__setattr__(self, "max_cost_class", cost)
+        object.__setattr__(self, "optimization", optimization)
         if not isinstance(self.context_chars, int) or isinstance(self.context_chars, bool) or self.context_chars < 0:
             raise _fail("SDAI-ROUTING-001", "context_chars must be a non-negative integer")
         technologies: list[str] = []
@@ -107,13 +129,26 @@ class RoutingRequest:
                 raise _fail("SDAI-ROUTING-001", "provider_availability must map non-empty names to booleans")
             normalized[key.strip()] = value
         object.__setattr__(self, "provider_availability", MappingProxyType(dict(sorted(normalized.items()))))
+        object.__setattr__(self, "fallback_profiles", _fallback_profiles(self.fallback_profiles))
+        raw_health = self.provider_health or {}
+        if not isinstance(raw_health, Mapping):
+            raise _fail("SDAI-ROUTING-001", "provider_health must be a mapping")
+        health: dict[str, ProviderHealthSignal] = {}
+        for key, value in raw_health.items():
+            if not isinstance(key, str) or not key.strip() or not isinstance(value, ProviderHealthSignal):
+                raise _fail(
+                    "SDAI-ROUTING-001",
+                    "provider_health must map non-empty names to ProviderHealthSignal values",
+                )
+            health[key.strip()] = value
+        object.__setattr__(self, "provider_health", MappingProxyType(dict(sorted(health.items()))))
 
     @property
     def has_explicit_request(self) -> bool:
         return any((self.requested_profile, self.requested_provider, self.requested_model))
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "semantic_role": self.semantic_role,
             "capability": self.capability.value,
             "risk": self.risk,
@@ -127,6 +162,17 @@ class RoutingRequest:
             "provider_availability": dict(self.provider_availability or {}),
             "stage": self.stage,
         }
+        # Preserve the historical v1 document byte shape for the default routing
+        # contract. Optimization extensions appear only when explicitly supplied.
+        if self.optimization != "balanced":
+            result["optimization"] = self.optimization
+        if self.fallback_profiles:
+            result["fallback_profiles"] = list(self.fallback_profiles)
+        if self.provider_health:
+            result["provider_health"] = {
+                key: value.as_dict() for key, value in self.provider_health.items()
+            }
+        return result
 
 
 @dataclass(frozen=True)
@@ -137,9 +183,11 @@ class RoutingCandidate:
     eligible: bool
     reasons: tuple[str, ...]
     rank: tuple[object, ...] | None = None
+    health_state: str | None = None
+    observed_latency_ns: int | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "profile": self.profile,
             "provider": self.provider,
             "model": self.model,
@@ -147,6 +195,10 @@ class RoutingCandidate:
             "reasons": list(self.reasons),
             "rank": list(self.rank) if self.rank is not None else None,
         }
+        if self.health_state is not None:
+            result["health_state"] = self.health_state
+            result["observed_latency_ns"] = self.observed_latency_ns
+        return result
 
 
 @dataclass(frozen=True)
@@ -193,12 +245,79 @@ def _availability(request: RoutingRequest, profile: AgentProfile) -> bool | None
     return None
 
 
+def _health(request: RoutingRequest, profile: AgentProfile) -> ProviderHealthSignal | None:
+    health = request.provider_health or {}
+    if profile.name in health:
+        return health[profile.name]
+    if profile.model is not None and profile.model in health:
+        return health[profile.model]
+    if profile.provider in health:
+        return health[profile.provider]
+    return None
+
+
 def _requires_advanced(request: RoutingRequest) -> bool:
     return (
         request.risk in {"critical", "regulated"}
         or request.complexity in {"high", "extreme"}
         or request.capability is Capability.SECURITY
         or (request.stage or "").casefold() in _FINAL_REVIEW_STAGES
+    )
+
+
+def _fallback_rank(request: RoutingRequest, profile: AgentProfile) -> int:
+    if not request.fallback_profiles:
+        return 0
+    try:
+        return request.fallback_profiles.index(profile.name)
+    except ValueError:
+        return len(request.fallback_profiles) + 1
+
+
+def _extended_rank(
+    profile: AgentProfile,
+    request: RoutingRequest,
+    *,
+    default_profile: str | None,
+    health: ProviderHealthSignal | None,
+) -> tuple[object, ...]:
+    fallback = _fallback_rank(request, profile)
+    health_rank = _HEALTH_RANK[health.state] if health is not None else _HEALTH_RANK["unknown"]
+    latency = (
+        health.p50_total_ns
+        if health is not None and health.p50_total_ns is not None
+        else _MISSING_LATENCY
+    )
+    default_rank = 0 if profile.name == default_profile else 1
+    stable_tail = (profile.provider, profile.model or "", profile.name)
+    if request.optimization == "cost":
+        return (
+            fallback,
+            health_rank,
+            _COST_RANK[profile.cost_class],
+            profile.routing_priority,
+            latency,
+            default_rank,
+            *stable_tail,
+        )
+    if request.optimization == "latency":
+        return (
+            fallback,
+            health_rank,
+            latency,
+            _COST_RANK[profile.cost_class],
+            profile.routing_priority,
+            default_rank,
+            *stable_tail,
+        )
+    return (
+        fallback,
+        health_rank,
+        profile.routing_priority,
+        _COST_RANK[profile.cost_class],
+        latency,
+        default_rank,
+        *stable_tail,
     )
 
 
@@ -244,7 +363,11 @@ def _candidate(
         allowed.append(f"cost-class-allowed:{profile.cost_class}")
     if request.affected_technologies:
         supported = set(profile.technologies)
-        missing = [item for item in request.affected_technologies if "*" not in supported and item not in supported]
+        missing = [
+            item
+            for item in request.affected_technologies
+            if "*" not in supported and item not in supported
+        ]
         if missing:
             rejected.append("technology-not-supported:" + ",".join(missing))
         else:
@@ -262,18 +385,37 @@ def _candidate(
         allowed.append("provider-available")
     else:
         allowed.append("provider-availability-unreported")
+    health = _health(request, profile)
+    if health is not None:
+        if health.state == "unavailable":
+            rejected.append("provider-health-unavailable")
+        else:
+            allowed.append(f"provider-health:{health.state}")
     eligible = not rejected
     reasons = tuple(rejected if rejected else allowed)
     rank: tuple[object, ...] | None = None
     if eligible:
-        rank = (
-            profile.routing_priority,
-            _COST_RANK[profile.cost_class],
-            0 if profile.name == default_profile else 1,
-            profile.provider,
-            profile.model or "",
-            profile.name,
+        legacy_rank = (
+            not request.fallback_profiles
+            and not request.provider_health
+            and request.optimization == "balanced"
         )
+        if legacy_rank:
+            rank = (
+                profile.routing_priority,
+                _COST_RANK[profile.cost_class],
+                0 if profile.name == default_profile else 1,
+                profile.provider,
+                profile.model or "",
+                profile.name,
+            )
+        else:
+            rank = _extended_rank(
+                profile,
+                request,
+                default_profile=default_profile,
+                health=health,
+            )
     return RoutingCandidate(
         profile=profile.name,
         provider=profile.provider,
@@ -281,6 +423,8 @@ def _candidate(
         eligible=eligible,
         reasons=reasons,
         rank=rank,
+        health_state=health.state if health is not None else None,
+        observed_latency_ns=health.p50_total_ns if health is not None else None,
     )
 
 
@@ -330,7 +474,14 @@ def route_model(
             reason = "explicit-request-not-eligible-no-fallback"
     elif eligible:
         selected = sorted(eligible, key=lambda item: item.rank or ())[0]
-        reason = "deterministic-eligible-rank"
+        if (
+            request.optimization == "balanced"
+            and not request.fallback_profiles
+            and not request.provider_health
+        ):
+            reason = "deterministic-eligible-rank"
+        else:
+            reason = f"optimized-eligible-rank:{request.optimization}"
     else:
         reason = "no-eligible-profile"
     return RoutingDecision(
