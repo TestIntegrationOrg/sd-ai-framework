@@ -3,10 +3,18 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sdai.providers.base import Provider
+from sdai.providers.base import (
+    CancellationToken,
+    Provider,
+    ProviderCancelledError,
+    ProviderCapabilities,
+    ProviderProgress,
+    ProviderProgressObserver,
+)
 
 
 class ProviderExecutionError(RuntimeError):
@@ -83,6 +91,20 @@ def build_provider_environment(
     return {name: value for name in names if (value := os.environ.get(name)) is not None}
 
 
+def _terminate_process(
+    process: subprocess.Popen[bytes],
+    *,
+    grace_seconds: float,
+) -> tuple[bytes, bytes]:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            return process.communicate(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    return process.communicate()
+
+
 @dataclass
 class CliProvider(Provider):
     """Safe subprocess adapter for an external agent CLI.
@@ -98,6 +120,8 @@ class CliProvider(Provider):
     timeout_seconds: int = 600
     provider_name: str = "command"
     environment: dict[str, str] | None = None
+    heartbeat_seconds: float = 1.0
+    termination_grace_seconds: float = 2.0
     _last_command: list[str] = field(default_factory=list, init=False, repr=False)
 
     def _combined_prompt(self, system: str, prompt: str) -> str:
@@ -108,15 +132,34 @@ class CliProvider(Provider):
         command = [value.replace("{prompt}", payload) for value in self.command]
         return command, None if has_placeholder else payload
 
+    def _environment(self) -> dict[str, str]:
+        if self.environment is not None:
+            return self.environment
+        return build_provider_environment(self.provider_name)
+
+    def _result(self, *, stdout_bytes: bytes, stderr_bytes: bytes, returncode: int) -> str:
+        stdout = _decode_provider_output(
+            stdout_bytes, provider=self.provider_name, stream="stdout"
+        )
+        stderr = _decode_provider_output(
+            stderr_bytes, provider=self.provider_name, stream="stderr"
+        )
+        if returncode != 0:
+            raise ProviderExecutionError(
+                f"{self.provider_name} failed with exit code {returncode}: "
+                f"{stderr.strip()}"
+            )
+        output = stdout.removeprefix("\ufeff").strip()
+        if not output:
+            raise ProviderExecutionError(f"{self.provider_name} returned no output")
+        return output
+
     def complete(self, *, system: str, prompt: str) -> str:
         if not self.command:
             raise ProviderExecutionError("Provider command is empty")
         payload = self._combined_prompt(system, prompt)
         command, stdin_payload = self._build_command(payload)
         self._last_command = command
-        environment = self.environment
-        if environment is None:
-            environment = build_provider_environment(self.provider_name)
         stdin_bytes = (
             stdin_payload.encode("utf-8", errors="strict")
             if stdin_payload is not None
@@ -130,24 +173,113 @@ class CliProvider(Provider):
             stderr=subprocess.PIPE,
             timeout=self.timeout_seconds,
             check=False,
-            env=environment,
+            env=self._environment(),
         )
-        stdout = _decode_provider_output(
-            result.stdout or b"", provider=self.provider_name, stream="stdout"
+        return self._result(
+            stdout_bytes=result.stdout or b"",
+            stderr_bytes=result.stderr or b"",
+            returncode=result.returncode,
         )
-        stderr = _decode_provider_output(
-            result.stderr or b"", provider=self.provider_name, stream="stderr"
+
+    def diagnostic_capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=False,
+            heartbeat=True,
+            cancellation=True,
+            first_output_timing=False,
         )
-        if result.returncode != 0:
-            raise ProviderExecutionError(
-                f"{self.provider_name} failed with exit code {result.returncode}: "
-                f"{stderr.strip()}"
-            )
-        # Remove only a leading UTF-8 BOM before the existing whitespace normalization.
-        output = stdout.removeprefix("\ufeff").strip()
-        if not output:
-            raise ProviderExecutionError(f"{self.provider_name} returned no output")
-        return output
+
+    def complete_observed(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        cancellation: CancellationToken | None = None,
+        observer: ProviderProgressObserver | None = None,
+    ) -> str:
+        if not self.command:
+            raise ProviderExecutionError("Provider command is empty")
+        if self.heartbeat_seconds <= 0:
+            raise ValueError("heartbeat_seconds must be greater than zero")
+        if self.termination_grace_seconds <= 0:
+            raise ValueError("termination_grace_seconds must be greater than zero")
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+
+        payload = self._combined_prompt(system, prompt)
+        command, stdin_payload = self._build_command(payload)
+        self._last_command = command
+        stdin_bytes = (
+            stdin_payload.encode("utf-8", errors="strict")
+            if stdin_payload is not None
+            else None
+        )
+        process = subprocess.Popen(
+            command,
+            cwd=self.cwd,
+            stdin=subprocess.PIPE if stdin_bytes is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._environment(),
+        )
+        started = time.monotonic()
+        first_communicate = True
+        try:
+            while True:
+                if cancellation is not None and cancellation.cancelled:
+                    _terminate_process(
+                        process,
+                        grace_seconds=self.termination_grace_seconds,
+                    )
+                    raise ProviderCancelledError("provider execution cancelled")
+
+                elapsed = time.monotonic() - started
+                remaining = float(self.timeout_seconds) - elapsed
+                if remaining <= 0:
+                    _terminate_process(
+                        process,
+                        grace_seconds=self.termination_grace_seconds,
+                    )
+                    raise subprocess.TimeoutExpired(command, self.timeout_seconds)
+                wait = min(self.heartbeat_seconds, remaining)
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(
+                        input=stdin_bytes if first_communicate else None,
+                        timeout=wait,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first_communicate = False
+                    if cancellation is not None and cancellation.cancelled:
+                        _terminate_process(
+                            process,
+                            grace_seconds=self.termination_grace_seconds,
+                        )
+                        raise ProviderCancelledError("provider execution cancelled")
+                    if observer is not None:
+                        try:
+                            observer(ProviderProgress("heartbeat"))
+                        except BaseException:
+                            _terminate_process(
+                                process,
+                                grace_seconds=self.termination_grace_seconds,
+                            )
+                            raise
+        except BaseException:
+            if process.poll() is None:
+                _terminate_process(
+                    process,
+                    grace_seconds=self.termination_grace_seconds,
+                )
+            raise
+
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        return self._result(
+            stdout_bytes=stdout_bytes or b"",
+            stderr_bytes=stderr_bytes or b"",
+            returncode=process.returncode,
+        )
 
     def availability(self) -> tuple[bool, str]:
         executable = self.command[0] if self.command else ""
