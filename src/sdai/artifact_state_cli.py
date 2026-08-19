@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from sdai.artifact_state import ArtifactFreshness, evaluate_artifact_states
+
+
+ARTIFACT_STATE_REPORT_API_VERSION = "sdai.artifact-state-report/v1"
+ARTIFACT_STATE_EXPLAIN_API_VERSION = "sdai.artifact-state/v1"
 
 
 def add_artifact_state_parser(commands: argparse._SubParsersAction) -> None:
@@ -33,6 +38,11 @@ def add_artifact_state_parser(commands: argparse._SubParsersAction) -> None:
     explain.add_argument("--domain")
     explain.add_argument("--json", action="store_true")
     explain.add_argument("--path")
+
+
+def _versioned_json(value: dict[str, object], api_version: str) -> str:
+    payload = {"apiVersion": api_version, **value}
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
 
 
 def _print_state(item) -> None:
@@ -65,7 +75,7 @@ def run_artifact_state_command(root: Path, args: argparse.Namespace) -> int:
     )
     if args.artifact_action == "status":
         if args.json:
-            print(report.to_json())
+            print(_versioned_json(report.as_dict(), ARTIFACT_STATE_REPORT_API_VERSION))
         else:
             counts = report.as_dict()["counts"]
             print(
@@ -84,9 +94,7 @@ def run_artifact_state_command(root: Path, args: argparse.Namespace) -> int:
                 f"artifact '{args.artifact_id}' is not active for risk profile '{report.risk}'"
             )
         if args.json:
-            import json
-
-            print(json.dumps(item.as_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+            print(_versioned_json(item.as_dict(), ARTIFACT_STATE_EXPLAIN_API_VERSION))
         else:
             _print_state(item)
         return 0
