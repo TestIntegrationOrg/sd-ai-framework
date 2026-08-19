@@ -20,7 +20,7 @@ from sdai.workflow_cli import (
 
 class _State:
     def as_dict(self) -> dict[str, object]:
-        return {"artifact_id": "requirements", "version": 1}
+        return {"artifact_id": "requirements"}
 
 
 class _ArtifactReport:
@@ -100,7 +100,10 @@ def test_artifact_json_is_machine_clean_and_versioned(
     assert artifact_state_cli.run_artifact_state_command(Path("."), args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["apiVersion"] == expected
-    assert payload["version"] == 1
+    if action == "status":
+        assert payload["version"] == 1
+    else:
+        assert "version" not in payload
 
 
 @pytest.mark.parametrize(
