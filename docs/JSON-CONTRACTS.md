@@ -2,7 +2,7 @@
 
 SDAI 1.0 treats its core machine-facing read, analysis, status, resume, and lifecycle JSON outputs as compatibility contracts. The authoritative machine-inspectable inventory is exposed by `sdai.json_contracts.stable_json_contract_catalog()` and canonical JSON by `stable_json_contract_catalog_json()`.
 
-The catalog API is `sdai.json-contracts/v1` and its stability marker is `stable-1.0`. The 1.0 floor currently contains 54 explicit automation contracts. It preserves established subsystem identities instead of renumbering them: Workflow Engine 2 remains on its existing `v2` contracts, while older surfaces promoted into the stable boundary receive additive `sdai.*/v1` identities without removing any legacy `version: 1` fields they already expose.
+The catalog API is `sdai.json-contracts/v1` and its stability marker is `stable-1.0`. The 1.0 floor currently contains 57 explicit automation contracts. It preserves established subsystem identities instead of renumbering them: Workflow Engine 2 remains on its existing `v2` contracts, while older surfaces promoted into the stable boundary receive additive `sdai.*/v1` identities without removing any legacy `version: 1` fields they already expose.
 
 ## 1.x compatibility rule
 
@@ -40,6 +40,9 @@ A future additive automation surface may be added to the catalog without changin
 | `integration.lifecycle` | `sdai.integration-lifecycle-result/v1` | install/repair/upgrade/remove JSON results |
 | `integration.search` | `sdai.integration-search/v1` | `sdai integration search --json` |
 | `integration.status` | `sdai.integration-status-command/v1` | `sdai integration status ID --json` |
+| `migration.apply` | `sdai.migration-result/v1` | `sdai migrate apply --json` |
+| `migration.plan` | `sdai.migration-plan/v1` | `sdai migrate plan --json` |
+| `migration.rollback` | `sdai.migration-rollback/v1` | `sdai migrate rollback MIGRATION_ID --json` |
 | `multi-repo.feature-graph` | `sdai.multi-repo-feature-graph/v1` | `sdai feature graph FEATURE --json` |
 | `multi-repo.run-plan` | `sdai.multi-repo-run-plan/v1` | `sdai run FEATURE --all --plan --json` |
 | `multi-repo.verification` | `sdai.multi-repo-verification/v1` | `sdai verify --all-repos --feature FEATURE --json` |
@@ -82,6 +85,8 @@ A future additive automation surface may be added to the catalog without changin
 `workflow explain` is intentionally dual-versioned. Pre-v9 workflow definitions retain their historical payload fields and now add `sdai.workflow-definition/v1`; Workflow Engine 2 definitions continue to emit the existing `sdai.workflow-resolution/v2` contract. This is a compatibility boundary, not a forced migration of old workflow definitions.
 
 Where an older top-level serializer already exposed a generic `version: 1`, that field remains unchanged beside the new explicit `apiVersion`. Single-object surfaces such as `artifact explain` and `schema show` did not historically carry that generic marker, so SDAI adds only the namespaced `apiVersion` instead of inventing a second legacy field.
+
+The migration contracts are additive members of the same 1.x compatibility floor. `migration.plan` is read-only and deterministic; `migration.apply` and `migration.rollback` are lifecycle surfaces. Their integrity manifests are internal migration evidence and are not promoted to a separate public automation contract.
 
 ## Tooling example
 
