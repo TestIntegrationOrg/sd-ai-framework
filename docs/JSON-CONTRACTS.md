@@ -27,7 +27,7 @@ A future additive automation surface may be added to the catalog without changin
 | `audit.report` | `sdai.audit-report/v1` | `sdai audit FEATURE --json` |
 | `context.explain` | `sdai.context-explain/v1` | `sdai context explain FEATURE --json` |
 | `contract.check` | `sdai.contract-result/v1` | `sdai contract check SOURCE --json` |
-| `contract.diff` | `sdai.contract-diff/v1` | `sdai contract diff BEFORE AFTER --json` |
+| `contract.diff` | `sdai.contract-diff/v1` | `sdai contract diff SOURCE --against PATH --json` |
 | `contract.inspect` | `sdai.contract-result/v1` | `sdai contract inspect --json` |
 | `diagnostics.report` | `sdai.diagnostics/v1` | `sdai diagnostics FEATURE --json` |
 | `execution.resume` | `sdai.execution-resume-result/v1` | `sdai execution resume FEATURE --run RUN --json` |
@@ -36,9 +36,9 @@ A future additive automation surface may be added to the catalog without changin
 | `integration.lifecycle` | `sdai.integration-lifecycle-result/v1` | install/repair/upgrade/remove JSON results |
 | `integration.search` | `sdai.integration-search/v1` | `sdai integration search --json` |
 | `integration.status` | `sdai.integration-status-command/v1` | `sdai integration status ID --json` |
-| `multi-repo.feature-graph` | `sdai.multi-repo-feature-graph/v1` | `sdai feature-graph FEATURE --json` |
-| `multi-repo.run-plan` | `sdai.multi-repo-run-plan/v1` | `sdai multi-repo run FEATURE --json` |
-| `multi-repo.verification` | `sdai.multi-repo-verification/v1` | `sdai multi-repo verify FEATURE --json` |
+| `multi-repo.feature-graph` | `sdai.multi-repo-feature-graph/v1` | `sdai feature graph FEATURE --json` |
+| `multi-repo.run-plan` | `sdai.multi-repo-run-plan/v1` | `sdai run FEATURE --all --plan --json` |
+| `multi-repo.verification` | `sdai.multi-repo-verification/v1` | `sdai verify --all-repos --feature FEATURE --json` |
 | `trace.coverage` | `sdai.trace-coverage/v1` | `sdai trace coverage FEATURE --json` |
 | `trace.export` | `sdai.trace-graph/v1` | `sdai trace export FEATURE --format json` |
 | `trace.missing` | `sdai.trace-missing/v1` | `sdai trace missing FEATURE --json` |
