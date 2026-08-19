@@ -30,14 +30,20 @@ If the current profile/agent/configuration no longer resolves, the context secti
 
 Starting with 0.20.8, `execute_routed_invocation` persists the deterministic privacy-safe routing document before provider execution under:
 
-`.sdai/diagnostics/routing/<routing-decision-sha256>.json`
+`.sdai/diagnostics/routing/<routing-document-sha256>.json`
 
-The document is immutable/idempotent by routing decision SHA-256. Persistence conflict/integrity failure occurs before the provider call. The same decision SHA is already bound into agent audit/provider diagnostics, allowing the CLI to explain the selected profile and deterministic selection reason.
+Two related hashes are intentionally distinct:
 
-Historical routed attempts may have only `routingDecisionDocumentSha256` in provider/audit evidence. In that case diagnostics reports:
+- `routingDecisionDocumentSha256` is the SHA-256 of the exact serialized `sdai.model-routing/v1` JSON. This is the identity already recorded by provider diagnostics and is therefore the persistence/join key.
+- `decisionSha256` is the routing decision's own canonical-body SHA-256 stored inside that JSON.
+
+The persisted diagnostic document binds both identities and has its own `documentSha256`. Persistence conflict/integrity failure occurs before the provider call. This lets the CLI explain the exact historical selected profile and deterministic selection reason without recomputing a current route.
+
+Historical routed attempts created before 0.20.8 may have only `routingDecisionDocumentSha256` in provider evidence. In that case diagnostics reports:
 
 - `available: false`;
-- the verified decision hash;
+- the verified routing-document hash;
+- no fabricated decision-body hash;
 - reason `historical-routing-document-not-persisted`.
 
 It never recomputes a current route and labels it as the historical decision.
@@ -53,7 +59,7 @@ Provider attempt files are read from `.sdai/diagnostics/provider/<attempt-id>/` 
 - supported lifecycle phases;
 - at most one terminal event, which must be last.
 
-The CLI summarizes starting/running/succeeded/failed/cancelled state, provider/profile/model, startup/invocation/total/first-output timing, heartbeat count/latest heartbeat, bounded failure category/type, routing decision hash, audit-start hash and provider capability metadata.
+The CLI summarizes starting/running/succeeded/failed/cancelled state, provider/profile/model, startup/invocation/total/first-output timing, heartbeat count/latest heartbeat, bounded failure category/type, routing-document hash, audit-start hash and provider capability metadata.
 
 Raw provider output is never displayed.
 
@@ -69,10 +75,12 @@ Unified diagnostics intentionally does **not** call the normal locking `AuditLed
 
 - strict UTF-8/canonical bytes;
 - per-event contract/event SHA;
-- contiguous sequence;
+- one-based contiguous sequence;
 - feature identity;
 - previous-event hash chain;
 - bounded ledger/event sizes.
+
+If the ledger ends with a syntactically incomplete crash-tail record, diagnostics reports the verified prefix plus `recoverableCrashTailBytes` and marks the report partial without truncating the file. A complete JSON record missing its canonical newline is corruption and still fails closed.
 
 This means inspecting a feature with no audit history does not create `.sdai/audit`, `events.jsonl`, or `ledger.lock`. Existing audit bytes are never modified by diagnostics.
 
@@ -88,7 +96,7 @@ CLI error output exposes only a stable SDAI error code or exception type, not ra
 
 ## Read-only guarantee
 
-Building either human or JSON diagnostics must leave the project file tree byte-for-byte unchanged. It does not construct a provider, call a model, sleep/retry, acquire/create an audit lock, or write routing/context/audit/diagnostic state.
+Building either human or JSON diagnostics must leave the project file tree byte-for-byte unchanged. It does not construct a provider, call a model, sleep/retry, acquire/create an audit lock, truncate a crash tail, or write routing/context/audit/diagnostic state.
 
 The only new write introduced by 0.20.8 happens during **routed execution before provider invocation**, when the already-computed privacy-safe routing decision is persisted for later explanation. `sdai diagnostics` itself remains strictly read-only.
 
