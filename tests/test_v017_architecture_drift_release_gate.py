@@ -299,7 +299,7 @@ def _approve(root: Path, evidence_relative: str) -> Path:
 
 def _project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
-    root.mkdir()
+    root.mkdir(parents=True)
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "release-017@example.invalid")
     _git(root, "config", "user.name", "SD-AI 0.17 Release Gate")
@@ -385,9 +385,6 @@ def test_v017_integrated_architecture_drift_release_journey(
         for edge in trace["edges"]
     )
 
-    # Remove the approved internal dependency and HTTP edge without changing the
-    # hash-bound topology/evidence. This is current repository reality, not an
-    # approval mutation, so deterministic architecture drift must block delivery.
     _write(root / "src" / "api" / "client.py", "# required edge intentionally removed\n")
 
     blocked_first = evaluate_architecture_drift(root, FEATURE, environ={})
@@ -444,8 +441,6 @@ def test_v017_upgrade_compatibility_and_fail_closed_inputs(
     _config(legacy)
     _feature_artifacts(legacy, legacy=True)
 
-    # Existing projects and the legacy feature workspace layout remain valid when
-    # architecture governance has not been explicitly required.
     assert version_entrypoint.main(
         ["architecture", "drift", FEATURE, "--json", "--path", str(legacy)]
     ) == 0
