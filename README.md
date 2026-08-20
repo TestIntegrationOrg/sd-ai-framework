@@ -4,8 +4,10 @@
 
 SD-AI treats approved specification and architecture artifacts as source of truth. Semantic agent roles, provider profiles, reusable skills, declarative workflows, approvals, quality gates, and integrations operate around that source of truth.
 
-<!-- sdai-release-version: 0.5.4 -->
-> Project status: **0.5.4 / 0.6 extensibility, SDD-quality, and behavioral-evaluation foundation in active development**.
+<!-- sdai-release-version: 1.0.0 -->
+> Project status: **1.0.0 / stable enterprise-ready identity-independent SDAI lifecycle**.
+
+SDAI 1.0 has completed the stable extension/JSON compatibility boundaries, migration safety, Tier-1 documentation, security/policy hardening, mandatory E2E journeys, and Ubuntu/Windows/macOS package-install confidence gates recorded in [1.0 release readiness](docs/releases/1.0-release-readiness.md). The held 0.18/#25 identity-backed enterprise approval capability is explicitly not part of 1.0.
 
 ## One framework, same capabilities
 
@@ -249,7 +251,7 @@ Generated files are managed derivatives of canonical SD-AI agent files. Unmanage
 
 ## Secure external execution
 
-v0.5.1 hardens the execution boundary in both modes:
+SDAI's hardened execution boundary includes:
 
 - prompt names are contained inside `.sdai/prompts`
 - feature artifacts resolve symlinks and stay inside `specs/<feature>`
@@ -288,6 +290,7 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 
 ## Documentation
 
+- [SDAI 1.0 release readiness](docs/releases/1.0-release-readiness.md)
 - [Configuration modes](docs/CONFIGURATION-MODES.md)
 - [Enterprise policy reference](docs/ENTERPRISE-POLICY.md)
 - [Execution security reference](docs/EXECUTION-SECURITY.md)
@@ -314,7 +317,7 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [x] Manual execution of top-level and nested workflow steps
 - [x] GitHub/Jira integrations
 - [x] Sonar/Trivy/test quality gates
-- [x] Role-backed approvals and workflow policy checks
+- [x] Role-backed local approvals and workflow policy checks
 - [x] Canonical `.agent.md` semantic role files
 - [x] Shared `.agents/skills` skill source
 - [x] Provider-native agent synchronization
@@ -328,11 +331,11 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [x] Extension scaffolding and validation CLI
 - [x] Engineering constitution, clarification, and requirements-quality checks
 - [x] Behavioral skill/agent evaluation foundation
-- [ ] Identity-backed enterprise approvals
-- [ ] OpenAPI / AsyncAPI / JSON Schema contract validation
-- [ ] Requirement → ADR → task → code → test traceability graph
-- [ ] Architecture drift detection
-- [ ] Multi-repository feature graph
+- [x] OpenAPI / AsyncAPI / JSON Schema / Protobuf contract validation and compatibility analysis
+- [x] Requirement → architecture → task → code → test/evidence traceability graph
+- [x] Architecture drift detection and policy integration
+- [x] Specification stores and multi-repository feature graph
+- [ ] Identity-backed enterprise approvals — 0.18/#25 held by explicit scope decision
 - [ ] Web control plane
 
 ## License
