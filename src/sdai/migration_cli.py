@@ -6,7 +6,7 @@ import sys
 
 from sdai import __version__
 from sdai.migration import MigrationError
-from sdai.migration_recovery import (
+from sdai.migration_transaction import (
     apply_migration,
     plan_migration,
     rollback_migration,
