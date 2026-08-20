@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 
 from sdai.migration import MigrationSafetyError, _atomic_write, _safe_target
-from sdai.migration_recovery import (
+from sdai.migration_transaction import (
     _build_prepared_manifest,
-    _prepare_backups,
     _safe_evidence_target,
+    _write_backups,
     _write_canonical_json,
     apply_migration,
     plan_migration,
@@ -35,9 +35,9 @@ def _prepare_interrupted_transaction(root: Path, migration_id: str):
     manifest_rel = f".sdai/migrations/{migration_id}/manifest.json"
     manifest_path = _safe_evidence_target(root, manifest_rel)
     manifest_path.parent.mkdir(parents=True, exist_ok=False)
-    backups = _prepare_backups(root, migration_id, plan)
-    manifest = _build_prepared_manifest(migration_id, plan, backups)
+    manifest = _build_prepared_manifest(migration_id, plan)
     _write_canonical_json(manifest_path, manifest)
+    _write_backups(root, migration_id, plan)
     return plan, manifest
 
 
@@ -67,6 +67,29 @@ def test_interrupted_partial_apply_is_recovered_before_retry(tmp_path: Path) -> 
     assert _files(tmp_path) == before
 
 
+def test_interruption_after_manifest_before_backups_is_recoverable(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    before = _files(tmp_path)
+    plan = plan_migration(tmp_path)
+    assert plan.changes
+    migration_id = "prepared286"
+    manifest_path = _safe_evidence_target(
+        tmp_path,
+        f".sdai/migrations/{migration_id}/manifest.json",
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=False)
+    manifest = _build_prepared_manifest(migration_id, plan)
+    _write_canonical_json(manifest_path, manifest)
+
+    result = apply_migration(tmp_path)
+    assert result.status == "applied"
+    assert (tmp_path / f".sdai/migrations/{migration_id}/recovery.json").is_file()
+
+    assert result.migration_id is not None
+    rollback_migration(tmp_path, result.migration_id)
+    assert _files(tmp_path) == before
+
+
 def test_interrupted_apply_with_unknown_bytes_fails_closed_without_repair(
     tmp_path: Path,
 ) -> None:
@@ -83,6 +106,20 @@ def test_interrupted_apply_with_unknown_bytes_fails_closed_without_repair(
     assert target.read_bytes() == b"operator-owned bytes after interruption\n"
     assert not (tmp_path / ".sdai/migrations/unsafe286/recovery.json").exists()
     assert not (tmp_path / ".sdai/migrations/unsafe286/commit.json").exists()
+
+
+def test_legacy_backup_only_interruption_requires_operator_review(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    evidence = tmp_path / ".sdai" / "migrations" / "legacy286" / "backups"
+    evidence.mkdir(parents=True)
+    marker = evidence / "legacy-stock.bin"
+    marker.write_bytes(b"old migration backup evidence\n")
+
+    with pytest.raises(MigrationSafetyError, match="legacy interrupted upgrade"):
+        apply_migration(tmp_path)
+
+    assert marker.read_bytes() == b"old migration backup evidence\n"
+    assert evidence.parent.is_dir()
 
 
 def test_committed_recovery_protocol_migration_remains_rollback_safe(
