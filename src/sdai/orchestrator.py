@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 from typing import Callable, Mapping, TypeVar
 
-from sdai.agent_platform import AgentRuntime, ExecutionMode
+from sdai.agent_platform import AgentProgressCallback, AgentRuntime, ExecutionMode
 from sdai.agent_platform.models import AgentInvocation
 from sdai.agents import ArchitectAgent, DeveloperAgent, PlannerAgent, RequirementAgent, SecurityAgent
 from sdai.agents.base import AgentResult
@@ -70,6 +70,7 @@ class Orchestrator:
         quality_gate_runner: QualityGateRunner | None = None,
         plugin_executor_registry: PluginExecutorRegistry | None = None,
         plugin_environ: Mapping[str, str] | None = None,
+        agent_progress: AgentProgressCallback | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ):
         self.project_root = project_root.resolve()
@@ -77,6 +78,7 @@ class Orchestrator:
         self.quality_gate_runner = quality_gate_runner or QualityGateRunner(self.project_root)
         self.plugin_executor_registry = plugin_executor_registry or EXECUTORS
         self.plugin_environ = dict(plugin_environ) if plugin_environ is not None else None
+        self.agent_progress = agent_progress
         self.policy = load_effective_configuration(self.project_root)
         self.sleeper = sleeper
 
@@ -120,6 +122,8 @@ class Orchestrator:
         kwargs = {"profile_name": profile_name, "mode": mode}
         if agent_name and self._semantic_enabled():
             kwargs["agent_name"] = agent_name
+        if self.agent_progress is not None:
+            kwargs["progress"] = self.agent_progress
         return self.agent_runtime.execute(feature_id, capability, **kwargs)
 
     @staticmethod

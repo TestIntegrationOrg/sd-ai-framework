@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Callable, Literal
 
 
 class Capability(StrEnum):
@@ -67,6 +68,38 @@ class AgentInvocation:
     mode: ExecutionMode = ExecutionMode.ADVISORY
     agent_name: str | None = None
     routing_decision: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentProgressEvent:
+    """Sanitized execution progress shared by runtimes and user interfaces."""
+
+    phase: Literal[
+        "starting",
+        "provider-ready",
+        "process-started",
+        "first-output",
+        "heartbeat",
+        "completed",
+        "failed",
+    ]
+    feature_id: str
+    capability: Capability
+    profile: str
+    provider: str
+    mode: ExecutionMode
+    timeout_seconds: int
+    prompt_bytes: int
+    encoding: str = "utf-8"
+    agent_name: str | None = None
+    model: str | None = None
+    reason: str | None = None
+    process_id: int | None = None
+    elapsed_seconds: float = 0.0
+    failure_category: str | None = None
+
+
+AgentProgressCallback = Callable[[AgentProgressEvent], None]
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,12 @@ from sdai.agent_platform.model_routing import (
     RoutingRequest,
     route_model,
 )
-from sdai.agent_platform.models import Capability, ExecutionMode
+from sdai.agent_platform.models import (
+    AgentProgressCallback,
+    AgentProgressEvent,
+    Capability,
+    ExecutionMode,
+)
 from sdai.agent_platform.provider_diagnostics import (
     PROVIDER_DIAGNOSTIC_API_VERSION,
     PersistedProviderDiagnostic,
@@ -63,6 +68,8 @@ from sdai.providers.control import (
 
 __all__ = [
     "AgentRuntime",
+    "AgentProgressCallback",
+    "AgentProgressEvent",
     "Capability",
     "CONTEXT_PLAN_API_VERSION",
     "CONTEXT_PLAN_MAX_FILES",

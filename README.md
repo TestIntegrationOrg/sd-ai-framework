@@ -273,9 +273,12 @@ sdai step run FEATURE-123 architecture-review \
 
 sdai step run FEATURE-123 architecture-review \
   --workflow enterprise --agent architect --profile codex --dry-run
+
+sdai step run FEATURE-123 architecture-review \
+  --workflow enterprise --agent architect --profile codex --verbose
 ```
 
-Manual execution remains available in both modes. Enterprise policy may require an approval before a workspace-write step or prohibit `--force` from bypassing that mandatory gate.
+Manual execution remains available in both modes. Running steps show live metadata-only provider progress and heartbeat on stderr; `--verbose` adds sanitized profile, timeout, PID, elapsed-time, and prompt-size diagnostics without printing prompts or provider output. Enterprise policy may require an approval before a workspace-write step or prohibit `--force` from bypassing that mandatory gate. See [Provider adapters](docs/PROVIDERS.md) for execution guidance, including why nested coding-agent sessions should generally be avoided.
 
 ## Quality gates and integrations
 

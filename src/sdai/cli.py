@@ -6,7 +6,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-from sdai.agent_platform import AgentRuntime, Capability, ExecutionMode
+from sdai.agent_platform import (
+    AgentProgressEvent,
+    AgentRuntime,
+    Capability,
+    ExecutionMode,
+)
 from sdai.agent_platform.definitions import list_agent_definitions, load_agent_definition
 from sdai.agent_platform.models import AgentInvocation
 from sdai.agent_platform.native import PROVIDERS, sync_native_agents
@@ -244,10 +249,45 @@ def _step_detail(step) -> str:
     return ""
 
 
+def _agent_progress_printer(step_id: str, *, verbose: bool):
+    """Return a prompt-safe stderr renderer for one manually invoked agent step."""
+
+    def render(event: AgentProgressEvent) -> None:
+        if event.phase == "provider-ready" and not verbose:
+            return
+        status = "running" if event.phase == "process-started" else event.phase
+        fields = [f"[{step_id}]", f"provider={event.provider}", f"status={status}"]
+        if event.process_id is not None:
+            fields.append(f"pid={event.process_id}")
+        fields.append(f"elapsed={event.elapsed_seconds:.1f}s")
+        if verbose and event.phase in {"starting", "provider-ready"}:
+            fields.extend(
+                [
+                    f"profile={event.profile}",
+                    f"agent={event.agent_name or '-'}",
+                    f"model={event.model or '-'}",
+                    f"mode={event.mode.value}",
+                    f"timeout={event.timeout_seconds}s",
+                    f"prompt_bytes={event.prompt_bytes}",
+                    f"encoding={event.encoding}",
+                ]
+            )
+        if verbose and event.reason:
+            fields.append(f"reason={event.reason}")
+        if event.failure_category:
+            fields.append(f"category={event.failure_category}")
+        print(" ".join(fields), file=sys.stderr, flush=True)
+
+    return render
+
+
 def cmd_step(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
-    orchestrator = Orchestrator(root)
+    progress = None
+    if args.step_action == "run":
+        progress = _agent_progress_printer(args.step_id, verbose=args.verbose)
+    orchestrator = Orchestrator(root, agent_progress=progress)
     definition = orchestrator.workflow_definition(args.workflow)
     context = orchestrator.context(args.feature_id)
 
@@ -634,6 +674,11 @@ def parser() -> argparse.ArgumentParser:
     step_run.add_argument("--agent", help="Override the semantic .agent role")
     step_run.add_argument("--profile", help="Override the provider profile")
     step_run.add_argument("--mode", choices=[m.value for m in ExecutionMode])
+    step_run.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show sanitized provider/profile, timeout, PID, elapsed-time, and prompt-size diagnostics",
+    )
     step_run.add_argument("--path")
     step_run.set_defaults(func=cmd_step)
 
