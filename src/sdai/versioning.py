@@ -14,8 +14,12 @@ from sdai.text import read_utf8_text
 
 
 README_VERSION_MARKER_PREFIX = "<!-- sdai-release-version:"
+RELEASE_VERSION_MARKER_PREFIX = "<!-- sdai-release-version:"
 PYPROJECT_VERSION_ATTR = "sdai.__version__"
 FRAMEWORK_METADATA_SCHEMA_VERSION = 1
+STABLE_DEVELOPMENT_STATUS = "Development Status :: 5 - Production/Stable"
+RELEASE_READINESS_PATH = Path("docs/releases/1.0-release-readiness.md")
+HELD_IDENTITY_SCOPE_MARKER = "0.18/#25 identity-backed approvals remain held"
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,8 @@ def _validate_readme(repo_root: Path, errors: list[str]) -> None:
             "README project-status version is stale; expected status to start with "
             f"'{__version__} /'"
         )
+    if "active development" in text.split("## One framework, same capabilities", 1)[0]:
+        errors.append("README release status still describes the current release as active development")
 
 
 def _validate_pyproject(repo_root: Path, errors: list[str]) -> None:
@@ -100,6 +106,40 @@ def _validate_pyproject(repo_root: Path, errors: list[str]) -> None:
             "pyproject.toml setuptools dynamic version must read "
             f"'{PYPROJECT_VERSION_ATTR}'"
         )
+    classifiers = project.get("classifiers") or []
+    development_statuses = [
+        value for value in classifiers if value.startswith("Development Status ::")
+    ]
+    if development_statuses != [STABLE_DEVELOPMENT_STATUS]:
+        errors.append(
+            "pyproject.toml must declare exactly one stable development status: "
+            f"'{STABLE_DEVELOPMENT_STATUS}'"
+        )
+
+
+def _validate_release_readiness(repo_root: Path, errors: list[str]) -> None:
+    path = repo_root / RELEASE_READINESS_PATH
+    if not path.is_file():
+        errors.append(f"{RELEASE_READINESS_PATH.as_posix()} is missing")
+        return
+    text = read_utf8_text(path)
+    marker = f"{RELEASE_VERSION_MARKER_PREFIX} {__version__} -->"
+    if text.count(marker) != 1:
+        errors.append(
+            "1.0 release-readiness version is stale or ambiguous; expected exactly one "
+            f"'{marker}'"
+        )
+    if HELD_IDENTITY_SCOPE_MARKER not in text:
+        errors.append(
+            "1.0 release-readiness document must explicitly preserve the held #25 identity scope"
+        )
+    required_slices = ("#270", "#272", "#274", "#276", "#278", "#280", "#282", "#284", "#286")
+    missing = [issue for issue in required_slices if issue not in text]
+    if missing:
+        errors.append(
+            "1.0 release-readiness document is missing completed release slices: "
+            + ", ".join(missing)
+        )
 
 
 def validate_release_metadata(repo_root: Path) -> ReleaseMetadataValidation:
@@ -107,4 +147,5 @@ def validate_release_metadata(repo_root: Path) -> ReleaseMetadataValidation:
     errors: list[str] = []
     _validate_readme(root, errors)
     _validate_pyproject(root, errors)
+    _validate_release_readiness(root, errors)
     return ReleaseMetadataValidation(tuple(errors))
