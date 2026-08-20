@@ -40,7 +40,8 @@ roles and evidence, go/no-go blockers, and publication boundary.
 
 9. Verify a fresh scaffold and an upgraded scaffold write `.sdai/framework-version.yaml` with the same framework version.
 10. Freeze the candidate commit and require the complete supported OS/Python matrix to pass on that exact head before merging a release-synchronization PR.
-11. Build/publish the package or create a release tag only as a separate explicit release action after the intended release commit is green.
+11. After squash merge, require the distinct exact merged-main SHA to pass its complete six-leg `push: main` CI run; PR-head evidence is not evidence for the merged SHA.
+12. Build/publish the package or create a release tag only as a separate explicit release action after the merged-main evidence is green.
 
 Any commit after the candidate SHA is frozen invalidates earlier final-review
 and exact-head CI evidence. Re-review the new diff and rerun the complete matrix.

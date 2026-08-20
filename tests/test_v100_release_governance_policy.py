@@ -83,6 +83,9 @@ def test_policy_requires_frozen_exact_head_matrix_and_separate_publication() -> 
         "python tests/package_install_smoke.py",
         "Any new commit invalidates prior exact-head evidence",
         "Ubuntu, Windows, and macOS with Python 3.11 and 3.12",
+        "PR-head evidence cannot prove the merged SHA",
+        "Record the merged-main SHA, `push: main` CI run, and all six merged-main job",
+        "failed merged-main run is a no-go for publication",
         "separate explicit action",
         "Do not force-push `main`",
     ):
@@ -95,6 +98,8 @@ def test_readiness_records_final_identity_independent_slices_and_held_scope() ->
 
     for issue in ("#288", "#290", "#292"):
         assert issue in readiness
+    assert "distinct exact merged-main SHA" in readiness
+    assert "PR-head evidence cannot prove the merged SHA" in readiness
     assert "0.18/#25 identity-backed approvals remain held" in policy
     for forbidden_claim in (
         "identity-backed approvals are complete",

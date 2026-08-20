@@ -142,6 +142,7 @@ OIDC, SSO, cryptographic signer, or distinct-approver identity.
 | Go | Acceptance criteria pass, no open P0/P1 blocker, reviews are resolved, and exact-head CI is green |
 | No-go | Any required evidence is missing, stale, failed, ambiguous, or bound to another SHA |
 | Merged | The reviewed candidate was merged using the approved method |
+| Verified main | The exact squash-merged `main` SHA passed its distinct six-leg `push: main` CI run |
 | Published | A separately authorized tag/package publication completed and was verified |
 | Held | Scope is explicitly deferred and excluded from release claims |
 
@@ -161,11 +162,17 @@ claim that includes held capability.
 5. Address findings and freeze the final head SHA. Any new commit invalidates prior exact-head evidence and restarts final validation.
 6. Require zero unresolved actionable review threads.
 7. Require the unfiltered suite and isolated wheel smoke to pass on Ubuntu, Windows, and macOS with Python 3.11 and 3.12 for the exact frozen SHA.
-8. Record the CI run and SHA, then merge only that head using the repository's
-   approved merge method.
-9. Confirm `main` contains the intended merge and no unrelated release change.
-10. Create a tag or publish a package only through a separate explicit action
-    after the release commit is green; verify the published version and digest.
+8. Record the frozen candidate SHA, pull-request CI run, and all six candidate
+   job results, then merge only that head using the repository's approved merge
+   method.
+9. Resolve the distinct squash-merged `main` SHA and require its `push: main` CI
+   run to pass the same unfiltered suite and wheel smoke on all six legs.
+   PR-head evidence cannot prove the merged SHA.
+10. Record the merged-main SHA, `push: main` CI run, and all six merged-main job
+    results. A missing or failed merged-main run is a no-go for publication.
+11. Confirm `main` contains the intended merge and no unrelated release change.
+12. Create a tag or publish a package only through a separate explicit action
+    after merged-main evidence is green; verify the published version and digest.
 
 A green run for an earlier commit cannot authorize a changed head. Local tests
 support review but do not replace the required GitHub matrix.
@@ -173,9 +180,10 @@ support review but do not replace the required GitHub matrix.
 ## Release record and recovery
 
 The release record must identify the package version, included slices,
-exclusions/held scope, frozen candidate SHA, CI run, supported matrix, known
-limitations, and publication status. Historical evidence remains immutable
-history rather than being rewritten to match later releases.
+exclusions/held scope, frozen candidate SHA and PR CI run/job results, distinct
+squash-merged `main` SHA and `push: main` CI run/job results, supported matrix,
+known limitations, and publication status. Historical evidence remains
+immutable history rather than being rewritten to match later releases.
 
 If a merged release candidate is defective, prefer a forward patch or a
 documented revert that passes the same gate. Do not force-push `main`, silently
