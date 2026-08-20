@@ -272,6 +272,33 @@ def _safe_component_chain(root: Path, candidate: Path, *, label: str) -> Path:
     return safe
 
 
+def _legacy_is_execution_only(legacy: Path) -> bool:
+    """Return True only when a legacy feature directory contains durable execution state.
+
+    `.sdai/execution` is runtime evidence, not specification/audit authority. Any other
+    legacy entry remains authoritative and therefore ambiguous beside a modern feature.
+    """
+    if legacy.is_symlink() or not legacy.is_dir():
+        return False
+    try:
+        top_level = tuple(legacy.iterdir())
+    except OSError:
+        return False
+    if len(top_level) != 1 or top_level[0].name != ".sdai":
+        return False
+    sdai = top_level[0]
+    if sdai.is_symlink() or not sdai.is_dir():
+        return False
+    try:
+        state_entries = tuple(sdai.iterdir())
+    except OSError:
+        return False
+    if len(state_entries) != 1 or state_entries[0].name != "execution":
+        return False
+    execution = state_entries[0]
+    return execution.is_dir() and not execution.is_symlink()
+
+
 def _feature_workspace(project_root: Path, feature_id: str) -> Path:
     root = project_root.resolve()
     feature = _feature_id(feature_id)
@@ -279,7 +306,7 @@ def _feature_workspace(project_root: Path, feature_id: str) -> Path:
     legacy = _safe_component_chain(root, root / "specs" / feature, label="legacy feature workspace")
     modern_exists = modern.exists()
     legacy_exists = legacy.exists()
-    if modern_exists and legacy_exists:
+    if modern_exists and legacy_exists and not _legacy_is_execution_only(legacy):
         raise _fail(
             "SDAI-AUDIT-004",
             f"feature {feature!r} has both current and legacy workspaces; audit authority is ambiguous",
