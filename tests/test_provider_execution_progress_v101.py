@@ -134,6 +134,40 @@ def test_step_run_verbose_shows_safe_progress_before_completion(
     assert "TASK" not in captured.err
 
 
+def test_progress_consumer_failure_never_changes_or_retries_provider_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _project(tmp_path)
+    provider = _ProgressProvider()
+    monkeypatch.setattr(
+        ProviderFactory,
+        "create",
+        staticmethod(lambda *args, **kwargs: provider),
+    )
+    runtime = AgentRuntime(tmp_path)
+    invocation = runtime.build_invocation(
+        FEATURE,
+        Capability.ARCHITECTURE,
+        profile_name="claude",
+        agent_name="architect",
+        mode=ExecutionMode.ADVISORY,
+    )
+
+    def broken_consumer(event: AgentProgressEvent) -> None:
+        raise BrokenPipeError("stderr was closed")
+
+    result = runtime.execute_invocation(invocation, progress=broken_consumer)
+
+    assert result.output == PRIVATE_OUTPUT
+    terminal_events = list(
+        (tmp_path / "specs" / "changes" / FEATURE / ".sdai" / "diagnostics" / "provider").glob(
+            "*/004-completed.json"
+        )
+    )
+    assert len(terminal_events) == 1
+
+
 @pytest.mark.parametrize(
     ("error", "expected_category"),
     [

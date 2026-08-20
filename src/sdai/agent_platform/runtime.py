@@ -416,28 +416,33 @@ class AgentRuntime:
         ) -> None:
             if progress is None:
                 return
-            progress(
-                AgentProgressEvent(
-                    phase=phase,
-                    feature_id=invocation.feature_id,
-                    capability=invocation.capability,
-                    profile=invocation.profile.name,
-                    provider=invocation.profile.provider,
-                    mode=invocation.mode,
-                    timeout_seconds=invocation.profile.timeout_seconds,
-                    prompt_bytes=len(invocation.prompt.encode("utf-8", errors="strict")),
-                    agent_name=invocation.agent_name,
-                    model=invocation.profile.model,
-                    reason=reason,
-                    process_id=process_id,
-                    elapsed_seconds=(
-                        time.monotonic() - progress_started
-                        if elapsed_seconds is None
-                        else elapsed_seconds
-                    ),
-                    failure_category=failure_category,
+            try:
+                progress(
+                    AgentProgressEvent(
+                        phase=phase,
+                        feature_id=invocation.feature_id,
+                        capability=invocation.capability,
+                        profile=invocation.profile.name,
+                        provider=invocation.profile.provider,
+                        mode=invocation.mode,
+                        timeout_seconds=invocation.profile.timeout_seconds,
+                        prompt_bytes=len(invocation.prompt.encode("utf-8", errors="strict")),
+                        agent_name=invocation.agent_name,
+                        model=invocation.profile.model,
+                        reason=reason,
+                        process_id=process_id,
+                        elapsed_seconds=(
+                            time.monotonic() - progress_started
+                            if elapsed_seconds is None
+                            else elapsed_seconds
+                        ),
+                        failure_category=failure_category,
+                    )
                 )
-            )
+            except Exception:
+                # Live consumers (for example, a closed stderr pipe) are best-effort.
+                # They must never change or retry the governed provider result.
+                return
 
         project_root = self.project_root.resolve()
         cwd = invocation.cwd.resolve()

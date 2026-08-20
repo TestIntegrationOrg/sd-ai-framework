@@ -25,6 +25,8 @@ The default view reports invocation start, subprocess start, periodic heartbeat,
 
 Progress events are metadata only. They never include the prompt, system instructions, provider stdout/stderr, command arguments, environment values, or credentials. Timeout failures use the `timeout` category and remain distinct from a normal non-zero provider exit (`provider-execution`). Durable, post-run evidence remains available through `sdai diagnostics FEATURE`.
 
+Live progress consumers are best-effort. A closed stderr pipe or an exception in an API-supplied progress callback cannot change, fail, or retry an otherwise successful governed provider invocation. Durable diagnostic/audit persistence remains part of the fail-closed execution boundary.
+
 ### Avoid nested coding-agent execution
 
 Generally do not run an SDAI Codex-backed step from inside an already-running Codex session (or nest another provider inside its own interactive agent session). The parent and child can compete for stdin/stdout, cancellation signals, credentials, sandbox authority, and workspace ownership, making failures and side effects harder to attribute. Prefer invoking `sdai step run` directly from a human-controlled terminal or CI job. If a supervising automation must launch SDAI, keep the parent non-interactive, give one layer clear workspace ownership, and preserve the child's stderr progress and exit status.
