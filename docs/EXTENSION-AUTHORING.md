@@ -6,18 +6,18 @@ Contract](EXTENSIONS.md); kind-specific documents own their runtime semantics.
 
 ## Choose an extension kind
 
-| Kind | Use it for | Canonical guidance |
+| Kind | Stable role and current runtime path | Canonical guidance |
 |---|---|---|
-| `Skill` | Composable, capability-scoped expertise and instructions | [Skills](SKILLS.md) |
-| `Agent` | Provider-neutral semantic responsibility and capability boundaries | [Agent files](AGENT-FILES.md) |
-| `Workflow` | Ordered or graph-based lifecycle orchestration | [Workflows](WORKFLOWS.md) |
-| `WorkflowComponent` | Reusable workflow fragments with typed inputs | [Workflow components](WORKFLOW-COMPONENTS.md) |
-| `ArtifactSchema` | Registered deterministic artifact validation contracts | [Artifact schemas](ARTIFACT-SCHEMAS.md) |
-| `PluginStep` | Permission-declared custom workflow step behavior | [Plugin step registry](PLUGIN-STEP-REGISTRY-V2.md) |
-| `Validator` | Deterministic project or artifact checks | [Extension contract](EXTENSIONS.md) |
-| `QualityGate` | Policy-addressable test, scan, or quality decisions | [Quality gates](ENTERPRISE.md#quality-gates) |
-| `Integration` | Declarative external tool discovery, projection, and invocation | [Integration manifest](INTEGRATION-MANIFEST.md) |
-| `Pack` | Versioned distribution of related extension assets | [Pack manifest](PACK-MANIFEST.md) |
+| `Skill` | Composable expertise; canonical skill files are runtime-consumed | [Skills](SKILLS.md) |
+| `Agent` | Provider-neutral semantic responsibility; canonical agent files are runtime-consumed | [Agent files](AGENT-FILES.md) |
+| `Workflow` | Lifecycle orchestration; canonical workflow files are runtime-consumed | [Workflows](WORKFLOWS.md) |
+| `WorkflowComponent` | Reusable workflow fragments; the shared `sdai/v1` component manifest is runtime-consumed | [Workflow components](WORKFLOW-COMPONENTS.md) |
+| `ArtifactSchema` | Deterministic artifact validation contract; shared `sdai/v1` schema manifests are runtime-consumed | [Artifact schemas](ARTIFACT-SCHEMAS.md) |
+| `PluginStep` | Permission-declared custom behavior; runtime uses the separately versioned trusted PluginStep manifest/executor contract | [Plugin step registry](PLUGIN-STEP-REGISTRY-V2.md) |
+| `Validator` | Registry/provenance envelope only in 1.0; no built-in executor consumes this manifest kind | [Extension contract](EXTENSIONS.md) |
+| `QualityGate` | Registry/provenance envelope only; executable gates are configured in `.sdai/quality-gates.yaml` | [Quality gates](ENTERPRISE.md#quality-gates) |
+| `Integration` | The shared scaffold is registry/provenance metadata; runtime discovery/execution uses `sdai.integration-manifest/v1` | [Integration manifest](INTEGRATION-MANIFEST.md) |
+| `Pack` | The shared scaffold is the legacy registry envelope; signed installable packs use `sdai.pack-manifest/v1` | [Pack manifest](PACK-MANIFEST.md) |
 
 Use an existing semantic kind before proposing new core runtime behavior. A
 provider adapter is a separate Python plugin boundary: implement `Provider` and
@@ -33,25 +33,29 @@ SDAI does not force established canonical assets into a second format:
   `sdai.yaml` sidecar;
 - workflows remain under `.sdai/workflows/` in their existing workflow format.
 
-The external registry envelope registers extension assets that use manifest
-resolution. Its stable version is `apiVersion: sdai/v1`:
+The external registry envelope registers extension identity and provenance. Its
+stable version is `apiVersion: sdai/v1`:
 
 ```yaml
 apiVersion: sdai/v1
-kind: Validator
+kind: WorkflowComponent
 metadata:
-  id: java-layering
+  id: architecture-review
   version: 1.0.0
-  description: Enforce approved Java dependency direction
+  description: Reusable architecture review step
 spec:
-  command:
-    - python
-    - tools/check_java_layers.py
+  inputs: {}
+  requires: []
+  steps:
+    - id: validate-architecture
+      type: validate
 ```
 
 The common envelope accepts only `apiVersion`, `kind`, `metadata`, and `spec`.
 Kind-specific documents define the allowed `spec`; the envelope alone does not
-grant execution authority.
+grant execution authority or promise that a runtime consumes every registered
+kind. In particular, `Validator` and `QualityGate` scaffolds are registry-only
+in 1.0. Configure executable quality gates in `.sdai/quality-gates.yaml`.
 
 ## Scaffold supported kinds
 
@@ -72,7 +76,10 @@ sdai create pack java-enterprise
 Existing files are preserved unless `--force` is supplied explicitly.
 `ArtifactSchema` and `PluginStep` are stable registry kinds but currently have
 no `sdai create` shortcut. Follow their kind-specific guidance and validated
-manifest locations instead of inventing a scaffold command.
+manifest locations instead of inventing a scaffold command. The generic
+`validator`, `quality-gate`, `integration`, and `pack` shortcuts create the
+legacy/shared registry envelope; consult the table above before assuming that
+the generated envelope is an executable or installable runtime definition.
 
 ## Validate before execution
 
@@ -186,7 +193,7 @@ independent contracts and must not be mechanically synchronized.
 | Override rejected | Inspect built-in/organization locks and effective policy; lower authority cannot bypass them |
 | Path rejected | Keep the manifest inside its declared layer root and inspect symlink targets |
 | Kind validates but will not run | Run the kind-specific validator and inspect required permissions, dependencies, and policy |
-| Provider is unavailable | Use `sdai providers doctor`; provider availability is separate from extension resolution |
+| Provider is unavailable | Use `sdai agents doctor`; provider availability is separate from extension resolution |
 
 Do not respond to a policy/lock/path failure by weakening the guard. Diagnose
 the owning authority, source, and compatibility contract.

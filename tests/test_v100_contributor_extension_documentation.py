@@ -63,11 +63,17 @@ def test_extension_author_guide_preserves_authority_and_testing_contracts() -> N
         "Only `builtin` and `org` may declare authoritative locks",
         "load_extension_manifest(project_root, path)",
         "sdai.extension-contract/v1",
+        "`Validator` and `QualityGate` scaffolds are registry-only",
+        "executable quality gates in `.sdai/quality-gates.yaml`",
+        "sdai.integration-manifest/v1",
+        "sdai.pack-manifest/v1",
+        "sdai agents doctor",
         "tests/test_extension_manifests_v06.py",
         "docs/examples/integrations/custom-cli.integration.yaml",
         "0.18/#25 identity-backed approvals remain held",
     ):
         assert marker in text
+    assert "sdai providers doctor" not in text
 
 
 def test_documented_extension_references_exist() -> None:
