@@ -430,6 +430,11 @@ def test_journey_b_critical_enterprise_governance_and_convergence(tmp_path: Path
     approval_payload = json.loads(evidence["approval"].read_text(encoding="utf-8"))
     assert approval_payload["result"]["identityBacked"] is False
 
+    # The ledger has reached its durable terminal state. Retire the compatibility
+    # execution anchor so modern trace/audit authority is again unambiguous.
+    _git(root, "rm", f"specs/{FEATURE_B}/00-intake.md")
+    _git(root, "commit", "-m", "retire journey B execution anchor")
+
     for requirement in ("FR-001", "NFR-001"):
         _typed_evidence(
             root,
