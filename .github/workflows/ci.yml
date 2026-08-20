@@ -30,3 +30,4 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e '.[dev]'
       - run: pytest -q
+      - run: python tests/package_install_smoke.py
