@@ -292,6 +292,7 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 
 - [Contributing to SDAI](CONTRIBUTING.md)
 - [Extension authoring guide](docs/EXTENSION-AUTHORING.md)
+- [Compatibility and release governance](docs/COMPATIBILITY-AND-RELEASE-GOVERNANCE.md)
 - [SDAI 1.0 release readiness](docs/releases/1.0-release-readiness.md)
 - [Configuration modes](docs/CONFIGURATION-MODES.md)
 - [Enterprise policy reference](docs/ENTERPRISE-POLICY.md)
