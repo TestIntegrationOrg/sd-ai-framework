@@ -118,6 +118,9 @@ Additive evolution still needs tests and documentation. A breaking proposal
 needs an explicit versioned successor contract, migration path, deprecation
 window, and architecture decision. Do not add a static `project.version` to
 `pyproject.toml`; follow `docs/RELEASING.md` for release metadata.
+The complete stable-surface, SemVer, deprecation, security-exception, and
+release-decision rules are in
+`docs/COMPATIBILITY-AND-RELEASE-GOVERNANCE.md`.
 
 ## Test strategy
 
