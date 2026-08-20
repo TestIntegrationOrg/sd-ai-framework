@@ -17,9 +17,30 @@ def test_primary_ci_keeps_complete_platform_python_matrix():
     matrix = strategy["matrix"]
 
     assert strategy["fail-fast"] is False
-    assert matrix["os"] == ["ubuntu-latest", "windows-latest", "macos-latest"]
+    assert matrix["os"] == ["ubuntu-latest", "windows-latest"]
     assert [str(version) for version in matrix["python-version"]] == ["3.11", "3.12"]
+    assert matrix["include"] == [
+        {"os": "macos-latest", "python-version": "3.11"},
+        {"os": "macos-latest", "python-version": "3.12"},
+    ]
     assert job["runs-on"] == "${{ matrix.os }}"
+
+    effective = {
+        (operating_system, str(version))
+        for operating_system in matrix["os"]
+        for version in matrix["python-version"]
+    }
+    effective.update(
+        (entry["os"], str(entry["python-version"])) for entry in matrix["include"]
+    )
+    assert effective == {
+        ("ubuntu-latest", "3.11"),
+        ("ubuntu-latest", "3.12"),
+        ("windows-latest", "3.11"),
+        ("windows-latest", "3.12"),
+        ("macos-latest", "3.11"),
+        ("macos-latest", "3.12"),
+    }
 
 
 def test_every_matrix_leg_runs_unfiltered_pytest_suite():
