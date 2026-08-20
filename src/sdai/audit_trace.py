@@ -5,7 +5,11 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from sdai.audit_contracts import AUDIT_EVENTS_RELATIVE_PATH, AuditProvenanceError
+from sdai.audit_contracts import (
+    AUDIT_EVENTS_RELATIVE_PATH,
+    AuditProvenanceError,
+    _legacy_is_execution_only,
+)
 from sdai.audit_ledger import AuditLedger
 from sdai.audit_provenance import AuditBinding, AuditEvent
 from sdai.path_safety import PathSafetyError, ensure_within_project
@@ -101,7 +105,7 @@ def _audit_workspace(root: Path, feature_id: str) -> Path | None:
     legacy = root / "specs" / feature_id
     modern_exists = modern.exists()
     legacy_exists = legacy.exists()
-    if modern_exists and legacy_exists:
+    if modern_exists and legacy_exists and not _legacy_is_execution_only(legacy):
         raise _fail(
             "SDAI-TRACE-AUDIT-001",
             f"feature {feature_id!r} has both current and legacy workspaces; audit trace authority is ambiguous",
