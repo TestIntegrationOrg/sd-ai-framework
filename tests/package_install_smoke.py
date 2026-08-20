@@ -83,6 +83,27 @@ def main() -> int:
                 f"installed console entrypoint failed: stdout={version.stdout!r} "
                 f"stderr={version.stderr!r}"
             )
+        cli_version = version.stdout.strip().removeprefix("sdai ")
+        metadata_version = _run(
+            [
+                str(python_exe),
+                "-c",
+                "import importlib.metadata as m; print(m.version('sd-ai-framework'))",
+            ],
+            cwd=temp,
+            env=clean_env,
+        ).stdout.strip()
+        if metadata_version != cli_version:
+            raise AssertionError(
+                "installed wheel metadata and CLI version disagree: "
+                f"metadata={metadata_version!r} cli={cli_version!r}"
+            )
+        expected_wheel_fragment = f"-{cli_version}-"
+        if expected_wheel_fragment not in project_wheels[0].name:
+            raise AssertionError(
+                "built wheel filename and installed version disagree: "
+                f"wheel={project_wheels[0].name!r} cli={cli_version!r}"
+            )
 
         brownfield = temp / "existing-application"
         brownfield.mkdir()
@@ -104,6 +125,12 @@ def main() -> int:
         metadata = brownfield / ".sdai" / "framework-version.yaml"
         if not metadata.is_file():
             raise AssertionError("sdai init did not install framework metadata")
+        metadata_payload = metadata.read_text(encoding="utf-8")
+        if f"framework_version: {cli_version}" not in metadata_payload:
+            raise AssertionError(
+                "fresh scaffold framework metadata does not match installed version: "
+                f"{metadata_payload!r}"
+            )
         metadata.unlink()
 
         migrated = _run(
@@ -123,6 +150,12 @@ def main() -> int:
             raise AssertionError(f"unexpected migration result: {payload}")
         if not metadata.is_file():
             raise AssertionError("packaged migration did not restore missing managed metadata")
+        migrated_metadata = metadata.read_text(encoding="utf-8")
+        if f"framework_version: {cli_version}" not in migrated_metadata:
+            raise AssertionError(
+                "migrated framework metadata does not match installed version: "
+                f"{migrated_metadata!r}"
+            )
         if local_owned.read_text(encoding="utf-8") != "owner: package-smoke\n":
             raise AssertionError("packaged migration modified local-owned SDAI content")
         if application.read_text(encoding="utf-8") != "existing application bytes\n":
@@ -159,7 +192,7 @@ def main() -> int:
         if application.read_text(encoding="utf-8") != "existing application bytes\n":
             raise AssertionError("rollback modified application content")
 
-    print("SDAI wheel install/bootstrap/upgrade/rollback smoke: passed")
+    print("SDAI wheel version/install/bootstrap/upgrade/rollback smoke: passed")
     return 0
 
 
