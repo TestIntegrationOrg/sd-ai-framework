@@ -17,6 +17,16 @@ execution:
   allow_force_approval_bypass: false
   protected_paths:
     - .github/workflows/**
+  # Enterprise policy is fail-closed for credential/config/network discovery.
+  # Keep only variables explicitly required by approved provider authentication.
+  environment_allowlist:
+    - HOME
+    - USERPROFILE
+    - APPDATA
+    - LOCALAPPDATA
+    - XDG_CONFIG_HOME
+    - HTTPS_PROXY
+    - NO_PROXY
 skills:
   required:
     architecture: [architecture-review]
