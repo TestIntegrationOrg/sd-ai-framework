@@ -359,6 +359,9 @@ def test_journey_b_critical_enterprise_governance_and_convergence(tmp_path: Path
     )
     assert not has_architecture_blockers(architecture)
 
+    # Durable execution still uses the stable specs/<feature> execution anchor while
+    # specification truth lives in specs/changes/<feature>.
+    _write(root / "specs" / FEATURE_B / "00-intake.md", "# durable execution anchor\n")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "journey B governed specification")
     baseline = _git(root, "rev-parse", "HEAD")
@@ -642,8 +645,11 @@ def test_journey_d_interruption_resumes_without_duplicate_completed_work(tmp_pat
     completed_before = [event for event in before if event.kind == "task.completed"]
     assert len(completed_before) == 1
     first_completion = completed_before[0]
-    checkpoint_before = ledger.load_checkpoint()
-    assert checkpoint_before is not None
+    # The interrupted attempt is allowed to leave a stale-but-durable checkpoint.
+    # Capture its bytes without asking the ledger to treat it as current state.
+    assert ledger.checkpoint_path.is_file()
+    checkpoint_before = ledger.checkpoint_path.read_bytes()
+    assert checkpoint_before
 
     resumed = load_execution_run(root, FEATURE_D, "journey-d")
     outcome = execute_workflow_graph(resolution, resumed, leaf_executor=executor)
@@ -659,4 +665,4 @@ def test_journey_d_interruption_resumes_without_duplicate_completed_work(tmp_pat
     assert all(count == 1 for count in completed_counts.values())
     checkpoint_after = resumed.load_checkpoint()
     assert checkpoint_after is not None
-    assert checkpoint_after != checkpoint_before
+    assert resumed.checkpoint_path.read_bytes() != checkpoint_before
