@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from sdai.migration import MigrationSafetyError, _atomic_write, _safe_target
+from sdai.migration import (
+    MigrationSafetyError,
+    _atomic_write,
+    _safe_target,
+    apply_migration as legacy_apply_migration,
+)
 from sdai.migration_transaction import (
     _build_prepared_manifest,
     _safe_evidence_target,
@@ -120,6 +125,25 @@ def test_legacy_backup_only_interruption_requires_operator_review(tmp_path: Path
 
     assert marker.read_bytes() == b"old migration backup evidence\n"
     assert evidence.parent.is_dir()
+
+
+def test_preprotocol_committed_manifest_remains_rollback_compatible(
+    tmp_path: Path,
+) -> None:
+    init_project(tmp_path)
+    before = _files(tmp_path)
+
+    legacy = legacy_apply_migration(tmp_path)
+    assert legacy.status == "applied"
+    assert legacy.migration_id is not None
+    legacy_record = tmp_path / ".sdai" / "migrations" / legacy.migration_id
+    assert (legacy_record / "manifest.json").is_file()
+    assert not (legacy_record / "commit.json").exists()
+    assert plan_migration(tmp_path).current
+
+    rolled_back = rollback_migration(tmp_path, legacy.migration_id)
+    assert rolled_back.status == "rolled-back"
+    assert _files(tmp_path) == before
 
 
 def test_committed_recovery_protocol_migration_remains_rollback_safe(
