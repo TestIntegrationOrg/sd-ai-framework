@@ -42,17 +42,21 @@ Before the first project write, SDAI revalidates every planned path and current 
 
 Apply uses a durable prepare/commit transaction at the managed file-set boundary:
 
-1. exact pre-upgrade bytes for stock replacements are copied into the migration evidence directory;
-2. an integrity-bound canonical prepared manifest is durably written **before the first managed target write**;
+1. an integrity-bound canonical prepared manifest is durably written as the **first transaction evidence**;
+2. exact pre-upgrade bytes for stock replacements are written and hash-verified in the migration evidence directory;
 3. every managed target is written atomically and its resulting hash is verified;
 4. an integrity-bound commit receipt is written only after every target has reached its expected post-migration hash;
 5. an ordinary apply error automatically restores recorded pre-migration state before the command fails.
 
-The prepared manifest closes the process-interruption gap that cannot be handled by an in-process exception handler. If the process stops after preparation but before commit, the next apply/upgrade detects the incomplete transaction before computing a new plan. SDAI accepts only target bytes that exactly match the transaction's recorded pre-migration or post-migration hashes, restores the pre-migration state, records an integrity-bound recovery receipt, and then plans the requested upgrade again.
+No backup or managed project target is written before the prepared manifest. If the process stops after preparation but before commit, the next apply/upgrade detects the incomplete transaction before computing a new plan. SDAI accepts only target bytes that exactly match the transaction's recorded pre-migration or post-migration hashes, restores the pre-migration state, records an integrity-bound recovery receipt, and then plans the requested upgrade again.
+
+If interruption occurs after the manifest but before all stock backups have been written, recovery permits a missing backup only when that stock target is still exactly in its recorded pre-migration state. A stock target that reached its migrated state always requires its verified backup before SDAI may restore it.
 
 Recovery is restart-safe. If recovery itself is interrupted, another retry can continue only while every target remains in one of the same two recorded states. If a target contains unknown/operator-owned bytes, recovery fails closed instead of overwriting them.
 
-A record containing only backups and no prepared manifest is safe to discard because this protocol never writes a managed target before the manifest is durable. Multiple simultaneous incomplete transaction records, non-canonical evidence paths, invalid receipts, unsafe symlinks, missing backups, or unsupported transaction protocols fail closed for operator review.
+A non-empty migration record containing evidence but no manifest is never auto-cleaned. The pre-1.0.8 engine wrote backups before its final manifest, so this shape may represent a historical interrupted migration whose project targets were partially changed. SDAI reports it as legacy incomplete evidence requiring operator review instead of guessing. Empty newly allocated records can be discarded because they contain no transaction evidence and no project write is allowed before the new protocol manifest.
+
+Multiple simultaneous incomplete transaction records, non-canonical evidence paths, invalid receipts, unsafe symlinks, invalid backups, or unsupported manifest/transaction versions fail closed for operator review.
 
 The stable public result contract remains `sdai.migration-result/v1`. A successful apply returns a `migrationId`, `planSha256`, and manifest path. A project already at the current scaffold returns `status=current` and creates no migration record. Commit/recovery receipts are internal integrity evidence and do not change the established result JSON contract.
 
