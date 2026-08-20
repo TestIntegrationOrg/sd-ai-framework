@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Callable, Mapping, Protocol
 from uuid import uuid4
@@ -98,7 +99,7 @@ def _failure_classification(error: BaseException, *, stage: str) -> Mapping[str,
     type_name = type(error).__name__[:128] or "Exception"
     if isinstance(error, ProviderCancelledError):
         category = "cancelled"
-    elif isinstance(error, TimeoutError) or type_name == "TimeoutExpired":
+    elif isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
         category = "timeout"
     elif isinstance(error, FileNotFoundError):
         category = "provider-not-found"

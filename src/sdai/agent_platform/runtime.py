@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
+import time
 from typing import Callable
 
 from sdai.agent_platform.audit import AgentAuditRecorder, AgentInvocationProvenance
@@ -17,6 +19,8 @@ from sdai.agent_platform.guardrails import enforce_prompt_safety
 from sdai.agent_platform.models import (
     AgentExecutionResult,
     AgentInvocation,
+    AgentProgressCallback,
+    AgentProgressEvent,
     Capability,
     ExecutionMode,
 )
@@ -36,6 +40,7 @@ from sdai.policy import EffectiveConfiguration, PolicyError, load_effective_conf
 from sdai.providers.base import ProviderCapabilities
 from sdai.providers.control import (
     ProviderCancellationToken,
+    ProviderCancelledError,
     ProviderProgressEvent,
 )
 from sdai.providers.factory import ProviderFactory
@@ -51,6 +56,23 @@ PROMPT_BY_CAPABILITY = {
     Capability.SECURITY: "security.md",
     Capability.DOCUMENTATION: "documentation.md",
 }
+
+
+def _progress_failure_category(error: BaseException) -> str:
+    """Classify terminal progress without copying exception messages into live output."""
+    if isinstance(error, ProviderCancelledError):
+        return "cancelled"
+    if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
+        return "timeout"
+    if isinstance(error, FileNotFoundError):
+        return "provider-unavailable"
+    if isinstance(error, PermissionError):
+        return "authentication"
+    if isinstance(error, PolicyError):
+        return "policy"
+    if type(error).__name__ == "ProviderExecutionError":
+        return "provider-execution"
+    return "provider-failure"
 
 
 SYSTEM_TEMPLATE = """You are an SD-AI lifecycle agent.
@@ -372,13 +394,51 @@ class AgentRuntime:
         invocation: AgentInvocation,
         *,
         cancellation: ProviderCancellationToken | None = None,
+        progress: AgentProgressCallback | None = None,
     ) -> AgentExecutionResult:
         """Execute one governed invocation with optional cooperative cancellation."""
         if not isinstance(invocation, AgentInvocation):
             raise TypeError("invocation must be an AgentInvocation")
         if cancellation is not None and not isinstance(cancellation, ProviderCancellationToken):
             raise TypeError("cancellation must be a ProviderCancellationToken")
+        if progress is not None and not callable(progress):
+            raise TypeError("progress must be callable")
         control = cancellation or ProviderCancellationToken()
+        progress_started = time.monotonic()
+
+        def emit_progress(
+            phase: str,
+            *,
+            reason: str | None = None,
+            process_id: int | None = None,
+            elapsed_seconds: float | None = None,
+            failure_category: str | None = None,
+        ) -> None:
+            if progress is None:
+                return
+            progress(
+                AgentProgressEvent(
+                    phase=phase,
+                    feature_id=invocation.feature_id,
+                    capability=invocation.capability,
+                    profile=invocation.profile.name,
+                    provider=invocation.profile.provider,
+                    mode=invocation.mode,
+                    timeout_seconds=invocation.profile.timeout_seconds,
+                    prompt_bytes=len(invocation.prompt.encode("utf-8", errors="strict")),
+                    agent_name=invocation.agent_name,
+                    model=invocation.profile.model,
+                    reason=reason,
+                    process_id=process_id,
+                    elapsed_seconds=(
+                        time.monotonic() - progress_started
+                        if elapsed_seconds is None
+                        else elapsed_seconds
+                    ),
+                    failure_category=failure_category,
+                )
+            )
+
         project_root = self.project_root.resolve()
         cwd = invocation.cwd.resolve()
         if cwd != project_root:
@@ -392,6 +452,7 @@ class AgentRuntime:
             invocation.mode,
         )
         enforce_prompt_safety(invocation.system, invocation.prompt)
+        emit_progress("starting", reason="invocation-prepared", elapsed_seconds=0.0)
 
         definition = (
             _resolve_semantic_definition(
@@ -448,6 +509,11 @@ class AgentRuntime:
                 policy=policy,
             )
         except BaseException as exc:
+            emit_progress(
+                "failed",
+                reason="provider-startup-failed",
+                failure_category=_progress_failure_category(exc),
+            )
             persisted = diagnostics.failed(exc, stage="startup") if diagnostics is not None else None
             if recorder is not None and provenance is not None and started_event is not None:
                 recorder.failed(
@@ -476,16 +542,23 @@ class AgentRuntime:
                         started_event=started_event,
                     )
                 raise
+        emit_progress("provider-ready", reason="provider-created")
 
         def report_progress(event: ProviderProgressEvent) -> None:
             if not isinstance(event, ProviderProgressEvent):
                 raise TypeError("provider progress must be a ProviderProgressEvent")
-            if diagnostics is None:
-                return
-            if event.kind == "first-output":
-                diagnostics.first_output(reason=event.reason)
-            elif event.kind == "heartbeat":
-                diagnostics.heartbeat(reason=event.reason)
+            if diagnostics is not None:
+                if event.kind == "first-output":
+                    diagnostics.first_output(reason=event.reason)
+                elif event.kind == "heartbeat":
+                    diagnostics.heartbeat(reason=event.reason)
+            phase = "process-started" if event.kind == "started" else event.kind
+            emit_progress(
+                phase,
+                reason=event.reason,
+                process_id=event.process_id,
+                elapsed_seconds=event.elapsed_seconds,
+            )
 
         def invoke_provider() -> str:
             control.raise_if_cancelled()
@@ -506,6 +579,11 @@ class AgentRuntime:
             else:
                 output = invoke_provider()
         except BaseException as provider_exc:
+            emit_progress(
+                "failed",
+                reason="provider-invocation-failed",
+                failure_category=_progress_failure_category(provider_exc),
+            )
             diagnostic_exc: BaseException | None = None
             persisted: PersistedProviderDiagnostic | None = None
             if diagnostics is not None:
@@ -547,6 +625,8 @@ class AgentRuntime:
                 started_event=started_event,
             )
 
+        emit_progress("completed", reason="provider-invocation-completed")
+
         return AgentExecutionResult(
             feature_id=invocation.feature_id,
             capability=invocation.capability,
@@ -567,6 +647,7 @@ class AgentRuntime:
         agent_name: str | None = None,
         mode: ExecutionMode = ExecutionMode.ADVISORY,
         cancellation: ProviderCancellationToken | None = None,
+        progress: AgentProgressCallback | None = None,
     ) -> AgentExecutionResult:
         invocation = self.build_invocation(
             feature_id,
@@ -575,7 +656,11 @@ class AgentRuntime:
             agent_name=agent_name,
             mode=mode,
         )
-        return self.execute_invocation(invocation, cancellation=cancellation)
+        return self.execute_invocation(
+            invocation,
+            cancellation=cancellation,
+            progress=progress,
+        )
 
     def doctor(self) -> list[tuple[str, str, bool, str]]:
         results: list[tuple[str, str, bool, str]] = []

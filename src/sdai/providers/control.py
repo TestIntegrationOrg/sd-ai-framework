@@ -35,16 +35,22 @@ class ProviderCancellationToken:
 class ProviderProgressEvent:
     """Metadata-only provider progress signal; it never carries model output."""
 
-    kind: Literal["first-output", "heartbeat"]
+    kind: Literal["started", "first-output", "heartbeat"]
     reason: str
+    process_id: int | None = None
+    elapsed_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"first-output", "heartbeat"}:
+        if self.kind not in {"started", "first-output", "heartbeat"}:
             raise ValueError(f"unsupported provider progress kind: {self.kind}")
         if not self.reason or len(self.reason) > 128:
             raise ValueError("provider progress reason must contain 1..128 characters")
         if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in self.reason):
             raise ValueError("provider progress reason must be printable ASCII")
+        if self.process_id is not None and self.process_id < 1:
+            raise ValueError("provider progress process_id must be positive")
+        if self.elapsed_seconds is not None and self.elapsed_seconds < 0:
+            raise ValueError("provider progress elapsed_seconds must be non-negative")
 
 
 ProviderProgressCallback = Callable[[ProviderProgressEvent], None]

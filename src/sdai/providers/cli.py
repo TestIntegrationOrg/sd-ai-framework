@@ -24,6 +24,17 @@ class ProviderExecutionError(RuntimeError):
     pass
 
 
+class ProviderTimeoutError(subprocess.TimeoutExpired):
+    """A distinct timeout that never renders provider arguments or prompt text."""
+
+    def __init__(self, provider: str, timeout_seconds: float) -> None:
+        self.provider = provider
+        super().__init__((provider,), timeout_seconds)
+
+    def __str__(self) -> str:
+        return f"{self.provider} exceeded its configured timeout of {self.timeout}s"
+
+
 class ProviderStartupError(ProviderExecutionError):
     """Raised when the provider process cannot be created safely."""
 
@@ -347,6 +358,7 @@ class CliProvider(Provider):
             popen_kwargs["start_new_session"] = True
         elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        started = time.monotonic()
         try:
             process = subprocess.Popen(
                 command,
@@ -407,18 +419,32 @@ class CliProvider(Provider):
             )
             stdin_thread.start()
 
-        started = time.monotonic()
         next_heartbeat = started + self.heartbeat_interval_seconds
         first_output_reported = False
-        timeout_error: subprocess.TimeoutExpired | None = None
+        timeout_error: ProviderTimeoutError | None = None
         cancelled = False
         try:
+            progress(
+                ProviderProgressEvent(
+                    "started",
+                    "subprocess-started",
+                    process_id=process.pid,
+                    elapsed_seconds=time.monotonic() - started,
+                )
+            )
             while process.poll() is None:
                 if not thread_errors.empty():
                     _terminate_process(process)
                     break
                 if first_output_signal.is_set() and not first_output_reported:
-                    progress(ProviderProgressEvent("first-output", "stdout-observed"))
+                    progress(
+                        ProviderProgressEvent(
+                            "first-output",
+                            "stdout-observed",
+                            process_id=process.pid,
+                            elapsed_seconds=time.monotonic() - started,
+                        )
+                    )
                     first_output_reported = True
                 if cancellation.cancelled:
                     cancelled = True
@@ -427,11 +453,21 @@ class CliProvider(Provider):
                 now = time.monotonic()
                 elapsed = now - started
                 if elapsed >= self.timeout_seconds:
-                    timeout_error = subprocess.TimeoutExpired(command, self.timeout_seconds)
+                    timeout_error = ProviderTimeoutError(
+                        self.provider_name,
+                        self.timeout_seconds,
+                    )
                     _terminate_process(process)
                     break
                 if now >= next_heartbeat:
-                    progress(ProviderProgressEvent("heartbeat", "subprocess-running"))
+                    progress(
+                        ProviderProgressEvent(
+                            "heartbeat",
+                            "subprocess-running",
+                            process_id=process.pid,
+                            elapsed_seconds=elapsed,
+                        )
+                    )
                     while next_heartbeat <= now:
                         next_heartbeat += self.heartbeat_interval_seconds
                 time.sleep(min(self.poll_interval_seconds, max(0.001, self.timeout_seconds - elapsed)))
@@ -453,7 +489,14 @@ class CliProvider(Provider):
         ):
             raise ProviderExecutionError(f"{self.provider_name} subprocess pipe did not close cleanly")
         if first_output_signal.is_set() and not first_output_reported:
-            progress(ProviderProgressEvent("first-output", "stdout-observed"))
+            progress(
+                ProviderProgressEvent(
+                    "first-output",
+                    "stdout-observed",
+                    process_id=process.pid,
+                    elapsed_seconds=time.monotonic() - started,
+                )
+            )
         # Cancellation/timeout are the primary terminal causes. Process termination may
         # cause a secondary writer/reader OSError on Windows; do not let that artifact
         # overwrite the requested cancellation or configured timeout outcome.

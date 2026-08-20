@@ -63,6 +63,8 @@ The CLI summarizes starting/running/succeeded/failed/cancelled state, provider/p
 
 Raw provider output is never displayed.
 
+For live execution rather than post-run inspection, `sdai step run ...` writes metadata-only progress to stderr. Its default heartbeat confirms liveness before the provider exits; `--verbose` adds the configured timeout, profile/model, prompt byte count/encoding, subprocess PID when available, and elapsed time. The live surface and this durable diagnostic surface share the runtime provider-progress abstraction and neither exposes raw prompts or provider output.
+
 ## Retry lifecycle
 
 Retry evidence under `.sdai/diagnostics/retry/<retry-id>/` is validated against the 0.20.5 policy/decision hashes before display. Diagnostics shows retry status, attempt count, policy SHA, each failed-attempt action/delay/reason/classification/diagnostic-attempt identity, and final bounded classification.

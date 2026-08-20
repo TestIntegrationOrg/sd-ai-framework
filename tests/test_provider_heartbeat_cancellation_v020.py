@@ -266,8 +266,16 @@ def test_cli_provider_emits_synthetic_heartbeat_and_can_cancel_subprocess(tmp_pa
     assert capabilities.heartbeat is True
     assert capabilities.cancellation is True
     assert capabilities.first_output_timing is True
+    started = [event for event in observed if event.kind == "started"]
+    assert len(started) == 1
+    assert started[0].process_id is not None
+    assert started[0].elapsed_seconds is not None
     assert any(event.kind == "heartbeat" for event in observed)
-    assert all(event.reason == "subprocess-running" for event in observed)
+    assert all(
+        event.reason == "subprocess-running"
+        for event in observed
+        if event.kind == "heartbeat"
+    )
 
 
 def test_cli_provider_reports_first_output_without_exposing_output_in_progress(tmp_path: Path) -> None:
