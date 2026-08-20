@@ -149,8 +149,6 @@ class EffectiveConfiguration:
         return self.required_architecture_artifacts_map.get(lifecycle_mode, ())
 
 
-
-
 def _optional_bool(mapping: dict[str, Any], key: str, *, label: str) -> bool | None:
     if key not in mapping:
         return None
@@ -158,6 +156,7 @@ def _optional_bool(mapping: dict[str, Any], key: str, *, label: str) -> bool | N
     if not isinstance(value, bool):
         raise PolicyError(f"{label} must be true or false")
     return value
+
 
 def _optional_string_set(value: object, *, label: str) -> frozenset[str] | None:
     if value is None:
@@ -233,8 +232,6 @@ def _required_skills(value: object, *, source: str) -> dict[str, tuple[str, ...]
     return result
 
 
-
-
 def _required_architecture_artifacts(value: object, *, source: str) -> dict[str, tuple[str, ...]]:
     if value is None:
         return {}
@@ -254,6 +251,7 @@ def _required_architecture_artifacts(value: object, *, source: str) -> dict[str,
                 )
         result[mode] = tuple(sorted(parsed))
     return result
+
 
 def _reject_unknown(mapping: dict[str, Any], allowed: set[str], *, label: str) -> None:
     unknown = sorted(set(mapping) - allowed)
@@ -392,8 +390,6 @@ def _merge_required_skills(layers: list[PolicyLayer]) -> dict[str, tuple[str, ..
     return {key: tuple(value) for key, value in result.items()}
 
 
-
-
 def _merge_required_architecture_artifacts(layers: list[PolicyLayer]) -> dict[str, tuple[str, ...]]:
     result: dict[str, list[str]] = {}
     for layer in layers:
@@ -403,6 +399,7 @@ def _merge_required_architecture_artifacts(layers: list[PolicyLayer]) -> dict[st
                 if name not in bucket:
                     bucket.append(name)
     return {key: tuple(value) for key, value in result.items()}
+
 
 def _external_policy_path(value: str, *, label: str, project_root: Path) -> Path:
     path = Path(value).expanduser()
@@ -451,12 +448,14 @@ def load_effective_configuration(
     repo_relative = str(policy_config.get("repository") or ".sdai/policy.yaml")
 
     layers: list[PolicyLayer] = []
+    organization_layer: PolicyLayer | None = None
     org_value = env.get(org_env_name, "").strip()
     if org_value:
         org_path = _external_policy_path(
             org_value, label=org_env_name, project_root=project_root
         )
-        layers.append(_load_layer(org_path, f"organization:{org_path}"))
+        organization_layer = _load_layer(org_path, f"organization:{org_path}")
+        layers.append(organization_layer)
     elif configured_mode == OperatingMode.ENTERPRISE:
         raise PolicyError(
             f"Enterprise mode requires a company-managed organization policy via {org_env_name}"
@@ -507,9 +506,13 @@ def load_effective_configuration(
     architecture_allow_waivers = all(
         layer.architecture_allow_waivers is not False for layer in layers
     )
-    # Enterprise subprocesses fail closed: provider credential/environment variables
-    # must be named by company policy. Native CLI credential stores remain available.
-    if effective_mode == OperatingMode.ENTERPRISE and environment_allowlist is None:
+
+    # Organization omission is an explicit enterprise deny. A repository or user policy
+    # can only narrow a company allowlist; it can never supply variables that the company
+    # policy did not explicitly allow.
+    if effective_mode == OperatingMode.ENTERPRISE and (
+        organization_layer is None or organization_layer.environment_allowlist is None
+    ):
         environment_allowlist = frozenset()
 
     return EffectiveConfiguration(
