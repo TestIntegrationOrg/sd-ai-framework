@@ -1,15 +1,13 @@
 # Enterprise Policy Reference
 
-SD-AI uses one runtime and one capability set for both individual engineers and enterprise employees. Enterprise mode does not remove capabilities; it adds an organization-owned upper boundary that repository, user, workflow, agent, and CLI choices must respect.
+SD-AI uses one runtime and capability model for individual engineers and enterprise employees. Enterprise mode adds an organization-owned upper boundary that repository, user, workflow, agent, and CLI choices must respect.
 
 ## Effective policy model
-
-SD-AI resolves policy in this order:
 
 ```text
 SD-AI core invariants
         +
-organization policy (when configured)
+organization policy
         +
 repository policy
         +
@@ -18,68 +16,36 @@ user policy
 effective configuration
 ```
 
-The organization policy is supplied through the fixed environment variable `SDAI_ORG_POLICY_PATH`. Repository configuration cannot rename or redirect that variable. The organization policy file must be an absolute path outside the repository.
+The organization policy is supplied through the fixed environment variable `SDAI_ORG_POLICY_PATH`. Repository configuration cannot rename or redirect that variable. The policy path must be absolute and outside the repository.
 
-If `SDAI_ORG_POLICY_PATH` is present, SD-AI treats the effective operating mode as enterprise even when `.sdai/config.yaml` says `individual`.
+If `SDAI_ORG_POLICY_PATH` is present, SD-AI treats the effective mode as enterprise even when repository configuration says `individual`. If enterprise mode is configured without a company-managed organization policy, loading fails closed.
 
-For enterprise deployment, the organization must also control how `SDAI_ORG_POLICY_PATH` and the policy file are provisioned—for example through a managed developer environment, corporate launcher, CI runner, endpoint-management policy, or another trusted control. SD-AI prevents repository-local redirection, but it does not itself provide operating-system identity or endpoint-policy enforcement.
+The organization must control how `SDAI_ORG_POLICY_PATH` and the policy file are provisioned, for example with a managed developer environment, corporate launcher, CI runner, or endpoint-management policy.
 
-## Same capabilities in both modes
-
-Individual and enterprise modes both support Codex, Claude, GitHub Copilot, Gemini, local/custom command providers and provider plugins; semantic `.agent.md` definitions; shared `SKILL.md` skills; provider-native synchronization; custom prompts/workflows; manual steps; provider/profile/model overrides; advisory/workspace-write execution; approvals; conditions; retries; parallel reviews; pause/resume; GitHub/Jira integrations; and test/Trivy/Sonar gates.
-
-The difference is who may widen the set of allowed choices.
-
-## Policy merge semantics
+## Merge semantics
 
 ### Allow lists: intersection
 
-Provider, profile, model, and capability allow lists are intersected across policy layers. A lower layer cannot add a provider/profile/model that an upper layer did not allow.
+Provider, profile, model, capability, and environment allowlists can only become narrower. A lower layer cannot add an option excluded by an upper layer.
 
-```text
-organization providers: Claude, Codex, Copilot
-repository providers:   Claude, Codex
-user providers:         Claude
-----------------------------------------
-effective providers:    Claude
-```
+Provider-level and profile-level model rules both apply; the effective model set is their intersection.
 
-### Model rules: all applicable rules apply
+### Mandatory requirements: additive
 
-Provider-level and profile-level model rules both apply. Their effective allowed set is the intersection.
+Required skills and protected paths accumulate. Core protected paths are always present and cannot be removed. Required architecture artifacts also accumulate.
 
-```yaml
-providers:
-  allowed_models:
-    claude: [model-a, model-b]
-    claude-enterprise: [model-b]
-```
+### Denies win
 
-For profile `claude-enterprise`, only `model-b` is allowed. If policy restricts models for a selected provider/profile, the profile must explicitly pin an approved model.
+For security-sensitive booleans:
 
-### Mandatory skills: additive union
+- `execution.workspace_write: false` wins over lower-layer `true` values.
+- `execution.require_prior_approval_for_workspace_write: true` remains required.
+- `execution.allow_force_approval_bypass: false` cannot be re-enabled below it.
+- `architecture_validation.allow_waivers: false` cannot be re-enabled below it.
 
-Required skills accumulate across layers. Lower layers may add mandatory skills but cannot remove upper-layer mandatory skills.
+## Provider and model policy
 
-### Protected paths: additive union
-
-Core SD-AI protected paths are always present. Organization, repository, and user policy may add more protected paths.
-
-### Workspace-write: deny wins
-
-If any active layer sets `execution.workspace_write: false`, workspace-write is disabled. A lower layer cannot re-enable it.
-
-### Required approval: require wins
-
-If any active layer sets `execution.require_prior_approval_for_workspace_write: true`, workspace-writing manual steps must satisfy prior workflow approval requirements.
-
-### Force approval bypass: deny wins
-
-If any active layer sets `execution.allow_force_approval_bypass: false`, `--force` cannot bypass a required prior approval.
-
-## Enterprise provider and model choice
-
-Enterprise policy should normally define an approved set rather than a single mandatory provider.
+Enterprise policy should normally define an approved set rather than forcing one provider:
 
 ```yaml
 version: 1
@@ -96,37 +62,50 @@ capabilities:
     allowed_profiles: [codex-enterprise, copilot-enterprise]
 ```
 
-Employees may still choose any effective allowed option:
-
-```bash
-sdai step run FEATURE-123 architecture-review --workflow enterprise \
-  --agent architect --profile claude-enterprise
-
-sdai step run FEATURE-123 architecture-review --workflow enterprise \
-  --agent architect --profile codex-enterprise
-```
-
-An unapproved provider/profile/model is rejected before its external provider process starts.
+Employees may choose any option remaining in the effective set. An unapproved provider/profile/model is rejected before its external process starts.
 
 ## Enterprise provider environment policy
 
-External provider processes receive a minimal environment rather than inheriting the full developer or CI environment.
+External provider processes receive a bounded environment rather than the caller's complete environment.
 
-Enterprise mode is fail-closed for provider/profile credential environment variables. If effective policy does not define `execution.environment_allowlist`, no provider-specific credential variables are passed by SD-AI. Provider CLIs may still use their own native credential stores.
+A small process-runtime baseline (`PATH`, temporary-directory variables, locale/terminal variables, and required Windows process variables) remains available so the executable can launch normally.
+
+Everything that can influence provider credential discovery, user configuration, proxy routing, custom trust roots, provider authentication, or profile-specific environment is policy-gated. Examples include:
+
+```text
+HOME / USERPROFILE
+APPDATA / LOCALAPPDATA / XDG_CONFIG_HOME
+HTTPS_PROXY / HTTP_PROXY / NO_PROXY
+SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+OPENAI_API_KEY / CODEX_HOME
+GH_TOKEN / GITHUB_TOKEN / GH_HOST
+ANTHROPIC_API_KEY / CLAUDE_CONFIG_DIR
+GEMINI_API_KEY / GOOGLE_API_KEY
+GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_CLOUD_PROJECT
+```
+
+The organization policy is authoritative for these variables:
+
+- If organization policy omits `execution.environment_allowlist`, the effective policy-gated allowlist is empty.
+- Repository and user policy cannot widen an organization omission.
+- If organization policy defines an allowlist, lower layers may only narrow it.
+- Native provider credential-store discovery requires the organization to explicitly allow the relevant discovery variables such as `HOME`, `USERPROFILE`, `APPDATA`, or a provider-specific configuration-home variable.
+
+Example:
 
 ```yaml
+version: 1
 execution:
   environment_allowlist:
+    - HOME
     - OPENAI_API_KEY
-    - ANTHROPIC_API_KEY
-    - GH_TOKEN
     - HTTPS_PROXY
     - NO_PROXY
 ```
 
-Repository/user policy can narrow this list but cannot expand beyond the effective organization list.
+This design prevents repository-controlled policy from silently reintroducing employee/CI credentials or network configuration into a third-party provider process.
 
-## Policy file schema
+## Policy schema
 
 Supported top-level keys:
 
@@ -136,6 +115,7 @@ providers: {}
 capabilities: {}
 execution: {}
 skills: {}
+architecture_validation: {}
 ```
 
 Provider keys:
@@ -175,24 +155,34 @@ skills:
     coding: [secure-coding]
 ```
 
-Unknown policy keys are rejected rather than silently ignored. Protected path patterns must be repository-relative and cannot contain `..` or absolute paths.
+Architecture-validation keys:
+
+```yaml
+architecture_validation:
+  required:
+    critical: [threat-model, deployment-view]
+  allow_waivers: false
+```
+
+Unknown policy keys are rejected rather than ignored. Protected path patterns must be repository-relative and cannot contain `..` or absolute paths.
 
 ## Repository and user policy
 
-Repository policy defaults to `.sdai/policy.yaml` and may be redirected only to another relative path inside the repository through `.sdai/config.yaml`. User policy may be supplied by absolute path through `SDAI_USER_POLICY_PATH`.
+Repository policy defaults to `.sdai/policy.yaml` and may be redirected only to another relative path inside the repository. User policy may be supplied by absolute path through `SDAI_USER_POLICY_PATH`.
 
-Individual mode can use repository and user policy without an organization policy. This gives individual engineers the same governance capabilities when they want stricter controls.
+Individual mode can use repository and user policy without an organization layer. In enterprise mode, neither layer can expand organization authority.
 
-## Approvals and identity
+## Approvals, identity, and provenance
 
-Current role-backed approvals are policy assertions stored as feature artifacts. Enterprise policy can require those approvals and prevent force bypass, but they are not yet cryptographically or SSO identity-backed.
+Local approval files remain workflow assertions. Enterprise policy can require approvals and prevent force bypass, but identity-backed enterprise approvals are still held/deferred; local `approved_by` values must not be represented as SSO-verified identities.
 
-For a security-grade enterprise approval boundary, a future release should bind approval evidence to authenticated GitHub Enterprise/SSO/corporate identities and immutable audit evidence.
+Tamper-evident audit/provenance is implemented separately and records/hash-binds execution evidence without becoming an authorization database. See [Audit + Provenance](AUDIT-PROVENANCE.md).
 
 ## Related documentation
 
+- [Execution security](EXECUTION-SECURITY.md)
+- [Audit + Provenance](AUDIT-PROVENANCE.md)
 - [Configuration modes](CONFIGURATION-MODES.md)
 - [Governance model](GOVERNANCE.md)
-- [Execution security](EXECUTION-SECURITY.md)
 - [Security policy](../SECURITY.md)
 - [Organization-policy example](../examples/organization-policy.yaml)
