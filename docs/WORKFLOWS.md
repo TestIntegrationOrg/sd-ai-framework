@@ -2,6 +2,67 @@
 
 SD-AI v0.3 introduces a typed workflow engine that can mix deterministic SDD steps, external AI-agent capabilities, human approval gates, and validation.
 
+## Choosing a workflow
+
+A workflow determines which lifecycle actions run, whether external AI agents may participate, where human approval is required, and which validation or quality gates close the work. Choose it deliberately at feature creation rather than treating workflow names as interchangeable.
+
+### Built-in workflow catalog
+
+| Workflow | Execution style | Purpose | What distinguishes it |
+|---|---|---|---|
+| `light` | Deterministic | Small, low-risk, well-understood changes | Runs only `implement` and `validate`; it omits specification, architecture, planning, and security phases. |
+| `standard` | Deterministic | Normal engineering changes that need traceable specification, architecture, and planning | Adds `specify`, `architect`, and `plan` before deterministic implementation and validation. It is the scaffolded default. |
+| `critical` | Deterministic | Security-sensitive or high-risk work requiring stronger lifecycle evidence | Adds a deterministic `security` phase and critical-profile validation. It does not invoke coding, review, or testing agents. |
+| `agentic` | Agent-enabled | End-to-end AI-assisted delivery with a human checkpoint | Combines deterministic baselines with requirements, architecture, security, implementation, review, and testing agents; workspace implementation follows architecture approval. |
+| `enterprise` | Agent-enabled and governed | Production-critical delivery needing independent reviews, retries, approvals, and quality gates | Adds parallel design and post-implementation reviews, architecture and security approvals, retries, a required test gate, optional Trivy/Sonar gates, and critical validation. |
+
+All five are editable repository workflow definitions. Teams may add custom workflows under `.sdai/workflows/<name>.yaml`.
+
+### Deterministic versus agent-enabled implementation
+
+The distinction is operational, not just descriptive:
+
+- A deterministic action such as `implement` invokes SD-AI's lifecycle artifact generator. It does **not** invoke an external workspace-writing coding agent.
+- An `agent` step with `mode: workspace-write` invokes the configured external provider and may modify application files, subject to effective policy and prior approval.
+- Therefore, select `agentic`, `enterprise`, or an equivalent custom typed workflow when the intended outcome includes agent-written application code. Select `light`, `standard`, or `critical` when deterministic lifecycle artifacts and validation are the intended boundary.
+
+### Selection guidance
+
+| Change characteristics | Recommended starting point |
+|---|---|
+| Tiny, reversible, low-risk, with requirements and design already settled | `light` |
+| Ordinary feature or maintenance work needing specification and architecture traceability | `standard` |
+| Authentication, authorization, cryptography, secrets, public APIs, regulated data, destructive migrations, or other high-risk changes | `critical` |
+| The external agents should perform implementation, review, and testing under a human approval gate | `agentic` |
+| Independent parallel reviews, multiple approval gates, retries, and CI/security quality gates are required | `enterprise` |
+| Organization- or domain-specific lifecycle | A custom workflow |
+
+When risk and desired automation point to different rows, start from the stricter risk controls and add the needed agent steps in a custom typed workflow. A workflow never overrides effective organization or repository policy.
+
+### Workflow name versus operating mode
+
+The `enterprise` workflow and `operating_mode: enterprise` are separate concepts:
+
+- **Workflow** controls lifecycle steps and their order.
+- **Operating mode** controls whose policy defines the permitted providers, models, approvals, write access, and bypass behavior.
+
+Either operating mode can execute any workflow allowed by effective policy. Naming a workflow `enterprise` does not activate organization policy, and using enterprise operating mode does not require the workflow named `enterprise`.
+
+### Current CLI behavior and planned selector
+
+Specify the workflow explicitly when creating or running a feature:
+
+```bash
+sdai feature FEATURE-123 \
+  --title "Rotate signing credentials" \
+  --description "Introduce governed credential rotation" \
+  --workflow critical
+
+sdai run FEATURE-123 --workflow critical
+```
+
+If `--workflow` is omitted, the current CLI resolves its default instead of presenting a choice. Interactive workflow selection, installed/custom workflow discovery, default highlighting, non-TTY fallback, and persisted selection are tracked in [issue #295](https://github.com/TestIntegrationOrg/sd-ai-framework/issues/295). Until that task is implemented, pass `--workflow` explicitly in engineer and CI commands to make intent auditable.
+
 ## Step types
 
 ### `deterministic`
