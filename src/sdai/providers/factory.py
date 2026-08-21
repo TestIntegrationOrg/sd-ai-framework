@@ -95,6 +95,10 @@ class ProviderFactory:
             timeout_seconds=profile.timeout_seconds,
             extra_args=effective_args,
             mode=mode,
+            startup_timeout_seconds=profile.startup_timeout_seconds,
+            first_output_timeout_seconds=profile.first_output_timeout_seconds,
+            idle_output_timeout_seconds=profile.idle_output_timeout_seconds,
+            termination_grace_seconds=profile.termination_grace_seconds,
         )
         if profile.provider == "codex":
             provider = codex_provider(**common)
@@ -113,6 +117,10 @@ class ProviderFactory:
                 list(profile.command) + list(effective_args),
                 cwd=cwd,
                 timeout_seconds=profile.timeout_seconds,
+                startup_timeout_seconds=profile.startup_timeout_seconds,
+                first_output_timeout_seconds=profile.first_output_timeout_seconds,
+                idle_output_timeout_seconds=profile.idle_output_timeout_seconds,
+                termination_grace_seconds=profile.termination_grace_seconds,
                 provider_name=profile.provider,
                 environment=environment,
             )

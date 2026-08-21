@@ -21,6 +21,7 @@ from sdai.audit_provenance import (
 from sdai.models import validate_feature_id
 from sdai.pack_lifecycle import load_install_state
 from sdai.path_safety import PathSafetyError, ensure_within_project
+from sdai.providers.base import ProviderUsage
 
 
 _MODEL_ROUTING_API_VERSION = "sdai.model-routing/v1"
@@ -206,6 +207,10 @@ class AgentAuditRecorder:
     root: Path
     feature_id: str
     ledger: AuditLedger
+    terminal_usage: ProviderUsage | None = None
+    effective_profile: str | None = None
+    effective_provider: str | None = None
+    host_reused: bool = False
 
     @classmethod
     def optional_for(cls, project_root: Path, feature_id: str) -> "AgentAuditRecorder | None":
@@ -326,7 +331,24 @@ class AgentAuditRecorder:
             action=AuditAction("agent.execution.succeeded", f"feature:{self.feature_id}"),
             execution=AuditExecution(workflow="agent-runtime"),
             bindings=terminal_bindings,
-            metadata={**dict(provenance.metadata), "status": "succeeded"},
+            metadata={
+                **dict(provenance.metadata),
+                "status": "succeeded",
+                "usage": (self.terminal_usage or ProviderUsage.unavailable()).as_dict(),
+                **(
+                    {
+                        "providerSelection": {
+                            "requestedProfile": invocation.profile.name,
+                            "requestedProvider": invocation.profile.provider,
+                            "effectiveProfile": self.effective_profile,
+                            "effectiveProvider": self.effective_provider,
+                            "hostReused": True,
+                        }
+                    }
+                    if self.host_reused
+                    else {}
+                ),
+            },
         )
 
     def failed(
@@ -351,6 +373,23 @@ class AgentAuditRecorder:
                 **dict(provenance.metadata),
                 "status": "failed",
                 "failureType": type(error).__name__[:128] or "Exception",
+                "usage": (
+                    self.terminal_usage
+                    or ProviderUsage.unavailable("failed-before-usage-reported")
+                ).as_dict(),
+                **(
+                    {
+                        "providerSelection": {
+                            "requestedProfile": invocation.profile.name,
+                            "requestedProvider": invocation.profile.provider,
+                            "effectiveProfile": self.effective_profile,
+                            "effectiveProvider": self.effective_provider,
+                            "hostReused": True,
+                        }
+                    }
+                    if self.host_reused
+                    else {}
+                ),
             },
         )
 

@@ -11,7 +11,15 @@ from pathlib import Path
 from queue import SimpleQueue
 from typing import BinaryIO
 
-from sdai.providers.base import Provider, ProviderCapabilities
+from sdai.providers.base import (
+    NestedExecutionSupport,
+    Provider,
+    ProviderCapabilities,
+    ProviderReadiness,
+    ProviderResult,
+    ProviderUsage,
+    ReadinessState,
+)
 from sdai.providers.control import (
     ProviderCancellationToken,
     ProviderCancelledError,
@@ -33,6 +41,26 @@ class ProviderTimeoutError(subprocess.TimeoutExpired):
 
     def __str__(self) -> str:
         return f"{self.provider} exceeded its configured timeout of {self.timeout}s"
+
+
+class ProviderFirstOutputTimeoutError(ProviderTimeoutError):
+    def __str__(self) -> str:
+        return f"{self.provider} produced no first output within {self.timeout}s"
+
+
+class ProviderIdleOutputTimeoutError(ProviderTimeoutError):
+    def __str__(self) -> str:
+        return f"{self.provider} produced no output activity for {self.timeout}s"
+
+
+class ProviderTotalTimeoutError(ProviderTimeoutError):
+    def __str__(self) -> str:
+        return f"{self.provider} exceeded its total execution timeout of {self.timeout}s"
+
+
+class ProviderStartupTimeoutError(ProviderTimeoutError):
+    def __str__(self) -> str:
+        return f"{self.provider} process startup exceeded {self.timeout}s"
 
 
 class ProviderStartupError(ProviderExecutionError):
@@ -202,12 +230,14 @@ class _BoundedByteCapture:
     _data: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _observed_bytes: int = field(default=0, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _last_append: float | None = field(default=None, init=False, repr=False)
 
     def append(self, chunk: bytes) -> None:
         if not chunk:
             return
         with self._lock:
             self._observed_bytes += len(chunk)
+            self._last_append = time.monotonic()
             remaining = max(0, self.limit_bytes - len(self._data))
             if remaining:
                 self._data.extend(chunk[:remaining])
@@ -215,6 +245,10 @@ class _BoundedByteCapture:
     def snapshot(self) -> tuple[bytes, int, bool]:
         with self._lock:
             return bytes(self._data), self._observed_bytes, self._observed_bytes > self.limit_bytes
+
+    def last_append(self) -> float | None:
+        with self._lock:
+            return self._last_append
 
 
 def _drain_stream(
@@ -287,6 +321,10 @@ class CliProvider(Provider):
     command: list[str]
     cwd: Path
     timeout_seconds: int = 600
+    startup_timeout_seconds: int = 10
+    first_output_timeout_seconds: int = 60
+    idle_output_timeout_seconds: int = 120
+    termination_grace_seconds: float = 1.0
     provider_name: str = "command"
     environment: dict[str, str] | None = None
     heartbeat_interval_seconds: float = 5.0
@@ -313,6 +351,16 @@ class CliProvider(Provider):
             raise ProviderExecutionError("max_stderr_bytes must be between 1 and 16777216")
         if not 1 <= self.io_chunk_bytes <= 1024 * 1024:
             raise ProviderExecutionError("io_chunk_bytes must be between 1 and 1048576")
+        for name, value in (
+            ("startup_timeout_seconds", self.startup_timeout_seconds),
+            ("first_output_timeout_seconds", self.first_output_timeout_seconds),
+            ("idle_output_timeout_seconds", self.idle_output_timeout_seconds),
+            ("timeout_seconds", self.timeout_seconds),
+        ):
+            if value <= 0:
+                raise ProviderExecutionError(f"{name} must be positive")
+        if not 0.1 <= self.termination_grace_seconds <= 30:
+            raise ProviderExecutionError("termination_grace_seconds must be between 0.1 and 30")
 
     def diagnostic_capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -320,15 +368,17 @@ class CliProvider(Provider):
             heartbeat=True,
             cancellation=True,
             first_output_timing=True,
+            usage_reporting=True,
         )
 
     def complete(self, *, system: str, prompt: str) -> str:
-        return self.complete_observable(
+        result = self.complete_result_observable(
             system=system,
             prompt=prompt,
             cancellation=ProviderCancellationToken(),
             progress=lambda event: None,
         )
+        return result.content
 
     def complete_observable(
         self,
@@ -338,6 +388,22 @@ class CliProvider(Provider):
         cancellation: ProviderCancellationToken,
         progress: ProviderProgressCallback,
     ) -> str:
+        """Backward-compatible observable interface returning only output text."""
+        return self.complete_result_observable(
+            system=system,
+            prompt=prompt,
+            cancellation=cancellation,
+            progress=progress,
+        ).content
+
+    def complete_result_observable(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        cancellation: ProviderCancellationToken,
+        progress: ProviderProgressCallback,
+    ) -> ProviderResult:
         if not self.command:
             raise ProviderExecutionError("Provider command is empty")
         self._validate_limits()
@@ -377,6 +443,11 @@ class CliProvider(Provider):
             raise ProviderStartupError(self.provider_name, "permission-denied") from exc
         except OSError as exc:
             raise ProviderStartupError(self.provider_name, "process-start-failed") from exc
+        if time.monotonic() - started >= self.startup_timeout_seconds:
+            _terminate_process(process, grace_seconds=self.termination_grace_seconds)
+            raise ProviderStartupTimeoutError(
+                self.provider_name, self.startup_timeout_seconds
+            )
 
         assert process.stdout is not None
         assert process.stderr is not None
@@ -452,12 +523,31 @@ class CliProvider(Provider):
                     break
                 now = time.monotonic()
                 elapsed = now - started
+                if not first_output_signal.is_set() and elapsed >= self.first_output_timeout_seconds:
+                    timeout_error = ProviderFirstOutputTimeoutError(
+                        self.provider_name,
+                        self.first_output_timeout_seconds,
+                    )
+                    _terminate_process(process, grace_seconds=self.termination_grace_seconds)
+                    break
+                last_output = stdout_capture.last_append()
+                if (
+                    first_output_signal.is_set()
+                    and last_output is not None
+                    and now - last_output >= self.idle_output_timeout_seconds
+                ):
+                    timeout_error = ProviderIdleOutputTimeoutError(
+                        self.provider_name,
+                        self.idle_output_timeout_seconds,
+                    )
+                    _terminate_process(process, grace_seconds=self.termination_grace_seconds)
+                    break
                 if elapsed >= self.timeout_seconds:
-                    timeout_error = ProviderTimeoutError(
+                    timeout_error = ProviderTotalTimeoutError(
                         self.provider_name,
                         self.timeout_seconds,
                     )
-                    _terminate_process(process)
+                    _terminate_process(process, grace_seconds=self.termination_grace_seconds)
                     break
                 if now >= next_heartbeat:
                     progress(
@@ -473,13 +563,16 @@ class CliProvider(Provider):
                 time.sleep(min(self.poll_interval_seconds, max(0.001, self.timeout_seconds - elapsed)))
         except BaseException:
             if process.poll() is None:
-                _terminate_process(process)
+                _terminate_process(process, grace_seconds=self.termination_grace_seconds)
             raise
         finally:
             try:
                 process.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
-                _terminate_process(process, grace_seconds=0.25)
+                _terminate_process(
+                    process,
+                    grace_seconds=min(0.25, self.termination_grace_seconds),
+                )
             for thread in (stdin_thread, stdout_thread, stderr_thread):
                 if thread is not None:
                     thread.join(timeout=2.0)
@@ -536,7 +629,23 @@ class CliProvider(Provider):
         output = stdout.removeprefix("\ufeff").strip()
         if not output:
             raise ProviderExecutionError(f"{self.provider_name} returned no output")
-        return output
+        # CLI providers do not share one stable billing schema. Preserve useful
+        # accounting as an explicitly estimated measurement until an adapter returns
+        # provider-native usage. Four UTF-8 bytes per token is a bounded reporting
+        # heuristic, never presented as billed/provider-reported usage.
+        input_tokens = max(1, (len(payload.encode("utf-8")) + 3) // 4)
+        output_tokens = max(1, (len(output.encode("utf-8")) + 3) // 4)
+        return ProviderResult(
+            output,
+            ProviderUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                measurement="estimated",
+                complete=False,
+                unavailable_reason=None,
+            ),
+        )
 
     def availability(self) -> tuple[bool, str]:
         executable = self.command[0] if self.command else ""
@@ -546,3 +655,19 @@ class CliProvider(Provider):
         if resolved:
             return True, resolved
         return False, f"'{executable}' not found on PATH"
+
+    def readiness(self) -> ProviderReadiness:
+        available, detail = self.availability()
+        if not available:
+            return ProviderReadiness(
+                ReadinessState.BLOCKED,
+                "provider-executable-unavailable",
+                detail,
+                nested_execution=NestedExecutionSupport.UNKNOWN,
+            )
+        return ProviderReadiness(
+            ReadinessState.DEGRADED,
+            "provider-auth-unverified",
+            f"executable available at {detail}; authentication requires an adapter probe or execution",
+            nested_execution=NestedExecutionSupport.UNKNOWN,
+        )

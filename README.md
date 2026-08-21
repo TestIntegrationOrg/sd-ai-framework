@@ -306,6 +306,7 @@ Supported integrations include GitHub issue/PR workflows and Jira HTTPS intake. 
 - [Agent platform](docs/AGENT-PLATFORM.md)
 - [Agent files and skills](docs/AGENT-FILES.md)
 - [Workflow orchestration](docs/WORKFLOWS.md)
+- [Agentic reliability and token usage](docs/AGENTIC-RELIABILITY-AND-USAGE.md)
 - [Enterprise governance](docs/ENTERPRISE.md)
 - [Provider adapters](docs/PROVIDERS.md)
 - [Skills](docs/SKILLS.md)

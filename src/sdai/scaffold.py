@@ -67,6 +67,10 @@ profiles:
     capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]
     skills: [spec-traceability, architecture-review, secure-coding, test-design]
     timeout_seconds: 900
+    startup_timeout_seconds: 10
+    first_output_timeout_seconds: 60
+    idle_output_timeout_seconds: 120
+    termination_grace_seconds: 1
 
   copilot:
     provider: copilot
@@ -75,6 +79,10 @@ profiles:
     capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]
     skills: [spec-traceability, architecture-review, secure-coding, test-design]
     timeout_seconds: 900
+    startup_timeout_seconds: 10
+    first_output_timeout_seconds: 60
+    idle_output_timeout_seconds: 120
+    termination_grace_seconds: 1
 
   claude:
     provider: claude
@@ -83,6 +91,10 @@ profiles:
     capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]
     skills: [spec-traceability, architecture-review, secure-coding, test-design]
     timeout_seconds: 900
+    startup_timeout_seconds: 10
+    first_output_timeout_seconds: 60
+    idle_output_timeout_seconds: 120
+    termination_grace_seconds: 1
 
   gemini:
     provider: gemini
@@ -91,6 +103,10 @@ profiles:
     capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]
     skills: [spec-traceability, architecture-review, secure-coding, test-design]
     timeout_seconds: 900
+    startup_timeout_seconds: 10
+    first_output_timeout_seconds: 60
+    idle_output_timeout_seconds: 120
+    termination_grace_seconds: 1
 
   local-command:
     provider: command
@@ -99,6 +115,11 @@ profiles:
     prompt: auto
     capabilities: [requirements, architecture, planning, coding, review, testing, security, documentation]
     skills: [spec-traceability]
+    timeout_seconds: 900
+    startup_timeout_seconds: 10
+    first_output_timeout_seconds: 60
+    idle_output_timeout_seconds: 120
+    termination_grace_seconds: 1
 """
 
 ROUTING = """version: 1

@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
-
+if TYPE_CHECKING:
+    from sdai.providers.base import ProviderUsage
 class Capability(StrEnum):
     REQUIREMENTS = "requirements"
     ARCHITECTURE = "architecture"
@@ -32,6 +33,10 @@ class AgentProfile:
     enabled: bool = True
     model: str | None = None
     timeout_seconds: int = 600
+    startup_timeout_seconds: int = 10
+    first_output_timeout_seconds: int = 60
+    idle_output_timeout_seconds: int = 120
+    termination_grace_seconds: float = 1.0
     extra_args: tuple[str, ...] = ()
     command: tuple[str, ...] = ()
     workspace_write_args: tuple[str, ...] = ()
@@ -68,6 +73,8 @@ class AgentInvocation:
     mode: ExecutionMode = ExecutionMode.ADVISORY
     agent_name: str | None = None
     routing_decision: str | None = None
+    workflow: str | None = None
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,3 +119,10 @@ class AgentExecutionResult:
     prompt: str
     skills: tuple[str, ...] = field(default_factory=tuple)
     agent_name: str | None = None
+    usage: ProviderUsage | None = None
+    model: str | None = None
+    request_id: str | None = None
+    finish_reason: str | None = None
+    requested_profile: str | None = None
+    requested_provider: str | None = None
+    host_reused: bool = False

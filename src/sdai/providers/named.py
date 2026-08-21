@@ -12,18 +12,36 @@ def _append_model(command: list[str], model: str | None, flag: str = "--model") 
 
 
 def codex_provider(
-    *, cwd: Path, model: str | None, timeout_seconds: int, extra_args: tuple[str, ...], mode: ExecutionMode
+    *,
+    cwd: Path,
+    model: str | None,
+    timeout_seconds: int,
+    extra_args: tuple[str, ...],
+    mode: ExecutionMode,
+    **timeouts: int | float,
 ) -> CliProvider:
     sandbox = "workspace-write" if mode == ExecutionMode.WORKSPACE_WRITE else "read-only"
     command = ["codex", "exec", "--ephemeral", "--sandbox", sandbox]
     _append_model(command, model)
     command.extend(extra_args)
     # Codex exec supports reading the task from stdin and exposes explicit sandbox modes.
-    return CliProvider(command, cwd=cwd, timeout_seconds=timeout_seconds, provider_name="codex")
+    return CliProvider(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        provider_name="codex",
+        **timeouts,
+    )
 
 
 def copilot_provider(
-    *, cwd: Path, model: str | None, timeout_seconds: int, extra_args: tuple[str, ...], mode: ExecutionMode
+    *,
+    cwd: Path,
+    model: str | None,
+    timeout_seconds: int,
+    extra_args: tuple[str, ...],
+    mode: ExecutionMode,
+    **timeouts: int | float,
 ) -> CliProvider:
     # Copilot CLI accepts piped prompts; stdin avoids OS command-line length limits.
     command = ["copilot", "-s", "--no-ask-user"]
@@ -42,11 +60,23 @@ def copilot_provider(
         command.append("--allow-tool=write")
     _append_model(command, model)
     command.extend(extra_args)
-    return CliProvider(command, cwd=cwd, timeout_seconds=timeout_seconds, provider_name="copilot")
+    return CliProvider(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        provider_name="copilot",
+        **timeouts,
+    )
 
 
 def claude_provider(
-    *, cwd: Path, model: str | None, timeout_seconds: int, extra_args: tuple[str, ...], mode: ExecutionMode
+    *,
+    cwd: Path,
+    model: str | None,
+    timeout_seconds: int,
+    extra_args: tuple[str, ...],
+    mode: ExecutionMode,
+    **timeouts: int | float,
 ) -> CliProvider:
     # Claude Code supports piped context in print mode. Pin permission mode so saved
     # local settings cannot silently widen advisory access.
@@ -63,11 +93,23 @@ def claude_provider(
     ]
     _append_model(command, model)
     command.extend(extra_args)
-    return CliProvider(command, cwd=cwd, timeout_seconds=timeout_seconds, provider_name="claude")
+    return CliProvider(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        provider_name="claude",
+        **timeouts,
+    )
 
 
 def gemini_provider(
-    *, cwd: Path, model: str | None, timeout_seconds: int, extra_args: tuple[str, ...], mode: ExecutionMode
+    *,
+    cwd: Path,
+    model: str | None,
+    timeout_seconds: int,
+    extra_args: tuple[str, ...],
+    mode: ExecutionMode,
+    **timeouts: int | float,
 ) -> CliProvider:
     # Gemini CLI appends piped stdin to the non-interactive prompt. Use Plan Mode for
     # advisory runs and auto_edit only after the caller explicitly selects workspace-write.
@@ -84,4 +126,10 @@ def gemini_provider(
     if model:
         command.extend(["-m", model])
     command.extend(extra_args)
-    return CliProvider(command, cwd=cwd, timeout_seconds=timeout_seconds, provider_name="gemini")
+    return CliProvider(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        provider_name="gemini",
+        **timeouts,
+    )

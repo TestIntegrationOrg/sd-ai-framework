@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import subprocess
 import time
@@ -37,7 +37,14 @@ from sdai.config import load_yaml
 from sdai.execution_guard import WorkspaceMutationGuard
 from sdai.path_safety import ensure_within_project
 from sdai.policy import EffectiveConfiguration, PolicyError, load_effective_configuration
-from sdai.providers.base import ProviderCapabilities
+from sdai.providers.base import (
+    HostProviderBridge,
+    NestedExecutionSupport,
+    ProviderCapabilities,
+    ProviderReadiness,
+    ReadinessState,
+    normalize_provider_result,
+)
 from sdai.providers.control import (
     ProviderCancellationToken,
     ProviderCancelledError,
@@ -62,6 +69,12 @@ def _progress_failure_category(error: BaseException) -> str:
     """Classify terminal progress without copying exception messages into live output."""
     if isinstance(error, ProviderCancelledError):
         return "cancelled"
+    if type(error).__name__ == "ProviderFirstOutputTimeoutError":
+        return "no-first-output"
+    if type(error).__name__ == "ProviderIdleOutputTimeoutError":
+        return "idle-output-timeout"
+    if type(error).__name__ == "ProviderTotalTimeoutError":
+        return "total-timeout"
     if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
         return "timeout"
     if isinstance(error, FileNotFoundError):
@@ -150,6 +163,8 @@ class AgentRuntime:
     project_root: Path
     diagnostic_clock: ProviderDiagnosticClock | None = None
     diagnostic_id_factory: Callable[[], str] | None = None
+    host_bridge: HostProviderBridge | None = None
+    invocation_chain: tuple[str, ...] = ()
 
     def _policy(self) -> EffectiveConfiguration:
         return load_effective_configuration(self.project_root.resolve())
@@ -157,6 +172,112 @@ class AgentRuntime:
     def max_explicit_context_chars(self) -> int:
         """Return the configured hard limit used for explicit isolated context."""
         return _max_context_chars(self.project_root.resolve())
+
+    def _eligible_host_bridge(self, invocation: AgentInvocation) -> HostProviderBridge | None:
+        bridge = self.host_bridge
+        if bridge is None:
+            return None
+        context = bridge.context
+        if invocation.capability.value not in context.capabilities:
+            return None
+        if invocation.mode.value not in context.execution_modes:
+            return None
+        if not context.profile:
+            return None
+        try:
+            host_profile = resolve_profile(
+                self.project_root.resolve(), invocation.capability, context.profile
+            )
+            if host_profile.provider != context.provider:
+                return None
+            self._policy().assert_profile_allowed(
+                host_profile, invocation.capability, invocation.mode
+            )
+        except (RuntimeError, ValueError):
+            return None
+        key = f"{context.provider}:{context.profile or '-'}:{context.invocation_id}"
+        chain = (*self.invocation_chain, *context.invocation_chain)
+        if key in chain:
+            return None
+        if context.max_nested_depth is not None and len(chain) >= context.max_nested_depth:
+            return None
+        return bridge
+
+    def preflight_invocation(self, invocation: AgentInvocation) -> ProviderReadiness:
+        """Resolve one invocation without sending its prompt to a provider."""
+        policy = self._policy()
+        policy.assert_profile_allowed(
+            invocation.profile, invocation.capability, invocation.mode
+        )
+        provider = ProviderFactory.create(
+            invocation.profile,
+            mode=invocation.mode,
+            cwd=invocation.cwd,
+            policy=policy,
+        )
+        readiness_method = getattr(provider, "readiness", None)
+        if callable(readiness_method):
+            readiness = readiness_method()
+        else:
+            availability_method = getattr(provider, "availability", None)
+            available, detail = (
+                availability_method()
+                if callable(availability_method)
+                else (True, "provider adapter did not expose readiness details")
+            )
+            capabilities_method = getattr(provider, "diagnostic_capabilities", None)
+            capabilities = (
+                capabilities_method()
+                if callable(capabilities_method)
+                else ProviderCapabilities()
+            )
+            readiness = ProviderReadiness(
+                ReadinessState.READY if available else ReadinessState.BLOCKED,
+                "provider-ready" if available else "provider-unavailable",
+                detail,
+                nested_execution=capabilities.nested_execution,
+                max_nested_depth=capabilities.max_nested_depth,
+            )
+        readiness = replace(
+            readiness,
+            provider=invocation.profile.provider,
+            profile=invocation.profile.name,
+        )
+        if readiness.nested_execution in {
+            NestedExecutionSupport.UNSUPPORTED,
+            NestedExecutionSupport.UNKNOWN,
+        }:
+            host = self._eligible_host_bridge(invocation)
+            if host is not None:
+                return ProviderReadiness(
+                    ReadinessState.READY,
+                    "current-host-provider-reused",
+                    "selected provider nesting is unsupported or unknown; using registered host bridge",
+                    provider=host.context.provider,
+                    profile=host.context.profile,
+                    nested_execution=NestedExecutionSupport.SUPPORTED,
+                    host_reused=True,
+                )
+        return readiness
+
+    def preflight(
+        self,
+        feature_id: str,
+        capability: Capability,
+        *,
+        profile_name: str | None = None,
+        agent_name: str | None = None,
+        mode: ExecutionMode = ExecutionMode.ADVISORY,
+    ) -> ProviderReadiness:
+        return self.preflight_invocation(
+            self.build_invocation(
+                feature_id,
+                capability,
+                profile_name=profile_name,
+                agent_name=agent_name,
+                mode=mode,
+            )
+        )
 
     def _resolved_context_plan(
         self,
@@ -535,7 +656,29 @@ class AgentRuntime:
             if callable(capabilities_method)
             else ProviderCapabilities()
         )
+        requested_profile = invocation.profile.name
+        requested_provider = invocation.profile.provider
+        effective_profile = requested_profile
+        effective_provider = requested_provider
+        host_reused = False
+        if capabilities.nested_execution in {
+            NestedExecutionSupport.UNSUPPORTED,
+            NestedExecutionSupport.UNKNOWN,
+        }:
+            bridge = self._eligible_host_bridge(invocation)
+            if bridge is not None:
+                provider = bridge
+                host_reused = True
+                effective_profile = bridge.context.profile or requested_profile
+                effective_provider = bridge.context.provider
+                capabilities = ProviderCapabilities(
+                    nested_execution=NestedExecutionSupport.SUPPORTED,
+                    usage_reporting=True,
+                )
         if diagnostics is not None:
+            diagnostics.effective_profile = effective_profile
+            diagnostics.effective_provider = effective_provider
+            diagnostics.host_reused = host_reused
             try:
                 diagnostics.provider_ready(capabilities)
             except BaseException as exc:
@@ -565,8 +708,16 @@ class AgentRuntime:
                 elapsed_seconds=event.elapsed_seconds,
             )
 
-        def invoke_provider() -> str:
+        def invoke_provider():
             control.raise_if_cancelled()
+            result_observable = getattr(provider, "complete_result_observable", None)
+            if callable(result_observable):
+                return result_observable(
+                    system=invocation.system,
+                    prompt=invocation.prompt,
+                    cancellation=control,
+                    progress=report_progress,
+                )
             observable = getattr(provider, "complete_observable", None)
             if callable(observable):
                 return observable(
@@ -580,9 +731,9 @@ class AgentRuntime:
         try:
             if invocation.mode == ExecutionMode.WORKSPACE_WRITE:
                 with WorkspaceMutationGuard(invocation.cwd, policy.protected_paths):
-                    output = invoke_provider()
+                    raw_result = invoke_provider()
             else:
-                output = invoke_provider()
+                raw_result = invoke_provider()
         except BaseException as provider_exc:
             emit_progress(
                 "failed",
@@ -591,13 +742,28 @@ class AgentRuntime:
             )
             diagnostic_exc: BaseException | None = None
             persisted: PersistedProviderDiagnostic | None = None
+            partial_usage = getattr(provider_exc, "usage", None)
             if diagnostics is not None:
                 try:
-                    persisted = diagnostics.failed(provider_exc, stage="invocation")
+                    persisted = diagnostics.failed(
+                        provider_exc,
+                        stage="invocation",
+                        usage=(
+                            partial_usage
+                            if hasattr(partial_usage, "as_dict")
+                            else None
+                        ),
+                    )
                 except BaseException as exc:
                     diagnostic_exc = exc
             failure = diagnostic_exc or provider_exc
             if recorder is not None and provenance is not None and started_event is not None:
+                recorder.terminal_usage = (
+                    partial_usage if hasattr(partial_usage, "as_dict") else None
+                )
+                recorder.effective_profile = effective_profile
+                recorder.effective_provider = effective_provider
+                recorder.host_reused = host_reused
                 recorder.failed(
                     invocation,
                     _terminal_provenance(provenance, persisted),
@@ -608,9 +774,13 @@ class AgentRuntime:
                 raise diagnostic_exc from provider_exc
             raise
 
+        provider_result = normalize_provider_result(raw_result)
+        output = provider_result.content
         persisted = None
         if diagnostics is not None:
             try:
+                diagnostics.terminal_usage = provider_result.usage
+                diagnostics.effective_model = provider_result.model
                 persisted = diagnostics.completed()
             except BaseException as exc:
                 if recorder is not None and provenance is not None and started_event is not None:
@@ -623,6 +793,10 @@ class AgentRuntime:
                 raise
 
         if recorder is not None and provenance is not None and started_event is not None:
+            recorder.terminal_usage = provider_result.usage
+            recorder.effective_profile = effective_profile
+            recorder.effective_provider = effective_provider
+            recorder.host_reused = host_reused
             recorder.succeeded(
                 invocation,
                 _terminal_provenance(provenance, persisted),
@@ -635,12 +809,19 @@ class AgentRuntime:
         return AgentExecutionResult(
             feature_id=invocation.feature_id,
             capability=invocation.capability,
-            profile=invocation.profile.name,
-            provider=invocation.profile.provider,
+            profile=effective_profile,
+            provider=effective_provider,
             output=output,
             prompt=invocation.prompt,
             skills=effective_skill_names,
             agent_name=invocation.agent_name,
+            usage=provider_result.usage,
+            model=provider_result.model or invocation.profile.model,
+            request_id=provider_result.request_id,
+            finish_reason=provider_result.finish_reason,
+            requested_profile=requested_profile,
+            requested_provider=requested_provider,
+            host_reused=host_reused,
         )
 
     def execute(

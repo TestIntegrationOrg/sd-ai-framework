@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -15,7 +16,7 @@ from sdai.agent_platform import (
 from sdai.agent_platform.definitions import list_agent_definitions, load_agent_definition
 from sdai.agent_platform.models import AgentInvocation
 from sdai.agent_platform.native import PROVIDERS, sync_native_agents
-from sdai.agent_platform.profiles import load_profiles
+from sdai.agent_platform.profiles import load_profiles, load_route_candidates
 from sdai.agent_platform.prompts import list_prompts, load_prompt
 from sdai.agent_platform.skills import list_skills, load_skill, validate_skills
 from sdai.agents.base import AgentResult
@@ -40,6 +41,9 @@ from sdai.v05_scaffold import install_v05_scaffold
 from sdai.validation import ValidationFinding, has_blockers, validate
 from sdai.workflow_templates import install_current_workflows
 from sdai.workflows import grant_approval, load_workflow_state
+from sdai.workflows import StepKind, load_workflow
+from sdai.usage import load_usage_attempts, usage_report
+from sdai.workflow_selection import resolve_feature_workflow, select_workflow
 from sdai.worktree_isolation import create_worktree_session
 
 
@@ -91,6 +95,18 @@ def cmd_feature(args: argparse.Namespace) -> int:
     ensure_initialized(root)
     feature_id = validate_feature_id(args.feature_id)
     context = FeatureContext(root, feature_id)
+    interactive = (
+        not args.no_input
+        and bool(getattr(sys.stdin, "isatty", lambda: False)())
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+    workflow = select_workflow(
+        root,
+        requested=args.workflow,
+        interactive=interactive,
+        input_stream=sys.stdin,
+        output_stream=sys.stdout,
+    )
     intake = f"""# Feature Intake — {feature_id}
 
 ## Title
@@ -100,7 +116,7 @@ def cmd_feature(args: argparse.Namespace) -> int:
 {args.description}
 
 ## Requested Lifecycle
-{args.workflow}
+{workflow}
 
 ## Source
 manual
@@ -193,8 +209,11 @@ def _workflow_exit_code(results: list[StepExecution]) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
+    workflow = resolve_feature_workflow(root, args.feature_id, args.workflow)
+    if args.preflight_only:
+        return _run_workflow_preflight(root, args.feature_id, workflow, as_json=args.json)
     if args.isolation == "in-place":
-        results = Orchestrator(root).run_workflow(args.feature_id, args.workflow)
+        results = Orchestrator(root).run_workflow(args.feature_id, workflow)
         for execution in results:
             _print_step_execution(execution, root)
         return _workflow_exit_code(results)
@@ -208,7 +227,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"  branch={session.worktree_branch}")
     print(f"  evidence={session.evidence_path}")
     try:
-        results = Orchestrator(session.worktree_path).run_workflow(args.feature_id, args.workflow)
+        results = Orchestrator(session.worktree_path).run_workflow(args.feature_id, workflow)
         for execution in results:
             _print_step_execution(execution, session.worktree_path)
         exit_code = _workflow_exit_code(results)
@@ -285,10 +304,11 @@ def cmd_step(args: argparse.Namespace) -> int:
     root = project_root(args.path)
     ensure_initialized(root)
     progress = None
-    if args.step_action == "run":
+    if args.step_action in {"run", "retry"}:
         progress = _agent_progress_printer(args.step_id, verbose=args.verbose)
     orchestrator = Orchestrator(root, agent_progress=progress)
-    definition = orchestrator.workflow_definition(args.workflow)
+    workflow = resolve_feature_workflow(root, args.feature_id, args.workflow)
+    definition = orchestrator.workflow_definition(workflow)
     context = orchestrator.context(args.feature_id)
 
     if args.step_action == "list":
@@ -308,11 +328,11 @@ def cmd_step(args: argparse.Namespace) -> int:
             )
         return 0
 
-    if args.step_action == "run":
+    if args.step_action in {"run", "retry"}:
         mode_override = ExecutionMode(args.mode) if args.mode else None
         execution = orchestrator.run_manual_step(
             args.feature_id,
-            args.workflow,
+            workflow,
             args.step_id,
             force=args.force,
             dry_run=args.dry_run,
@@ -328,6 +348,144 @@ def cmd_step(args: argparse.Namespace) -> int:
         return 0
 
     raise ValueError(f"Unknown step action: {args.step_action}")
+
+
+def _run_workflow_preflight(
+    root: Path,
+    feature_id: str,
+    workflow: str,
+    *,
+    as_json: bool = False,
+) -> int:
+    definition = load_workflow(root, workflow)
+    runtime = AgentRuntime(root)
+    rows: list[dict[str, object]] = []
+    blocked = False
+    semantic_enabled = (root / ".sdai" / "agents").exists()
+    for step, parent in definition.iter_steps():
+        if step.kind != StepKind.AGENT or step.capability is None:
+            continue
+        candidates = (
+            (step.profile,)
+            if step.profile
+            else (None, *load_route_candidates(root).get(step.capability, ()))
+        )
+        readiness = None
+        attempted: list[dict[str, object]] = []
+        attempted_profiles: set[str] = set()
+        for candidate in candidates:
+            current = runtime.preflight(
+                feature_id,
+                step.capability,
+                profile_name=candidate,
+                agent_name=step.agent_name if semantic_enabled else None,
+                mode=step.mode,
+            )
+            if current.profile and current.profile in attempted_profiles:
+                continue
+            if current.profile:
+                attempted_profiles.add(current.profile)
+            attempted.append(current.as_dict())
+            readiness = current
+            if current.runnable:
+                break
+        assert readiness is not None
+        row = {
+            "stepId": step.id,
+            "parent": parent,
+            **readiness.as_dict(),
+            "routeAttempts": attempted,
+        }
+        rows.append(row)
+        blocked = blocked or not readiness.runnable
+    payload = {
+        "apiVersion": "sdai.provider-preflight/v1",
+        "featureId": feature_id,
+        "workflow": workflow,
+        "status": "blocked" if blocked else "ready",
+        "providers": rows,
+    }
+    if as_json:
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    else:
+        for row in rows:
+            print(
+                f"{str(row['state']).upper():9} {row['stepId']:26} "
+                f"profile={row['profile'] or '-'} provider={row['provider'] or '-'} "
+                f"nested={row['nestedExecution']} reason={row['reasonCode']}"
+            )
+        print(f"Preflight {payload['status']} for {feature_id} ({workflow})")
+    return 2 if blocked else 0
+
+
+def cmd_providers(args: argparse.Namespace) -> int:
+    root = project_root(args.path)
+    ensure_initialized(root)
+    if args.provider_action != "doctor":
+        raise ValueError(f"Unknown providers action: {args.provider_action}")
+    if bool(args.workflow) != bool(args.feature_id):
+        raise ValueError("--workflow and --feature-id must be supplied together")
+    if args.workflow and args.feature_id:
+        return _run_workflow_preflight(
+            root,
+            args.feature_id,
+            args.workflow,
+            as_json=args.json,
+        )
+    exit_code = 0
+    rows = []
+    for name, provider, available, detail in AgentRuntime(root).doctor():
+        rows.append({"profile": name, "provider": provider, "available": available, "detail": detail})
+        exit_code = exit_code or (0 if available or detail == "profile disabled" else 1)
+    if args.json:
+        print(json.dumps({"apiVersion": "sdai.provider-doctor/v1", "profiles": rows}, sort_keys=True))
+    else:
+        for row in rows:
+            print(
+                f"{'OK' if row['available'] else 'MISSING':7} {row['profile']:14} "
+                f"provider={row['provider']:8} {row['detail']}"
+            )
+    return exit_code
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    root = project_root(args.path)
+    ensure_initialized(root)
+    attempts = load_usage_attempts(
+        root,
+        args.feature_id,
+        workflow=args.workflow,
+        step_id=args.step,
+        attempt_id=args.attempt,
+    )
+    report = usage_report(args.feature_id, attempts)
+    if args.json:
+        print(json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return 0
+    print("WORKFLOW STEP ATTEMPT PROVIDER/MODEL INPUT CACHED OUTPUT REASON TOTAL SOURCE OUTCOME")
+    for item in attempts:
+        usage = item.usage
+        values = [
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+            usage.reasoning_tokens,
+            usage.total_tokens,
+        ]
+        rendered = ["?" if value is None else str(value) for value in values]
+        print(
+            f"{item.workflow or '-'} {item.step_id or '-'} {item.attempt_id} "
+            f"{item.provider}/{item.model or '-'} {' '.join(rendered)} "
+            f"{usage.measurement} {item.outcome}"
+        )
+    totals = report["knownTotals"]
+    print(
+        "Known totals: "
+        + " ".join(f"{name}={value}" for name, value in totals.items())
+    )
+    if not report["actualTotalKnown"]:
+        print("Actual total: unknown (one or more attempts are incomplete, estimated, or unavailable)")
+    return 0
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -630,7 +788,12 @@ def parser() -> argparse.ArgumentParser:
     feature.add_argument("feature_id")
     feature.add_argument("--title", required=True)
     feature.add_argument("--description", required=True)
-    feature.add_argument("--workflow", default="standard")
+    feature.add_argument("--workflow")
+    feature.add_argument(
+        "--no-input",
+        action="store_true",
+        help="Never prompt; use --workflow or the configured default_workflow",
+    )
     feature.add_argument("--path")
     feature.set_defaults(func=cmd_feature)
 
@@ -648,7 +811,14 @@ def parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Execute or resume a declarative workflow")
     run.add_argument("feature_id")
-    run.add_argument("--workflow", default="standard")
+    run.add_argument("--workflow")
+    run.add_argument("--preflight-only", action="store_true")
+    run.add_argument(
+        "--resume",
+        action="store_true",
+        help="Explicitly resume from persisted state (normal run behavior is already resumable)",
+    )
+    run.add_argument("--json", action="store_true", help="Emit JSON for --preflight-only")
     run.add_argument("--isolation", choices=["in-place", "worktree"], default="in-place")
     run.add_argument(
         "--cleanup-worktree",
@@ -662,13 +832,13 @@ def parser() -> argparse.ArgumentParser:
     step_sub = step.add_subparsers(dest="step_action", required=True)
     step_list = step_sub.add_parser("list")
     step_list.add_argument("feature_id")
-    step_list.add_argument("--workflow", default="standard")
+    step_list.add_argument("--workflow")
     step_list.add_argument("--path")
     step_list.set_defaults(func=cmd_step)
     step_run = step_sub.add_parser("run")
     step_run.add_argument("feature_id")
     step_run.add_argument("step_id")
-    step_run.add_argument("--workflow", default="standard")
+    step_run.add_argument("--workflow")
     step_run.add_argument("--force", action="store_true")
     step_run.add_argument("--dry-run", action="store_true")
     step_run.add_argument("--agent", help="Override the semantic .agent role")
@@ -681,6 +851,16 @@ def parser() -> argparse.ArgumentParser:
     )
     step_run.add_argument("--path")
     step_run.set_defaults(func=cmd_step)
+    step_retry = step_sub.add_parser("retry", help="Retry a failed or paused workflow step")
+    step_retry.add_argument("feature_id")
+    step_retry.add_argument("step_id")
+    step_retry.add_argument("--workflow")
+    step_retry.add_argument("--agent", help="Override the semantic .agent role")
+    step_retry.add_argument("--profile", help="Override the provider profile")
+    step_retry.add_argument("--mode", choices=[m.value for m in ExecutionMode])
+    step_retry.add_argument("--verbose", action="store_true")
+    step_retry.add_argument("--path")
+    step_retry.set_defaults(func=cmd_step, force=False, dry_run=False)
 
     approve = sub.add_parser("approve")
     approve.add_argument("feature_id")
@@ -715,6 +895,24 @@ def parser() -> argparse.ArgumentParser:
     agents_run.add_argument("--dry-run", action="store_true")
     agents_run.add_argument("--path")
     agents_run.set_defaults(func=cmd_agents)
+
+    providers = sub.add_parser("providers", help="Provider readiness and workflow preflight")
+    providers_sub = providers.add_subparsers(dest="provider_action", required=True)
+    providers_doctor = providers_sub.add_parser("doctor")
+    providers_doctor.add_argument("--workflow")
+    providers_doctor.add_argument("--feature-id")
+    providers_doctor.add_argument("--json", action="store_true")
+    providers_doctor.add_argument("--path")
+    providers_doctor.set_defaults(func=cmd_providers)
+
+    usage = sub.add_parser("usage", help="Report per-attempt and aggregate provider token usage")
+    usage.add_argument("feature_id")
+    usage.add_argument("--workflow")
+    usage.add_argument("--step")
+    usage.add_argument("--attempt")
+    usage.add_argument("--json", action="store_true")
+    usage.add_argument("--path")
+    usage.set_defaults(func=cmd_usage)
 
     gates = sub.add_parser("gates")
     gates_sub = gates.add_subparsers(dest="gate_action", required=True)

@@ -48,7 +48,7 @@ The `enterprise` workflow and `operating_mode: enterprise` are separate concepts
 
 Either operating mode can execute any workflow allowed by effective policy. Naming a workflow `enterprise` does not activate organization policy, and using enterprise operating mode does not require the workflow named `enterprise`.
 
-### Current CLI behavior and planned selector
+### CLI workflow selection
 
 Specify the workflow explicitly when creating or running a feature:
 
@@ -61,7 +61,22 @@ sdai feature FEATURE-123 \
 sdai run FEATURE-123 --workflow critical
 ```
 
-If `--workflow` is omitted, the current CLI resolves its default instead of presenting a choice. Interactive workflow selection, installed/custom workflow discovery, default highlighting, non-TTY fallback, and persisted selection are tracked in [issue #295](https://github.com/TestIntegrationOrg/sd-ai-framework/issues/295). Until that task is implemented, pass `--workflow` explicitly in engineer and CI commands to make intent auditable.
+When `sdai feature` is attached to a terminal and `--workflow` is omitted, it discovers every valid definition under `.sdai/workflows`, displays its purpose, highlights `default_workflow`, and prompts for a name or number. The selection is persisted in `00-intake.md` and later `run`, `step list`, `step run`, and `step retry` commands reuse it.
+
+In CI or any non-interactive stream, selection never blocks for input. It uses `--workflow` when supplied and otherwise resolves `.sdai/config.yaml:default_workflow`, printing that decision. Use `--no-input` to force this behavior even from a terminal.
+
+```bash
+sdai feature FEATURE-123 \
+  --title "Rotate signing credentials" \
+  --description "Introduce governed credential rotation" \
+  --no-input
+
+# Uses the workflow persisted for FEATURE-123.
+sdai run FEATURE-123 --preflight-only
+sdai run FEATURE-123 --resume
+```
+
+Custom workflow definitions participate in discovery without code changes. Invalid requested names and a configured default that is not installed fail with the valid choices rather than silently changing lifecycle behavior.
 
 ## Step types
 
