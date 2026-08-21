@@ -2,6 +2,14 @@
 
 All notable SD-AI Framework changes should be recorded here. The project version is controlled by `src/sdai/__init__.py::__version__`; roadmap milestones do not imply that a package release has already been published.
 
+## Unreleased — Agentic reliability and usage accounting
+
+### Added
+- Interactive installed-workflow selection with non-interactive default resolution and feature-persisted workflow intent.
+- Provider-neutral nested-execution capability and current-host bridge contracts with invocation-chain recursion prevention.
+- Workflow/provider preflight, layered startup/first-output/idle/total timeouts, bounded process termination, ordered transient-failure route fallback, explicit resume/retry commands, and requested-versus-effective provider evidence.
+- Per-attempt provider token accounting and aggregate human/JSON reports that preserve unavailable values as unknown rather than zero.
+
 ## Unreleased — 0.15 Specification Stores + Multi-Repo Feature Graph
 
 ### Added

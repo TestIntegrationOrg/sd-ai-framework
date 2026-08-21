@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import time
 from typing import Callable, Mapping, TypeVar
 
 from sdai.agent_platform import AgentProgressCallback, AgentRuntime, ExecutionMode
+from sdai.agent_platform.profiles import load_route_candidates
+from sdai.agent_platform.provider_retry import (
+    ProviderFailureCategory,
+    classify_provider_failure,
+)
 from sdai.agent_platform.models import AgentInvocation
 from sdai.agents import ArchitectAgent, DeveloperAgent, PlannerAgent, RequirementAgent, SecurityAgent
 from sdai.agents.base import AgentResult
@@ -118,13 +123,56 @@ class Orchestrator:
         profile_name: str | None,
         agent_name: str | None,
         mode: ExecutionMode,
+        workflow_name: str | None = None,
+        step_id: str | None = None,
     ):
         kwargs = {"profile_name": profile_name, "mode": mode}
         if agent_name and self._semantic_enabled():
             kwargs["agent_name"] = agent_name
-        if self.agent_progress is not None:
-            kwargs["progress"] = self.agent_progress
-        return self.agent_runtime.execute(feature_id, capability, **kwargs)
+        if not (
+            hasattr(self.agent_runtime, "build_invocation")
+            and hasattr(self.agent_runtime, "execute_invocation")
+        ):
+            if self.agent_progress is not None:
+                kwargs["progress"] = self.agent_progress
+            return self.agent_runtime.execute(feature_id, capability, **kwargs)
+        candidates = (
+            (profile_name,)
+            if profile_name
+            else (None, *load_route_candidates(self.project_root).get(capability, ()))
+        )
+        last_error: Exception | None = None
+        attempted_profiles: set[str] = set()
+        fallback_categories = {
+            ProviderFailureCategory.TIMEOUT,
+            ProviderFailureCategory.NO_FIRST_OUTPUT,
+            ProviderFailureCategory.IDLE_OUTPUT_TIMEOUT,
+            ProviderFailureCategory.TOTAL_TIMEOUT,
+            ProviderFailureCategory.RATE_LIMIT,
+            ProviderFailureCategory.PROVIDER_UNAVAILABLE,
+        }
+        for candidate in candidates:
+            candidate_kwargs = dict(kwargs)
+            candidate_kwargs["profile_name"] = candidate
+            invocation = self.agent_runtime.build_invocation(
+                feature_id, capability, **candidate_kwargs
+            )
+            if invocation.profile.name in attempted_profiles:
+                continue
+            attempted_profiles.add(invocation.profile.name)
+            invocation = replace(invocation, workflow=workflow_name, step_id=step_id)
+            try:
+                return self.agent_runtime.execute_invocation(
+                    invocation,
+                    progress=self.agent_progress,
+                )
+            except Exception as exc:
+                last_error = exc
+                classification = classify_provider_failure(exc)
+                if classification.category not in fallback_categories:
+                    raise
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _invalidate_from(state, definition: WorkflowDefinition, step_id: str) -> None:
@@ -312,6 +360,8 @@ class Orchestrator:
                     profile_name=child.profile,
                     agent_name=child.agent_name,
                     mode=child.mode,
+                    workflow_name=definition.name,
+                    step_id=child.id,
                 ),
             )
             artifact = self._persist_agent_output(context, child, result, child.mode)
@@ -496,6 +546,8 @@ class Orchestrator:
                         profile_name=profile,
                         agent_name=semantic_agent,
                         mode=mode,
+                        workflow_name=definition.name,
+                        step_id=step.id,
                     ),
                 )
             except Exception as exc:

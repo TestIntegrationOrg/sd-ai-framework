@@ -82,6 +82,9 @@ def _safe_chain(root: Path, candidate: Path, *, label: str) -> Path:
 class ProviderFailureCategory(StrEnum):
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"
+    NO_FIRST_OUTPUT = "no-first-output"
+    IDLE_OUTPUT_TIMEOUT = "idle-output-timeout"
+    TOTAL_TIMEOUT = "total-timeout"
     RATE_LIMIT = "rate-limit"
     AUTHENTICATION = "authentication"
     PROVIDER_UNAVAILABLE = "provider-unavailable"
@@ -133,6 +136,35 @@ def classify_provider_failure(error: BaseException) -> FailureClassification:
     if isinstance(error, ProviderCancelledError):
         return FailureClassification(
             ProviderFailureCategory.CANCELLED, False, "cancelled-by-request", exception_type
+        )
+    if type(error).__name__ == "ProviderFirstOutputTimeoutError":
+        return FailureClassification(
+            ProviderFailureCategory.NO_FIRST_OUTPUT, True, "no-first-output", exception_type
+        )
+    if type(error).__name__ == "ProviderIdleOutputTimeoutError":
+        return FailureClassification(
+            ProviderFailureCategory.IDLE_OUTPUT_TIMEOUT,
+            True,
+            "idle-output-timeout",
+            exception_type,
+        )
+    if type(error).__name__ == "ProviderTotalTimeoutError":
+        return FailureClassification(
+            ProviderFailureCategory.TOTAL_TIMEOUT, True, "provider-total-timeout", exception_type
+        )
+    if type(error).__name__ == "ProviderStartupError":
+        if getattr(error, "reason_code", None) == "permission-denied":
+            return FailureClassification(
+                ProviderFailureCategory.AUTHENTICATION,
+                False,
+                "provider-startup-permission-denied",
+                exception_type,
+            )
+        return FailureClassification(
+            ProviderFailureCategory.PROVIDER_UNAVAILABLE,
+            True,
+            "provider-startup-unavailable",
+            exception_type,
         )
     if isinstance(error, ProviderDiagnosticError):
         return FailureClassification(
@@ -261,6 +293,9 @@ class RetryPolicy:
     jitter_basis_points: int = 0
     retryable_categories: tuple[ProviderFailureCategory, ...] = (
         ProviderFailureCategory.TIMEOUT,
+        ProviderFailureCategory.NO_FIRST_OUTPUT,
+        ProviderFailureCategory.IDLE_OUTPUT_TIMEOUT,
+        ProviderFailureCategory.TOTAL_TIMEOUT,
         ProviderFailureCategory.RATE_LIMIT,
         ProviderFailureCategory.PROVIDER_UNAVAILABLE,
     )

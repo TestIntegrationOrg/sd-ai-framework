@@ -97,6 +97,22 @@ def _routing_metadata(raw: dict[object, object], profile: str) -> dict[str, obje
     }
 
 
+def _timeout(raw: dict[object, object], key: str, default: int, profile: str) -> int:
+    value = raw.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 86_400:
+        raise ProfileError(f"profile '{profile}' {key} must be between 1 and 86400")
+    return value
+
+
+def _termination_grace(raw: dict[object, object], profile: str) -> float:
+    value = raw.get("termination_grace_seconds", 1.0)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0.1 <= float(value) <= 30:
+        raise ProfileError(
+            f"profile '{profile}' termination_grace_seconds must be between 0.1 and 30"
+        )
+    return float(value)
+
+
 def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
     project_root = project_root.resolve()
     path = ensure_within_project(
@@ -121,7 +137,15 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
             skills=tuple(str(v) for v in (raw.get("skills") or [])),
             enabled=bool(raw.get("enabled", True)),
             model=str(raw["model"]) if raw.get("model") else None,
-            timeout_seconds=int(raw.get("timeout_seconds", 600)),
+            timeout_seconds=_timeout(raw, "timeout_seconds", 600, profile_name),
+            startup_timeout_seconds=_timeout(raw, "startup_timeout_seconds", 10, profile_name),
+            first_output_timeout_seconds=_timeout(
+                raw, "first_output_timeout_seconds", 60, profile_name
+            ),
+            idle_output_timeout_seconds=_timeout(
+                raw, "idle_output_timeout_seconds", 120, profile_name
+            ),
+            termination_grace_seconds=_termination_grace(raw, profile_name),
             extra_args=tuple(str(v) for v in (raw.get("extra_args") or [])),
             command=tuple(str(v) for v in (raw.get("command") or [])),
             workspace_write_args=tuple(str(v) for v in (raw.get("workspace_write_args") or [])),
@@ -131,7 +155,7 @@ def load_profiles(project_root: Path) -> dict[str, AgentProfile]:
     return profiles
 
 
-def load_routes(project_root: Path) -> dict[Capability, str]:
+def load_route_candidates(project_root: Path) -> dict[Capability, tuple[str, ...]]:
     project_root = project_root.resolve()
     path = ensure_within_project(
         project_root, project_root / ".sdai" / "routing.yaml", label="agent routing path"
@@ -140,10 +164,33 @@ def load_routes(project_root: Path) -> dict[Capability, str]:
     raw = data.get("routes") or {}
     if not isinstance(raw, dict):
         raise ProfileError("routing.yaml routes must be a mapping")
-    routes: dict[Capability, str] = {}
-    for capability, profile in raw.items():
-        routes[Capability(str(capability))] = str(profile)
+    routes: dict[Capability, tuple[str, ...]] = {}
+    for capability, configured in raw.items():
+        if isinstance(configured, str):
+            values = (configured,)
+        elif isinstance(configured, list):
+            values = tuple(str(item) for item in configured)
+        elif isinstance(configured, dict):
+            profiles = configured.get("profiles")
+            if not isinstance(profiles, list):
+                raise ProfileError(
+                    f"route '{capability}' mapping must define a profiles list"
+                )
+            values = tuple(str(item) for item in profiles)
+        else:
+            raise ProfileError(f"route '{capability}' must be text, list, or mapping")
+        values = tuple(value.strip() for value in values if value.strip())
+        if not values or len(values) != len(set(values)):
+            raise ProfileError(f"route '{capability}' must contain unique profile names")
+        routes[Capability(str(capability))] = values
     return routes
+
+
+def load_routes(project_root: Path) -> dict[Capability, str]:
+    return {
+        capability: candidates[0]
+        for capability, candidates in load_route_candidates(project_root).items()
+    }
 
 
 def resolve_profile(

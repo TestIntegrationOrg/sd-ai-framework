@@ -15,7 +15,7 @@ from uuid import uuid4
 from sdai.agent_platform.models import AgentInvocation
 from sdai.models import FeatureContext, validate_feature_id
 from sdai.path_safety import PathSafetyError, ensure_within_project
-from sdai.providers.base import ProviderCapabilities
+from sdai.providers.base import ProviderCapabilities, ProviderUsage
 from sdai.providers.control import ProviderCancelledError
 
 
@@ -99,6 +99,12 @@ def _failure_classification(error: BaseException, *, stage: str) -> Mapping[str,
     type_name = type(error).__name__[:128] or "Exception"
     if isinstance(error, ProviderCancelledError):
         category = "cancelled"
+    elif type_name == "ProviderFirstOutputTimeoutError":
+        category = "no-first-output"
+    elif type_name == "ProviderIdleOutputTimeoutError":
+        category = "idle-output-timeout"
+    elif type_name == "ProviderTotalTimeoutError":
+        category = "total-timeout"
     elif isinstance(error, (subprocess.TimeoutExpired, TimeoutError)):
         category = "timeout"
     elif isinstance(error, FileNotFoundError):
@@ -153,8 +159,16 @@ class ProviderDiagnosticEvent:
     total_ns: int
     first_output: Mapping[str, object]
     status: str
+    workflow: str | None = None
+    step_id: str | None = None
     progress_reason: str | None = None
     failure: Mapping[str, str] | None = None
+    usage: ProviderUsage | None = None
+    requested_profile: str | None = None
+    requested_provider: str | None = None
+    effective_profile: str | None = None
+    effective_provider: str | None = None
+    host_reused: bool = False
 
     def _body(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -171,6 +185,8 @@ class ProviderDiagnosticEvent:
             "model": self.model,
             "costClass": self.cost_class,
             "semanticAgent": self.semantic_agent,
+            "workflow": self.workflow,
+            "stepId": self.step_id,
             "routingDecisionDocumentSha256": self.routing_document_sha256,
             "auditStartSha256": self.audit_start_sha256,
             "providerCapabilities": (
@@ -189,6 +205,16 @@ class ProviderDiagnosticEvent:
         }
         if self.progress_reason is not None:
             result["progressReason"] = self.progress_reason
+        if self.usage is not None:
+            result["usage"] = self.usage.as_dict()
+        if self.host_reused:
+            result["providerSelection"] = {
+                "requestedProfile": self.requested_profile,
+                "requestedProvider": self.requested_provider,
+                "effectiveProfile": self.effective_profile,
+                "effectiveProvider": self.effective_provider,
+                "hostReused": True,
+            }
         return result
 
     @property
@@ -227,6 +253,11 @@ class ProviderDiagnosticRecorder:
     capabilities: ProviderCapabilities | None = None
     next_sequence: int = 0
     terminal: bool = False
+    terminal_usage: ProviderUsage | None = None
+    effective_profile: str | None = None
+    effective_provider: str | None = None
+    effective_model: str | None = None
+    host_reused: bool = False
 
     @classmethod
     def optional_for(
@@ -302,6 +333,7 @@ class ProviderDiagnosticRecorder:
         failure: Mapping[str, str] | None = None,
         first_output_reason: str,
         progress_reason: str | None = None,
+        usage: ProviderUsage | None = None,
     ) -> ProviderDiagnosticEvent:
         if self.started_ns is None or self.attempt_id is None:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt was not started")
@@ -323,9 +355,11 @@ class ProviderDiagnosticRecorder:
             mode=self.invocation.mode.value,
             profile=self.invocation.profile.name,
             provider=self.invocation.profile.provider,
-            model=self.invocation.profile.model,
+            model=self.effective_model or self.invocation.profile.model,
             cost_class=self.invocation.profile.cost_class,
             semantic_agent=self.invocation.agent_name,
+            workflow=self.invocation.workflow,
+            step_id=self.invocation.step_id,
             routing_document_sha256=_routing_document_sha256(self.invocation.routing_decision),
             audit_start_sha256=self.audit_start_sha256,
             provider_capabilities=self.capabilities,
@@ -336,6 +370,12 @@ class ProviderDiagnosticRecorder:
             status=status,
             progress_reason=progress_reason,
             failure=failure,
+            usage=usage,
+            requested_profile=(self.invocation.profile.name if self.host_reused else None),
+            requested_provider=(self.invocation.profile.provider if self.host_reused else None),
+            effective_profile=self.effective_profile,
+            effective_provider=self.effective_provider,
+            host_reused=self.host_reused,
         )
 
     def start(self, *, audit_start_sha256: str | None) -> PersistedProviderDiagnostic:
@@ -464,10 +504,15 @@ class ProviderDiagnosticRecorder:
                 if self.capabilities is not None and self.capabilities.first_output_timing
                 else "provider-complete-interface"
             ),
+            usage=self.terminal_usage or ProviderUsage.unavailable(),
         )
         return self._persist(event, f"{sequence:03d}-completed.json")
 
-    def cancelled(self, error: ProviderCancelledError) -> PersistedProviderDiagnostic:
+    def cancelled(
+        self,
+        error: ProviderCancelledError,
+        usage: ProviderUsage | None = None,
+    ) -> PersistedProviderDiagnostic:
         if self.terminal:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt is terminal")
         now_ns = self.clock.monotonic_ns()
@@ -489,12 +534,19 @@ class ProviderDiagnosticRecorder:
                 )
             ),
             progress_reason="cancelled-by-request",
+            usage=usage or ProviderUsage.unavailable("cancelled-before-usage-reported"),
         )
         return self._persist(event, f"{sequence:03d}-cancelled.json")
 
-    def failed(self, error: BaseException, *, stage: str) -> PersistedProviderDiagnostic:
+    def failed(
+        self,
+        error: BaseException,
+        *,
+        stage: str,
+        usage: ProviderUsage | None = None,
+    ) -> PersistedProviderDiagnostic:
         if isinstance(error, ProviderCancelledError):
-            return self.cancelled(error)
+            return self.cancelled(error, usage)
         if self.terminal:
             raise _fail("SDAI-PROVIDER-DIAG-003", "provider diagnostic attempt is terminal")
         if stage not in {"startup", "invocation"}:
@@ -517,6 +569,7 @@ class ProviderDiagnosticRecorder:
                     else "provider-complete-interface"
                 )
             ),
+            usage=usage or ProviderUsage.unavailable("failed-before-usage-reported"),
         )
         return self._persist(event, f"{sequence:03d}-failed.json")
 
